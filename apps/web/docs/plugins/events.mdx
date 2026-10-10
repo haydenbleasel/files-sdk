@@ -1,6 +1,8 @@
 ---
 title: events
 description: Normalize provider bucket notifications (S3, MinIO, R2, GCS, Azure, B2, Tigris, Supabase, Cloudinary, Appwrite, Box, Storj) into one FileEvent and route them to handlers by type and key glob.
+related:
+  - /guides/r2-upload-events-queues
 ---
 
 The built-in `events()` plugin adds `files.events`: one place to react when a file is created or deleted, whether the write came through the SDK, a [gateway](/docs/ui/server/upload-lifecycle) upload, or straight to the bucket. The [Events docs](/docs/events) cover the concepts and per-provider setup; this page is the reference.

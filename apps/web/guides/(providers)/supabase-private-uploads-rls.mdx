@@ -1,0 +1,377 @@
+---
+title: Private Supabase Storage uploads with working RLS policies
+description: Per-user Row Level Security policies for a private Supabase bucket, a Next.js gateway that runs every Storage call as the signed-in user, and what each caller gets back.
+sidebar:
+  label: Supabase RLS uploads
+seo:
+  title: Supabase Storage RLS policies for private uploads
+related:
+  - /guides/multi-tenant-file-storage
+  - /guides/vercel-large-file-upload
+  - /guides/presigned-upload-validation
+  - /docs/adapters/supabase
+  - /docs/ui/server/authorization
+---
+
+When a Supabase upload fails with `new row violates row-level security policy`, one of two things is usually wrong. Either the request didn't carry the signed-in user's JWT, or the policies don't cover what the client actually sent. The Files SDK Supabase adapter always uploads with `upsert`, so every write needs `INSERT`, `SELECT`, and `UPDATE` policies on `storage.objects`, not only `INSERT`. Pass the request's Supabase client to `supabase({ client })` and Storage checks those policies as that user.
+
+This guide creates a private `documents` bucket with four per-user policies and mounts the Files SDK gateway in Next.js so every Storage call runs as the signed-in user. It then shows what the owner, another user, a caller with no session, and the secret key each get back. RLS is a second layer under the gateway's key prefix ([Isolate each tenant's files](/guides/multi-tenant-file-storage) covers the first). If the gateway check is ever wrong, or a browser talks to Storage directly with the publishable key, the database still refuses.
+
+## Before you start
+
+- A Supabase project with Auth set up.
+- A Next.js App Router app that signs users in with `@supabase/ssr`, including the `proxy.ts` session refresh from Supabase's [server-side auth guide](https://supabase.com/docs/guides/auth/server-side/creating-a-client).
+- Access to the SQL editor, or a migration, to create the bucket and policies.
+- Written against files-sdk 3.0, `@supabase/supabase-js` 2.117, `@supabase/ssr` 0.12, and Next.js 16.4.
+- About the evidence: the Storage-side outcomes come from Supabase's docs and the source of its [Storage server](https://github.com/supabase/storage). The Files SDK results come from running the adapter and gateway in Bun against those responses, not against a hosted project.
+
+```package-install
+files-sdk @supabase/storage-js @supabase/supabase-js @supabase/ssr
+```
+
+`@supabase/storage-js` is the adapter's peer dependency. `@supabase/supabase-js` already depends on it, but installing it directly keeps the adapter's import resolvable under strict package managers. Keep the two on the same version.
+
+## Create a private bucket
+
+Run this in the SQL editor:
+
+```sql lineNumbers
+insert into storage.buckets
+  (id, name, public, file_size_limit, allowed_mime_types)
+values
+  (
+    'documents',
+    'documents',
+    false,
+    10485760, -- 10 MiB, in bytes
+    array['application/pdf', 'image/png', 'image/jpeg']
+  );
+```
+
+`public` is `false`, so Storage serves no public URL for these objects. Every read either passes a `SELECT` policy or uses a signed URL that someone with `SELECT` access created.
+
+Supabase enforces the two limits on every upload into the bucket, whatever path it takes ([Restricting uploads](https://supabase.com/docs/guides/storage/buckets/creating-buckets#restricting-uploads)). That matters because, as [Limits and tradeoffs](#limits-and-tradeoffs) explains, Supabase's signed upload URLs bind neither a size nor a type. A bucket limit can't exceed the project's global file size limit, which is 50 MB on the Free plan ([Limits](https://supabase.com/docs/guides/storage/uploads/file-limits)).
+
+## Write the policies
+
+Storage allows only what a policy on `storage.objects` grants, and with no policies it allows no uploads at all ([Access control](https://supabase.com/docs/guides/storage/security/access-control)). These four policies scope each verb to the user's own folder: the first segment of the object's key must be the user's ID.
+
+```sql lineNumbers
+create policy "documents: read own folder"
+on storage.objects for select
+to authenticated
+using (
+  bucket_id = 'documents' and
+  (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+);
+
+create policy "documents: upload into own folder"
+on storage.objects for insert
+to authenticated
+with check (
+  bucket_id = 'documents' and
+  (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+);
+
+create policy "documents: replace in own folder"
+on storage.objects for update
+to authenticated
+using (
+  bucket_id = 'documents' and
+  (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+)
+with check (
+  bucket_id = 'documents' and
+  (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+);
+
+create policy "documents: delete in own folder"
+on storage.objects for delete
+to authenticated
+using (
+  bucket_id = 'documents' and
+  (storage.foldername(name))[1] = (select auth.jwt()->>'sub')
+);
+```
+
+What each part does:
+
+- **`storage.foldername(name)`** returns the key's folders as an array, so `[1]` is the first one. For `1f0c…/report.pdf`, that's `1f0c…` ([helper functions](https://supabase.com/docs/guides/storage/schema/helper-functions)). `auth.jwt()->>'sub'` is the signed-in user's ID. The insert check is the one Supabase's docs use for per-user folders, repeated for the other three verbs.
+- **`to authenticated`** limits each policy to requests that carry a user session. A request made with only the publishable key runs as the `anon` role, matches no policy, and is refused.
+- **`update` has two checks.** `using` decides which existing rows a user can change. `with check` decides what a row may become. Together they keep an overwrite inside the user's folder.
+
+Supabase's examples check `owner_id` instead of the folder for some verbs, and that also works. The folder check is used here because it matches the key prefix the gateway assigns, and because objects written with the secret key have no `owner_id` (see [Where the secret key still fits](#where-the-secret-key-still-fits)).
+
+### Which policy each call needs
+
+Each `Files` method becomes one or two Storage requests, and each request needs its own policies. The rows below come from the permissions listed in the `@supabase/storage-js` 2.117 method docs. Where those docs list none (object info, `listV2`, and signing an upload URL), they come from the Storage server's source:
+
+| Files SDK call | Storage request | Policies it needs on `storage.objects` |
+| --- | --- | --- |
+| `upload()` | `upload` with `x-upsert: true` | `insert`, `select`, `update` |
+| `download()` | `download`, plus an object-info read | `select` |
+| `head()`, `exists()` | object info | `select` |
+| `list()` | `listV2` | `select` |
+| `url()` | `createSignedUrl` | `select` |
+| `delete()` | `remove` | `delete`, `select` |
+| `copy()` | `copy` | `insert`, `select` |
+| `signedUploadUrl()` | `createSignedUploadUrl` with `upsert` | the same check as `upload()`, made when the URL is signed |
+
+The first row is the one that catches people. The adapter sets `upsert` on every upload so that `files.upload()` replaces an existing key, as it does on every other adapter. Supabase's guide says that to overwrite with `upsert` "you will need to additionally grant `SELECT` and `UPDATE` permissions". With an `INSERT` policy alone, replacing a key fails with the RLS error even though the key is in the user's own folder.
+
+## Run Storage calls as the signed-in user
+
+Supabase's server-side guide has you create a server client per request from the session cookie. This guide uses its Next.js version unchanged:
+
+```ts title="lib/supabase/server.ts" lineNumbers
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
+
+export async function createClient() {
+  const cookieStore = await cookies();
+
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            for (const { name, value, options } of cookiesToSet) {
+              cookieStore.set(name, value, options);
+            }
+          } catch {
+            // Called from a Server Component. The proxy refreshes sessions.
+          }
+        },
+      },
+    }
+  );
+}
+```
+
+Then mount the gateway. Its `files` option takes a function of the request, so each request gets a `Files` instance on that request's client:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError, createFiles } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+import { supabase } from "files-sdk/supabase";
+
+import { createClient } from "@/lib/supabase/server";
+
+// The verbs this app's UI calls. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "download",
+  "url",
+  "delete",
+]);
+
+const router = createFilesRouter({
+  // One Files instance per request, on the caller's Supabase client. Every
+  // Storage request then carries the signed-in user's JWT, and RLS applies.
+  files: async () =>
+    createFiles({
+      adapter: supabase({ bucket: "documents", client: await createClient() }),
+    }),
+  maxUploadSize: 10 * 1024 * 1024, // the bucket's file_size_limit
+  authorize: async ({ operation }) => {
+    const client = await createClient();
+    // getClaims() verifies the JWT; getSession() on the server doesn't.
+    const { data } = await client.auth.getClaims();
+    if (!data) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    // Must agree with the policies: the key's first folder is the user ID.
+    return { keyPrefix: `${data.claims.sub}/`, maxExpiresIn: 300 };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`FILES_API_SECRET` signs the gateway's upload tokens. Set it to the same random string on every instance, as in [Build a Next.js file uploader](/guides/nextjs-r2-file-upload).
+
+How the two layers fit together:
+
+- **The adapter uses `client.storage`.** supabase-js attaches the session's access token to every Storage request it sends. With a stub server in place of Supabase, every request the adapter made carried `Authorization: Bearer <the user's JWT>` and the publishable key as `apikey`. That included uploads, downloads, the object-info reads, signing, and deletes.
+- **`authorize` verifies the user, and the gateway scopes the keys.** Supabase's docs say to verify with `getClaims()`, because `getSession()` reads the cookie without checking it. The returned `keyPrefix` puts every key under `<user-id>/`, which is exactly what the policies require. If the two disagree, the first upload fails with an RLS error.
+- **Never construct the adapter without `client` in this route.** With no `client`, the adapter reads `SUPABASE_SERVICE_ROLE_KEY` from the environment before any other key, and that key bypasses every policy. A route that quietly picked it up would still work, but nothing in the database would be enforcing anything.
+
+## Upload and download from the page
+
+```tsx title="app/files/page.tsx" lineNumbers
+"use client";
+
+import { useFiles, useList } from "files-sdk/react";
+import type { ChangeEvent } from "react";
+
+export default function FilesPage() {
+  const files = useFiles();
+  const list = useList({ limit: 100 });
+
+  async function onSelect(event: ChangeEvent<HTMLInputElement>) {
+    const selected = [...(event.target.files ?? [])];
+    event.target.value = "";
+    await Promise.allSettled(selected.map((file) => files.upload(file)));
+    list.refetch();
+  }
+
+  return (
+    <main>
+      <input accept=".pdf,.png,.jpg" multiple onChange={onSelect} type="file" />
+      <ul>
+        {files.uploads.map((upload, index) => (
+          <li key={`${upload.name}-${index}`}>
+            {upload.name}: {upload.status}
+            {upload.error && ` (${upload.error.message})`}
+          </li>
+        ))}
+      </ul>
+      <ul>
+        {list.data?.items.map((item) => (
+          <li key={item.key}>
+            <a
+              href={`/api/files?op=download&key=${encodeURIComponent(item.key)}`}
+            >
+              {item.key}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+The session lives in cookies, and every request here goes to your own origin, so the browser sends the session along without extra code.
+
+Uploads on Supabase pass through your route. On a presign, the gateway hands out a direct-to-storage upload only when the adapter's signed upload can enforce the gateway's size limit and the file's content type. Supabase's signed upload URLs can enforce neither (`files.capabilities.signedUpload` reports `maxSize: false` and `contentType: false`). In a run with `maxUploadSize` set, a presign for a PDF and one for an untyped file both returned the gateway's own proxy target. The browser then `PUT`s the file to `/api/files`, and the gateway streams it into `files.upload()`. That `PUT` builds its own `Files` instance from the request's cookies, so the write runs under the user's policies too.
+
+## What each caller gets
+
+The table assumes the bucket holds `<owner-id>/report.pdf` and that each call names that key directly. Through the gateway, another user can't name it at all: their prefix turns it into `<their-id>/<owner-id>/report.pdf`. These are the results when that layer is missing, such as a bug in `authorize`, a script that builds its own client, or a browser calling Storage with supabase-js.
+
+| Call on `<owner-id>/report.pdf` | Owner | Another signed-in user | No session (publishable key only) | Secret key |
+| --- | --- | --- | --- | --- |
+| `upload()`, new key | Stored | `Unauthorized` | `Unauthorized` | Stored, with no `owner_id` |
+| `upload()`, existing key | Replaced | `Unauthorized` | `Unauthorized` | Replaced |
+| `download()`, `head()`, `url()` | Works | `NotFound` | `NotFound` | Works |
+| `exists()` | `true` | `false` | `false` | `true` |
+| `list({ prefix: "<owner-id>/" })` | The owner's files | `items: []` | `items: []` | The owner's files |
+| `delete()` | Deleted | Resolves, nothing deleted | Resolves, nothing deleted | Deleted |
+| `signedUploadUrl()` | Signed | `Unauthorized` | `Unauthorized` | Signed |
+
+Three behaviors explain most of that table:
+
+- **A refused write is an `Unauthorized` error.** Storage turns Postgres's RLS violation into an `AccessDenied` error with the message `new row violates row-level security policy`. The adapter maps it to `FilesError` code `Unauthorized`, and the gateway answers `401` with that message.
+- **A hidden object looks missing.** Storage looks the object up under the caller's `SELECT` policy. When the policy hides the row, the lookup finds nothing and Storage answers `Object not found`. The adapter reports `NotFound` (`404` through the gateway), so another user can't tell whether a key exists.
+- **A refused delete succeeds quietly.** Storage deletes only the rows the caller's `DELETE` policy allows and reports the rest as nothing to delete. `files.delete()` resolves, as it does for a key that never existed. Check with `head()` as the owner, not with the delete's result.
+
+The secret key column is there for contrast: it bypasses every policy. [Where the secret key still fits](#where-the-secret-key-still-fits) covers when to use it anyway.
+
+## Serve downloads through signed URLs
+
+A download link points at the gateway, and the gateway answers with a `302` to a Supabase signed URL. In a run against a stubbed Storage, `GET /api/files?op=download&key=report.pdf` redirected to `…/storage/v1/object/sign/documents/<path>?token=…&download=`. The empty `download=` parameter is how Supabase forces an attachment. Supabase can only force an attachment, so `url()` accepts `attachment` and `attachment; filename="…"` and throws `Unsupported` for `inline` or any other disposition.
+
+Signing is gated too. Before it signs, Storage looks the object up under the caller's `SELECT` policy, so a user can only sign files they could read. Once issued, the URL works for anyone who has it until it expires. The adapter's default lifetime is one hour. The gateway uses 300 seconds unless the client asks for another value, and `maxExpiresIn: 300` above caps whatever it asks for. A copied link stops working when that time runs out, not when the user loses access, so keep the lifetime short.
+
+## Upload large files from the browser
+
+Every gateway upload on Supabase passes through your server, so a host that caps request bodies caps your file size. On Vercel that's 4.5 MB ([Fix Vercel's 413 upload error](/guides/vercel-large-file-upload)). For bigger files, let the browser upload to Storage itself with the user's session:
+
+```ts title="lib/upload-direct.ts" lineNumbers
+import { createClient } from "@/lib/supabase/client";
+
+export async function uploadDirect(file: File) {
+  const supabase = createClient();
+  const { data } = await supabase.auth.getClaims();
+  if (!data) {
+    throw new Error("Sign in to upload");
+  }
+  // The first folder must be the user's ID, as the policies require.
+  const path = `${data.claims.sub}/${crypto.randomUUID()}`;
+  // No upsert: a fresh key only needs the INSERT policy. The bucket's
+  // allowed_mime_types checks the contentType.
+  const { error } = await supabase.storage
+    .from("documents")
+    .upload(path, file, { contentType: file.type });
+  if (error) {
+    throw error;
+  }
+  return path;
+}
+```
+
+`createClient` here is the browser client from the same Supabase guide (`createBrowserClient` with the publishable key). This is where RLS stops being a second layer and becomes the only one. The publishable key is public, so the policies and the bucket limits are all that stand between this code and the rest of the bucket.
+
+Supabase calls the standard upload "ideal for small files that are not larger than 6MB" and recommends [resumable uploads](https://supabase.com/docs/guides/storage/uploads/resumable-uploads) above that. Both go through the same policies. The gateway isn't involved, so its `onUploadComplete` hook doesn't run. Save the returned path to your database yourself.
+
+## Where the secret key still fits
+
+Some server code legitimately needs every file: a cleanup job, an admin screen, or a worker that generates thumbnails. Give it a separate instance in a module nothing else imports:
+
+```ts title="lib/files-admin.ts" lineNumbers
+import "server-only";
+
+import { createClient } from "@supabase/supabase-js";
+import { createFiles } from "files-sdk";
+import { supabase } from "files-sdk/supabase";
+
+// Bypasses every RLS policy. Never use this in the gateway.
+export const adminFiles = createFiles({
+  adapter: supabase({
+    bucket: "documents",
+    client: createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SECRET_KEY!,
+      { auth: { persistSession: false } }
+    ),
+  }),
+});
+```
+
+Supabase's [API keys guide](https://supabase.com/docs/guides/getting-started/api-keys) maps a secret key to the `service_role` Postgres role, which has `BYPASSRLS`, so "policies never apply to a secret key". Two consequences follow:
+
+- **Objects it writes have no owner.** Supabase sets `owner_id` from the JWT's `sub`, and a secret key has none ([Ownership](https://supabase.com/docs/guides/storage/security/ownership)). A policy that compares `owner_id` won't match those objects for anyone. The folder-based policies above still do, as long as the job writes under the right `<user-id>/` prefix.
+- **Authorization moves into your code.** Every check the policies would have made has to happen before the job calls `adminFiles`.
+
+Supabase also refuses a secret key sent from a browser: it matches on the `User-Agent` header and answers `401`. That's a backstop, not a reason to let the key near client code.
+
+## Limits and tradeoffs
+
+- **Signed upload URLs bind nothing but the key.** `signedUploadUrl()` throws `Unsupported` for `maxSize`, `contentType`, or a positive `minSize`, because Supabase's tokens can't carry them. Bucket limits are the enforcement. Supabase's docs give the URLs a fixed two-hour lifetime and the adapter ignores `expiresIn`. A self-hosted Storage server reads the lifetime from `UPLOAD_SIGNED_URL_EXPIRATION_TIME` instead, which defaults to 60 seconds in its source.
+- **No pause-and-resume uploads with a pre-built client.** The adapter's resumable driver talks to Supabase's TUS endpoint with a project URL and key, which a `client` doesn't expose. With `client`, `files.capabilities.resumable` is `false`.
+- **Bucket limit rejections arrive as `Provider` errors.** When Storage refuses an upload with its `413` (`The object exceeded the maximum allowed size`) or `415` (`mime type … is not supported`) error, the adapter reports `Provider` and the gateway answers `500`. Keep `maxUploadSize` at or below the bucket's `file_size_limit` so the gateway rejects oversized files first, with a `422`.
+- **RLS refusals are `401`, not `403`.** Storage marks them `403`, but the SDK maps both to `Unauthorized`, which the gateway sends as `401`.
+- **Anonymous sign-ins count as `authenticated`.** If you enable Supabase's [anonymous sign-ins](https://supabase.com/docs/guides/auth/auth-anonymous), those users take the `authenticated` role and match the policies above. Add `(select (auth.jwt()->>'is_anonymous')::boolean) is false` to a policy to exclude them.
+- **No byte ranges.** Supabase's `download()` has no range option, so `files.download(key, { range })` throws. Every download also reads the object's info, so both requests need `SELECT`.
+
+## Troubleshooting
+
+**`new row violates row-level security policy`** (`Unauthorized`, or `401` from the gateway). Check three things in order:
+
+1. The key's first folder equals the user's `sub`. Log the key the adapter wrote: it's `keyPrefix` plus the client's key.
+2. The `INSERT`, `SELECT`, and `UPDATE` policies all exist. The adapter always upserts.
+3. The request carries a session. Without one, the request runs as `anon` and no `to authenticated` policy applies.
+
+**The owner gets `NotFound` or an empty list for their own files.** The `SELECT` policy is missing or doesn't match the key, or the request arrived without a session. If uploads work and reads don't, it's the policy. If both fail, check that `proxy.ts` is refreshing the session.
+
+**Another user can read files they shouldn't.** Look for the secret key first. A `supabase({ bucket })` with no `client` falls back to `SUPABASE_SERVICE_ROLE_KEY`. Then check that the bucket isn't public, and that no `SELECT` policy lacks the folder condition, such as `using (true)`.
+
+**`delete()` succeeds but the file is still there.** The `DELETE` policy is missing or doesn't match. Storage needs `DELETE` and `SELECT` and skips rows the caller can't delete without raising an error.
+
+**``supabase: `maxSize` is not supported.``** Code called `files.signedUploadUrl()` with a size limit. Use bucket limits, or upload through the gateway, which proxies instead of signing.
+
+**`The object exceeded the maximum allowed size` or `mime type … is not supported` with a `500`.** The bucket's `file_size_limit` or `allowed_mime_types` refused the file. Lower `maxUploadSize` to match the bucket, and set an `accept` attribute on the file input so users can't easily pick a type the bucket rejects.
+
+**`supabase: responseContentDisposition "inline" is not supported`.** Supabase signed URLs can only force an attachment. Download the file through the gateway, or call `url()` without a disposition.

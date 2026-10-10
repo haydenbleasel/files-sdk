@@ -1,6 +1,8 @@
 ---
 title: soft-delete
 description: Turn delete into a recoverable move into a hidden trash prefix, with trashed(), restoreTrashed(), and purge() - body-transparent, works on any adapter.
+related:
+  - /guides/restore-deleted-files-s3-r2
 ---
 
 The built-in `softDelete()` plugin gives you a recycle bin. Instead of destroying an object, [`delete`](/docs/api/delete) server-side **moves** it to a hidden trash prefix; the bytes only ever leave storage when you `purge()`. Three new methods - `trashed()`, `restoreTrashed()`, and `purge()` - let you list, recover, and permanently remove what's been deleted.

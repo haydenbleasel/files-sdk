@@ -1,0 +1,342 @@
+---
+title: Firebase Storage uploads with Firebase Auth and private downloads
+description: Verify Firebase ID tokens in a Next.js route, keep each user's files under their uid, and serve downloads through short-lived signed URLs instead of permanent token links.
+sidebar:
+  label: Firebase Auth uploads
+seo:
+  title: Firebase Storage uploads with Firebase Auth
+related:
+  - /guides/gcs-signed-urls-without-service-account-key
+  - /guides/multi-tenant-file-storage
+  - /guides/presigned-upload-validation
+  - /docs/adapters/firebase-storage
+  - /docs/ui/server/authorization
+---
+
+Verify the user's Firebase ID token on your server with `verifyIdToken()`, and return the `uid` it gives you as the key prefix from the Files SDK gateway's `authorize` hook. The adapter reaches Cloud Storage through the Firebase Admin SDK, and Firebase's Security Rules don't apply to Admin SDK requests, so that hook alone decides who can touch which file. The browser uploads straight to the bucket under a signed `POST` policy. Downloads are V4 signed URLs that expire within minutes, not Firebase's permanent token URLs.
+
+Signing is the part that breaks in production. The `POST` policy and every signed URL need either a private key or permission to call IAM's `signBlob` method. Cloud Run and the other Google-managed runtimes don't give you a key file, so the service account your server runs as needs that permission instead.
+
+## Before you start
+
+- A Firebase project on the Blaze plan, with Authentication and Cloud Storage enabled. Firebase [requires Blaze](https://firebase.google.com/docs/storage/faqs-storage-changes-announced-sept-2024) for Cloud Storage for Firebase.
+- A Next.js app that signs users in with the Firebase web SDK.
+- A server that runs on Google Cloud (Cloud Run, Cloud Functions, or Firebase App Hosting), or anywhere you can supply service-account credentials.
+- The `gcloud` CLI, to set the bucket's CORS rule and the signing permission.
+- Written against files-sdk 3.0, `firebase-admin` 14.5, `firebase` 13.0, and Next.js 16.4. The signed URLs, the `POST` policy, and the gateway responses below came from running the adapter and gateway in Bun with a locally generated service-account key. Nothing was sent to Google.
+
+```package-install
+files-sdk firebase-admin firebase
+```
+
+## Find your bucket name
+
+Firebase changed the default bucket name in September 2024. New projects get `PROJECT_ID.firebasestorage.app`, and existing `PROJECT_ID.appspot.com` buckets keep their names ([Firebase FAQ](https://firebase.google.com/docs/storage/faqs-storage-changes-announced-sept-2024)). Don't guess which one you have. Copy it from your web app's config (`storageBucket`) or from the Storage page of the Firebase console, without the `gs://` prefix.
+
+Set it explicitly:
+
+```bash title=".env.local"
+FIREBASE_STORAGE_BUCKET=your-project.firebasestorage.app
+# Signs the presign → complete token. Generate with: openssl rand -hex 32
+FILES_API_SECRET=a-long-random-string
+# The Firebase web config for the browser
+NEXT_PUBLIC_FIREBASE_API_KEY=…
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=your-project
+```
+
+If you leave the bucket out, the adapter falls back to `<projectId>.firebasestorage.app` when it knows the project ID. That's the wrong bucket for an older project. A wrong name doesn't show up right away either: signing happens locally, so `url()` still returns a URL, and the mistake only appears when something fetches it or when an upload, read, or listing reaches Cloud Storage.
+
+## Set up the Admin SDK
+
+```ts title="lib/firebase-admin.ts" lineNumbers
+import { getApp, getApps, initializeApp } from "firebase-admin/app";
+
+// One Admin app per process. With no `credential`, firebase-admin uses
+// Application Default Credentials: the runtime's service account on Google
+// Cloud, or the file named by GOOGLE_APPLICATION_CREDENTIALS elsewhere.
+export const adminApp = getApps().length
+  ? getApp()
+  : initializeApp({ storageBucket: process.env.FIREBASE_STORAGE_BUCKET });
+```
+
+The same app verifies ID tokens and backs the storage adapter. `firebaseStorage({ app: adminApp })` reuses it instead of initializing a second one, and picks the bucket from `FIREBASE_STORAGE_BUCKET`, then from the app's `storageBucket`.
+
+## Verify the ID token in authorize
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { getAuth } from "firebase-admin/auth";
+import { FilesError, createFiles } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { firebaseStorage } from "files-sdk/firebase-storage";
+import { createRouteHandler } from "files-sdk/next";
+
+import { adminApp } from "@/lib/firebase-admin";
+
+const files = createFiles({ adapter: firebaseStorage({ app: adminApp }) });
+
+// The verbs this app's UI calls. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "url",
+  "delete",
+]);
+
+async function verifiedUid(req: Request): Promise<string> {
+  const header = req.headers.get("authorization") ?? "";
+  const idToken = header.startsWith("Bearer ")
+    ? header.slice("Bearer ".length)
+    : "";
+  try {
+    const { uid } = await getAuth(adminApp).verifyIdToken(idToken);
+    return uid;
+  } catch {
+    throw new FilesError("Unauthorized", "Sign in to manage files");
+  }
+}
+
+const router = createFilesRouter({
+  files,
+  maxUploadSize: 25 * 1024 * 1024, // 25 MiB
+  authorize: async ({ operation, req }) => {
+    const uid = await verifiedUid(req);
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    return { keyPrefix: `users/${uid}/`, maxExpiresIn: 300 };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+What the route does with each request:
+
+- **`verifyIdToken()` runs on every call.** It checks that the token is properly signed and not expired ([Verify ID tokens](https://firebase.google.com/docs/auth/admin/verify-id-tokens)). A missing header and a malformed token both fail with `auth/argument-error`, and the route turns any failure into a `401`. Pass `true` as the second argument to also check for revoked sessions and disabled users, which costs a request to the Firebase Auth backend each time.
+- **The `uid` is the prefix.** Every key the browser sends is resolved under `users/<uid>/`, and keys that try to climb out with `..` are refused. [Isolate each tenant's files](/guides/multi-tenant-file-storage) shows what each verb does when one user aims at another's files.
+- **`maxExpiresIn: 300` caps every signature** the gateway creates for this user: upload policies, download redirects, and `url()` results.
+
+## Send the token from the browser
+
+The gateway client takes a `headers` function and calls it before every request, so each call carries a fresh ID token:
+
+```ts title="lib/firebase.ts" lineNumbers
+import { getApp, getApps, initializeApp } from "firebase/app";
+import { getAuth } from "firebase/auth";
+
+const app = getApps().length
+  ? getApp()
+  : initializeApp({
+      apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+      authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+      projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+    });
+
+export const auth = getAuth(app);
+```
+
+```tsx title="app/files/file-manager.tsx" lineNumbers
+"use client";
+
+import { onAuthStateChanged, type User } from "firebase/auth";
+import { useFiles, useList } from "files-sdk/react";
+import { type ChangeEvent, useEffect, useState } from "react";
+
+import { auth } from "@/lib/firebase";
+
+// getIdToken() returns the cached token, refreshing it when it's about to
+// expire.
+async function idTokenHeader(): Promise<HeadersInit> {
+  const token = await auth.currentUser?.getIdToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export function FileManager() {
+  const [user, setUser] = useState<User | null>(auth.currentUser);
+  useEffect(() => onAuthStateChanged(auth, setUser), []);
+
+  const files = useFiles({ headers: idTokenHeader });
+  // Wait for Firebase to restore the session before the first listing.
+  const list = useList(
+    { limit: 100 },
+    { enabled: user !== null, headers: idTokenHeader }
+  );
+
+  async function onSelect(event: ChangeEvent<HTMLInputElement>) {
+    const selected = [...(event.target.files ?? [])];
+    event.target.value = "";
+    await Promise.allSettled(selected.map((file) => files.upload(file)));
+    list.refetch();
+  }
+
+  async function open(key: string) {
+    // A plain link can't carry the Authorization header, so ask the gateway
+    // for a short-lived signed URL and navigate to it.
+    window.location.assign(await files.url(key, { expiresIn: 60 }));
+  }
+
+  if (!user) {
+    return <p>Sign in to see your files.</p>;
+  }
+
+  return (
+    <main>
+      <input multiple onChange={onSelect} type="file" />
+      <ul>
+        {files.uploads.map((upload, index) => (
+          <li key={`${upload.name}-${index}`}>
+            {upload.name}: {upload.status}
+            {upload.error && ` (${upload.error.message})`}
+          </li>
+        ))}
+      </ul>
+      <ul>
+        {list.data?.items.map((item) => (
+          <li key={item.key}>
+            <button onClick={() => open(item.key)} type="button">
+              {item.key}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+Two details matter here:
+
+- **Downloads are a button, not a link.** An `<a href="/api/files?op=download…">` is a plain navigation. It sends cookies but no `Authorization` header, so the gateway answers `401`. `files.url()` is a `POST` that carries the header and returns a signed URL, which the page then opens.
+- **The token goes to your gateway, not to Cloud Storage.** The client adds `headers` to its presign, complete, list, and URL requests. The upload itself goes to the target the presign returned, with only the fields that target needs.
+
+## Let the browser POST to the bucket
+
+With `maxUploadSize` set, a presign returns a V4 `POST` policy, and the browser sends the file to `https://storage.googleapis.com/<bucket>/` directly. For a 1,234-byte PDF, the gateway returned a key of `<uuid>.pdf` and a policy whose first five conditions were:
+
+```json lineNumbers
+[
+  ["content-length-range", 0, 26214400],
+  ["eq", "$Content-Type", "application/pdf"],
+  { "content-type": "application/pdf" },
+  { "bucket": "your-project.firebasestorage.app" },
+  { "key": "users/<uid>/<uuid>.pdf" }
+]
+```
+
+The rest bind the signing date, credential, and algorithm. Cloud Storage checks each condition when the form arrives: the size range, the content type the browser declared, the exact key under the user's prefix, and the policy's expiry, five minutes after signing. The browser sees the key without the prefix, because the gateway strips it from everything it returns. After the upload, the client calls complete, and the gateway `head`s the object. It deletes anything larger than `maxUploadSize` and reports an error.
+
+The form is cross-origin, so the bucket needs a CORS rule ([Cloud Storage CORS](https://docs.cloud.google.com/storage/docs/using-cors)):
+
+```json title="cors.json" lineNumbers
+[
+  {
+    "origin": ["http://localhost:3000", "https://app.example.com"],
+    "method": ["POST"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+```bash
+gcloud storage buckets update gs://your-project.firebasestorage.app --cors-file=cors.json
+```
+
+The client sends the upload with `XMLHttpRequest` so it can report progress, and that triggers a preflight request, which this rule answers. File bytes never pass through your server, so a host's request-size limit doesn't apply to them.
+
+## Downloads are signed URLs, not token URLs
+
+`files.url()` on this adapter always returns a V4 signed URL, unless you configure a `publicBaseUrl`. Through the gateway, a download of `report.pdf` redirected to:
+
+```text
+https://storage.googleapis.com/your-project.firebasestorage.app/users/<uid>/report.pdf
+  ?X-Goog-Algorithm=GOOG4-RSA-SHA256
+  &X-Goog-Credential=<service-account-email>/…
+  &X-Goog-Expires=300
+  &response-content-disposition=attachment
+  &X-Goog-Signature=…
+```
+
+A `url` request that asked for 3600 seconds got `X-Goog-Expires=300`, because `authorize` capped it. The gateway also asks for `Content-Disposition: attachment`, which the URL binds into its signature.
+
+Firebase has a second kind of link, the download URL that the web SDK's `getDownloadURL()` returns. They behave differently:
+
+|  | V4 signed URL (what the adapter returns) | Firebase download URL |
+| --- | --- | --- |
+| Host | `storage.googleapis.com` | `firebasestorage.googleapis.com` |
+| Lifetime | Fixed when signed, at most 7 days | Doesn't expire |
+| What makes it work | A signature from the service account | A download token stored on the object |
+| Forced download | Yes, signed into the URL | Not through the adapter |
+| Created by the adapter | Yes | No |
+
+Firebase's Admin docs say of the download URL: "Anyone with this URL can permanently access the file." That's wrong for private files, which is why the adapter doesn't create one. Objects the adapter uploads carry no download token, so `getDownloadURL()` from `firebase-admin/storage` fails on them with `No download token available. Please create one in the Firebase Console.`
+
+A signed URL is a bearer link too, but only for its lifetime. Google's docs: "Anyone in possession of the signed URL can use it while it's active, regardless of whether they have a valid account." The 60 seconds the page asks for is plenty for a browser that opens the URL immediately.
+
+## Sign without a key file
+
+`@google-cloud/storage`, which `firebase-admin` uses, asks `google-auth-library` for each signature. When the credentials include a private key, it signs locally. When they don't, as with the attached service account on Cloud Run, it sends the bytes to the IAM Credentials API's `signBlob` method as that service account. That call needs two things ([Create signatures](https://docs.cloud.google.com/storage/docs/authentication/creating-signatures)):
+
+- The `iam.serviceAccounts.signBlob` permission on the signing service account, which `roles/iam.serviceAccountTokenCreator` includes.
+- The IAM Service Account Credentials API enabled in the project.
+
+```bash
+SA=your-runtime-sa@your-project.iam.gserviceaccount.com
+
+gcloud services enable iamcredentials.googleapis.com
+gcloud iam service-accounts add-iam-policy-binding "$SA" \
+  --member="serviceAccount:$SA" \
+  --role="roles/iam.serviceAccountTokenCreator"
+```
+
+The same account also needs permission for the object operations the URL performs: a signed URL can do no more than its signer. Google notes that `signBlob` signs with Google-managed keys that rotate regularly, which suits short-lived URLs like these.
+
+Local development is where this usually fails. Credentials from `gcloud auth application-default login` belong to your user account and have no `client_email`, so signing fails with ``Cannot sign data without `client_email`.`` [Generate GCS signed URLs without a service-account key](/guides/gcs-signed-urls-without-service-account-key) covers impersonation for local runs and the rest of the IAM setup.
+
+## Security Rules don't protect this path
+
+Firebase's own [rules and Admin SDK tips](https://firebase.blog/posts/2019/03/firebase-security-rules-admin-sdk-tips/) put it plainly: "requests from the Firebase Admin SDK are not gated by rules," because the SDK runs as a service account with full access. Signed URLs are a Cloud Storage feature that acts with the signer's permissions: Google's docs say the signing account must have "sufficient permission to make the request that the signed URL will make." Neither path is checked against the signed-in user. Your `authorize` hook is the only access check.
+
+The rules still apply to requests from the Firebase web and mobile SDKs. If your app never reads or writes Storage from the browser with the Firebase SDK, close that door so nothing can go around the gateway:
+
+```text title="storage.rules"
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
+```
+
+The gateway keeps working: its Admin SDK calls aren't gated by rules, and its signed URLs act as the service account.
+
+## Limits and tradeoffs
+
+- **The prefix is an application boundary.** To Cloud Storage, `users/<uid>/` is part of a string. Anything holding the service account's credentials can read every user's files, and a signed URL works for whoever has it until it expires.
+- **V4 signatures last at most 7 days.** The adapter refuses a longer `expiresIn` before signing, with `Invalid`: `firebase-storage: signed URLs must expire within 604800 seconds (7 days), the V4 signing limit`. The gateway clamps its own expiries to that limit.
+- **The policy checks the declared type, not the bytes.** Cloud Storage requires the `Content-Type` the browser declared, but a file of HTML labeled `application/pdf` still passes. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) covers checking the actual bytes.
+- **Empty files pass.** The gateway signs the policy with a minimum of 0 bytes. Check `file.size` in the browser if empty uploads are useless to you.
+- **ID tokens stay valid until they expire.** Without `checkRevoked`, a token issued before you disable a user or revoke their sessions keeps working until its expiry.
+
+## Troubleshooting
+
+**`401` with `Sign in to manage files` while the user is signed in.** The route turns every `verifyIdToken()` failure into this response. Log the caught error. `Must initialize app with a cert credential or set your Firebase project ID as the GOOGLE_CLOUD_PROJECT environment variable to call verifyIdToken().` means the Admin app can't find its project ID; set `GOOGLE_CLOUD_PROJECT`. An `aud` or `iss` mismatch means the browser and the server are configured for different Firebase projects.
+
+**The listing fails once on page load, then works.** The first request went out before Firebase restored the session. Keep `enabled: user !== null` on `useList`.
+
+**``Cannot sign data without `client_email`.``** The server is using user credentials, typically from `gcloud auth application-default login`. Use a service account, or impersonate one, as described in [Sign without a key file](#sign-without-a-key-file).
+
+**Uploads and downloads fail with a `500`, code `Provider`, mentioning `iam.serviceAccounts.signBlob`.** IAM refused the signing call. `@google-cloud/storage` rethrows that refusal as a plain `SigningError`, so the SDK reports `Provider` and the gateway answers `500` with IAM's message, on presigns and download redirects alike. Grant the role shown above and make sure the IAM Service Account Credentials API is enabled.
+
+**`network error during upload` and a CORS error in the console.** The bucket has no CORS rule for the page's origin, or the rule doesn't allow `POST`. Apply `cors.json` and check the origin matches exactly, scheme and port included.
+
+**`upload failed (403)` or `upload failed (400)` on the direct upload.** Cloud Storage rejected the form. The policy expired, the server clock is off, a field such as `Content-Type` was changed after signing, or the file is outside the size range. The XML error in the response names the condition.
+
+**`firebase-storage: signed URLs must expire within 604800 seconds (7 days)…`** Something asked for a longer URL, or `defaultUrlExpiresIn` is set above 7 days.
+
+**`No download token available. Please create one in the Firebase Console.`** Code called `getDownloadURL()` on an object the adapter uploaded. Use `files.url()` instead.
+
+**Every upload, read, and listing fails, but `url()` succeeds.** The bucket name is wrong. Signing never contacts the bucket, so only real requests fail. Copy the name from the console as described in [Find your bucket name](#find-your-bucket-name).

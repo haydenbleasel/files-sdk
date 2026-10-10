@@ -1,6 +1,8 @@
 ---
 title: Testing locally
 description: The memory adapter emits storage events natively, so you can run event handlers in tests and local development without a provider.
+related:
+  - /guides/test-s3-code-without-aws
 ---
 
 The [memory adapter](/docs/adapters/memory) reports every change it makes, the way a bucket would. With the `events()` plugin installed, handlers run with no provider setup at all:

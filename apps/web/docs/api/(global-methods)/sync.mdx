@@ -1,6 +1,9 @@
 ---
 title: sync
 description: Mirror one Files instance onto another - skip unchanged keys, prune extraneous ones, and dry-run the plan first. The incremental sibling of transfer.
+related:
+  - /guides/storage-failover-recovery-drill
+  - /guides/sftp-to-s3-import-pipeline
 ---
 
 [`transfer`](/docs/api/transfer) is a one-shot copy: it streams every object across, every time. `sync(source, dest, options?)` is the mirror. It reconciles the destination against the source — uploading only what's new or changed, optionally pruning what the source no longer has, and able to preview the whole plan before touching anything. It's what backup and incremental-migration workflows actually reach for.

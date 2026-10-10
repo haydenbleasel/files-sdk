@@ -3,6 +3,8 @@ title: Authorization
 description: The gateway is deny-by-default. One authorize hook decides who can do what, and scopes every key - the single most important thing to get right.
 related:
   - /guides/multi-tenant-file-storage
+  - /guides/supabase-private-uploads-rls
+  - /guides/firebase-storage-authenticated-uploads
 ---
 
 Exposing `download`, `list`, `delete`, and `move` to the browser is a large attack surface. The gateway is **deny-by-default**: with no `authorize` and no `operations`, only `capabilities` answers and every other verb returns `403`.

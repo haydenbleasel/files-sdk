@@ -1,6 +1,8 @@
 ---
 title: Claude Agent SDK
 description: Expose a configured Files instance to the Claude Agent SDK as an in-process MCP server with allowedTools and canUseTool wired up.
+related:
+  - /guides/s3-r2-mcp-server
 ---
 
 The `files-sdk/claude` subpath exposes a configured `Files` instance to the [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk/overview) (`@anthropic-ai/claude-agent-sdk`, the renamed Claude Code SDK). The Agent SDK consumes tools as an in-process MCP server plus an `allowedTools` allow-list and a `canUseTool` approval callback, so `createClaudeFileTools` returns a bundle of all three - pass them straight into `query()`.

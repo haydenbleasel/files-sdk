@@ -1,0 +1,458 @@
+---
+title: Test S3 storage code without AWS
+description: Run an Express upload route and its storage calls against an in-memory adapter in Vitest, inject S3 failures and retries, and know which S3 behaviors still need MinIO or aws-sdk-client-mock.
+sidebar:
+  label: Test without AWS
+seo:
+  title: Test S3 code without AWS credentials
+related:
+  - /guides/express-s3-file-upload
+  - /docs/adapters/memory
+  - /docs/capabilities
+  - /docs/retries
+  - /docs/events/testing
+---
+
+Make your code take a `Files` instance instead of building one, and in tests build that instance with `memory()`. Your route still runs through the real `Files` wrapper: its key handling, capability checks, plugins, error codes, and retries are the same code that runs in production. Only the last step, the adapter writing bytes, lands in a `Map` instead of S3. No credentials, no network, and no mock of S3's request shapes to keep in sync, because `memory()` implements the same `Adapter` interface as `s3()`.
+
+Memory doesn't behave like S3 everywhere, and the differences are predictable: it can't sign URLs, so anything that depends on presigning takes a different path. Cover those with a few integration tests against a local MinIO server, and use `aws-sdk-client-mock` when you need S3 itself to fail in a specific way.
+
+## Before you start
+
+- Code that uses files-sdk with the instance passed in. This guide tests the Express app from [Upload files to S3 from Express](/guides/express-s3-file-upload): `createApp(files, { maxImportSize })`, a gateway at `/api/files`, an `/imports/:name` route, and a `getSession` helper in `src/session.ts`.
+- Written against files-sdk 3.0, Vitest 5.0, supertest 7.3, Express 5.2, `aws-sdk-client-mock` 4.1, and Node.js 24. Every test below passed in that setup, and the MinIO test ran against `RELEASE.2025-09-06T17-38-46Z`.
+
+```bash
+npm install --save-dev vitest supertest @types/supertest aws-sdk-client-mock
+```
+
+## Pass the instance in
+
+The pattern this guide depends on is one line in the app: `createApp` receives `files` rather than importing it.
+
+```ts title="src/server.ts" lineNumbers
+import { createApp } from "./app.js";
+import { files } from "./files.js"; // createFiles({ adapter: s3({ … }) })
+
+createApp(files).listen(3000);
+```
+
+In a test, the same function gets a memory-backed instance:
+
+```ts lineNumbers
+import { createFiles } from "files-sdk";
+import { memory } from "files-sdk/memory";
+
+const files = createFiles({ adapter: memory() });
+const app = createApp(files);
+```
+
+Nothing else about the app changes. If your code imports a module-level `files` today, you could `vi.mock` that module to export a memory-backed instance instead. Passing the instance in is less fragile: each test builds its own empty store, or a failing one, without a module mock.
+
+The gateway in that app signs upload tokens with `FILES_API_SECRET`, and without it each router logs a warning. Set it for the test run:
+
+```ts title="vitest.config.ts" lineNumbers
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    env: { FILES_API_SECRET: "test-secret" },
+  },
+});
+```
+
+## Test a route end to end
+
+The app reads the signed-in user through `getSession`. Replace that module with one that trusts a header, so each test picks its user. It's the only module this guide mocks:
+
+```ts title="test/app.test.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { memory } from "files-sdk/memory";
+import request from "supertest";
+import { describe, expect, it, vi } from "vitest";
+
+import { createApp } from "../src/app.js";
+
+// Sign tests in as whoever the x-test-user header names.
+vi.mock("../src/session.js", () => ({
+  getSession: (req: { get: (name: string) => string | undefined }) => {
+    const userId = req.get("x-test-user");
+    return Promise.resolve(userId ? { userId } : null);
+  },
+}));
+
+describe("imports", () => {
+  it("streams the request body into storage", async () => {
+    const files = createFiles({ adapter: memory() });
+    const res = await request(createApp(files))
+      .put("/imports/report.csv")
+      .set("x-test-user", "u1")
+      .set("content-type", "text/csv")
+      .send("id,total\n1,42\n");
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      contentType: "text/csv",
+      key: "imports/u1/report.csv",
+      size: 14,
+    });
+    const stored = await files.download("imports/u1/report.csv");
+    expect(await stored.text()).toBe("id,total\n1,42\n");
+  });
+
+  it("refuses an oversize body before storing anything", async () => {
+    const files = createFiles({ adapter: memory() });
+    const app = createApp(files, { maxImportSize: 1024 });
+    const res = await request(app)
+      .put("/imports/huge.bin")
+      .set("x-test-user", "u1")
+      .set("content-type", "application/octet-stream")
+      .send(Buffer.alloc(2048));
+
+    expect(res.status).toBe(413);
+    expect(await files.exists("imports/u1/huge.bin")).toBe(false);
+  });
+});
+```
+
+Assert on what landed in storage, through the same `files` instance: `download`, `head`, `exists`, `list`. That checks the real effect of the request, not just the status code. When a test needs to look underneath the wrapper, the adapter's `raw` property is the backing `Map` (`adapter.raw.size`, `adapter.raw.has(key)`).
+
+The import tests each build their own `memory()`, so no test sees another's files. The limit is an argument to `createApp` for the same reason: a test of the 413 path shouldn't have to allocate 50 MiB. With a 1,024-byte limit, a 2 KiB body is refused from `Content-Length` before the route reads it. To cover the other branch, where the counter trips partway through a body with no `Content-Length`, start the app with `listen(0)` and send a `ReadableStream` with `fetch` and `duplex: "half"`. That test passed too, with nothing stored afterwards.
+
+## Test the gateway through the real client
+
+For the `/api/files` gateway, don't hand-write its wire protocol in supertest calls. Start the app on a free port and drive it with `createFilesClient`, the same client the browser uses:
+
+```ts title="test/app.test.ts" lineNumbers
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { createFilesClient } from "files-sdk/client";
+import { afterEach, beforeEach } from "vitest";
+
+describe("the files gateway", () => {
+  let server: Server;
+  let endpoint: string;
+  const files = createFiles({ adapter: memory() });
+
+  beforeEach(async () => {
+    server = createApp(files).listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    const { port } = server.address() as AddressInfo;
+    endpoint = `http://127.0.0.1:${port}/api/files`;
+  });
+
+  afterEach(async () => {
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  const clientFor = (user?: string) =>
+    createFilesClient({
+      endpoint,
+      headers: user ? { "x-test-user": user } : {},
+    });
+
+  it("scopes each user's files to their own prefix", async () => {
+    await clientFor("u1").upload("notes.txt", "hello", {
+      contentType: "text/plain",
+    });
+
+    expect(await files.exists("users/u1/notes.txt")).toBe(true);
+    const theirs = await clientFor("u2").list();
+    expect(theirs.items).toHaveLength(0);
+    await expect(clientFor("u2").download("notes.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
+  it("completes a keyless upload", async () => {
+    const stored = await clientFor("u1").upload(
+      new File(["%PDF-1.7"], "invoice.pdf", { type: "application/pdf" })
+    );
+
+    const info = await files.head(`users/u1/${stored.key}`);
+    expect(info).toMatchObject({ contentType: "application/pdf", size: 8 });
+  });
+
+  it("refuses verbs the app doesn't allow", async () => {
+    await expect(
+      clientFor("u1").copy("notes.txt", "copy.txt")
+    ).rejects.toMatchObject({ code: "ReadOnly" });
+  });
+
+  it("refuses requests without a session", async () => {
+    await expect(clientFor().list()).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+});
+```
+
+The client rebuilds a `FilesError` from the gateway's error response, so the assertions read like SDK code: `code: "NotFound"`, `"ReadOnly"`, `"Unauthorized"`. Check `code` rather than `message`. The messages come from the adapter, and memory's (`memory: not found: missing.txt`) and S3's (`The specified key does not exist.`) differ.
+
+The keyless upload test passes against memory, but it doesn't take the path production takes. See [Where memory differs from S3](#where-memory-differs-from-s3).
+
+## Simulate storage failures
+
+An adapter is a plain object of methods, so a failing one is the memory adapter with one method replaced:
+
+```ts title="test/app.test.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import type { Adapter } from "files-sdk";
+
+it("answers 502 when storage fails", async () => {
+  const base = memory();
+  const broken: Adapter = {
+    ...base,
+    upload: () =>
+      Promise.reject(new FilesError("Provider", "simulated S3 outage")),
+  };
+  const files = createFiles({ adapter: broken });
+  vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+  const res = await request(createApp(files))
+    .put("/imports/report.csv")
+    .set("x-test-user", "u1")
+    .send("id,total\n");
+
+  expect(res.status).toBe(502);
+  expect(base.raw.size).toBe(0);
+});
+```
+
+Throw the error the real adapter would: a `FilesError` with the code your code branches on. `Provider` is what S3 throttling, 5xx responses, and network failures map to. `NotFound`, `Unauthorized` (a 403 such as `AccessDenied`), and `Conflict` are the other provider codes. [Errors](/docs/api/errors) lists them.
+
+Because the failure happens below the `Files` wrapper, the wrapper's retry policy applies to it, exactly as in production. That makes retry behavior testable too:
+
+```ts title="test/retries.test.ts" lineNumbers
+import { FilesError, createFiles } from "files-sdk";
+import type { Adapter } from "files-sdk";
+import { memory } from "files-sdk/memory";
+import { expect, it } from "vitest";
+
+// Fail the first `failures` uploads with a retryable provider error.
+const flaky = (adapter: Adapter, failures: number) => {
+  let remaining = failures;
+  let calls = 0;
+  const wrapped: Adapter = {
+    ...adapter,
+    upload: (key, body, options) => {
+      calls += 1;
+      if (remaining > 0) {
+        remaining -= 1;
+        return Promise.reject(new FilesError("Provider", "simulated 503"));
+      }
+      return adapter.upload(key, body, options);
+    },
+  };
+  return { adapter: wrapped, calls: () => calls };
+};
+
+it("retries a buffered upload after a provider error", async () => {
+  const storage = flaky(memory(), 1);
+  const files = createFiles({ adapter: storage.adapter, retries: 2 });
+
+  await files.upload("report.csv", "id,total\n");
+
+  expect(storage.calls()).toBe(2);
+});
+
+it("doesn't retry a streamed upload", async () => {
+  const storage = flaky(memory(), 1);
+  const files = createFiles({ adapter: storage.adapter, retries: 2 });
+  const body = new Blob(["id,total\n"]).stream();
+
+  await expect(files.upload("report.csv", body)).rejects.toMatchObject({
+    code: "Provider",
+  });
+  expect(storage.calls()).toBe(1);
+});
+```
+
+The second test documents a rule that's easy to forget: a `ReadableStream` can't be replayed, so the SDK never retries a streamed upload ([Retries](/docs/retries)). The Express app's import route streams, so its callers have to retry themselves.
+
+You can also inject failures with a [plugin](/docs/plugins/api) that throws from a `handlers({ upload })` hook. That works on any adapter, but plugins run outside the retry loop: in a run with `retries: 2`, a `Provider` error thrown from a plugin failed the call after one attempt. Use the adapter wrapper when the test is about retries.
+
+## Where memory differs from S3
+
+Memory reports what it can't do through `files.capabilities`, the same object production code and the gateway read. Most of the differences below follow from one of those flags:
+
+| Behavior | `memory()` | `s3()` |
+| --- | --- | --- |
+| `files.capabilities.signedUpload.supported` | `false` | `true` |
+| Gateway `upload(file)` | Proxy `PUT` through your server | Presigned `POST` straight to S3 |
+| Gateway `download` | Streamed by the gateway, `200` | `302` to a presigned URL |
+| `files.url(key)` | `memory://key`, not fetchable | A presigned HTTPS URL |
+| `files.url(key, { expiresIn })` | Throws `Unsupported` | Signed, up to 7 days |
+| `files.signedUploadUrl(key)` | An inert `memory://` placeholder | A real presigned target |
+| ETag format | Quoted: `"05e918d2"` | Bare hex; multipart adds `-<parts>` |
+| Stream bodies | Read fully into memory | Streamed through lib-storage multipart |
+| Keys over 1,024 bytes | Accepted | Rejected |
+| Conditional writes | Throw `Unsupported` | Supported on AWS S3 |
+| IAM, bucket CORS, network | None | Real |
+
+The rows to watch:
+
+- **Presigned uploads take another path.** Against memory, the gateway hands a keyless upload its own proxy `PUT`, so the test exercises the proxy route and your server receives the bytes. The S3 `POST` policy, its size limit, and the bucket's CORS rule aren't tested at all.
+- **`signedUploadUrl()` doesn't throw on memory**, even though `capabilities.signedUpload.supported` is `false`. It returns a placeholder URL so signing code stays testable, and nothing can upload to it. A test that only checks that a URL came back passes against memory and proves nothing about S3.
+- **Don't assert on ETag strings.** Compare one ETag with another from the same backend, or check that it's defined.
+- **Memory buffers streams.** A test can't show that a route stays within its memory budget, or that a 6 MiB stream became a two-part multipart upload.
+- **Key limits differ.** [S3 limits keys to 1,024 bytes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-keys.html). Memory stored a 2,000-character key that MinIO refused (`Provider`, `Your key is too long`).
+
+One check ties the two worlds together without a network call. Constructing the production adapter makes no request, so a test can pin the capabilities your app depends on:
+
+```ts title="test/capabilities.test.ts" lineNumbers
+import { expect, it } from "vitest";
+
+import { files } from "../src/files.js";
+
+// Constructing the adapter makes no network call, so this runs offline.
+it("keeps browser uploads direct and size-capped", () => {
+  expect(files.capabilities.signedUpload).toMatchObject({
+    maxSize: true,
+    supported: true,
+  });
+});
+```
+
+If someone later adds `validation({ maxSize })` to the production instance, `signedUpload` turns off and the gateway quietly routes every browser upload through the server. This test fails when that happens.
+
+## Integration tests against MinIO
+
+For what memory can't show (the `POST` policy, multipart, real error responses), run the same app against a local S3-compatible server. MinIO runs as a single binary or container. Keep these tests in their own file and skip them when no server is configured:
+
+```ts title="test/app.integration.test.ts" lineNumbers
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+
+import { CreateBucketCommand } from "@aws-sdk/client-s3";
+import { createFiles } from "files-sdk";
+import { createFilesClient } from "files-sdk/client";
+import { s3 } from "files-sdk/s3";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+import { createApp } from "../src/app.js";
+
+vi.mock("../src/session.js", () => ({
+  getSession: (req: { get: (name: string) => string | undefined }) => {
+    const userId = req.get("x-test-user");
+    return Promise.resolve(userId ? { userId } : null);
+  },
+}));
+
+const endpoint = process.env.S3_TEST_ENDPOINT;
+
+describe.skipIf(!endpoint)("against a local S3 server", () => {
+  const files = createFiles({
+    adapter: s3({
+      bucket: `test-${Date.now()}`,
+      region: "us-east-1",
+      endpoint,
+      forcePathStyle: true,
+      credentials: {
+        accessKeyId: process.env.S3_TEST_ACCESS_KEY ?? "minioadmin",
+        secretAccessKey: process.env.S3_TEST_SECRET_KEY ?? "minioadmin",
+      },
+    }),
+  });
+  let server: Server;
+  let api: string;
+
+  beforeAll(async () => {
+    await files.raw.send(
+      new CreateBucketCommand({ Bucket: files.adapter.bucket })
+    );
+    server = createApp(files).listen(0);
+    await new Promise((resolve) => server.once("listening", resolve));
+    api = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/files`;
+  });
+
+  afterAll(() => {
+    server.close();
+  });
+
+  it("uploads through a presigned POST and completes", async () => {
+    const client = createFilesClient({
+      endpoint: api,
+      headers: { "x-test-user": "u1" },
+    });
+    const stored = await client.upload(
+      new File(["hello"], "hello.txt", { type: "text/plain" })
+    );
+    const info = await files.head(`users/u1/${stored.key}`);
+    expect(info.size).toBe(5);
+  });
+});
+```
+
+```bash
+S3_TEST_ENDPOINT=http://127.0.0.1:9000 npx vitest run
+```
+
+This is the same keyless upload as the memory test, but here the gateway signs a real `POST` policy, the client posts the form to MinIO, and `complete` `head`s a real object. `files.raw` is the adapter's `S3Client`, which creates a fresh bucket per run. Without `S3_TEST_ENDPOINT`, Vitest reports the test as skipped, so the default run stays offline.
+
+MinIO implements the S3 API, but it isn't S3: permissions and CORS configuration work differently, and Files SDK only claims [conditional writes](/docs/conditional-operations) on AWS's own endpoints, so `files.capabilities.conditional` is all `false` against MinIO by default. Run those few checks against a test bucket in a real account, in CI or before a release.
+
+## Make S3 fail on cue with aws-sdk-client-mock
+
+Some failures are hard to produce on demand from any server: throttling, an expired credential, an `AccessDenied` on one call. `aws-sdk-client-mock` replaces the S3 client's `send`, so the `s3()` adapter's real error mapping and the wrapper's retries run against the response you script:
+
+```ts title="test/s3-errors.test.ts" lineNumbers
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { mockClient } from "aws-sdk-client-mock";
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { afterEach, expect, it } from "vitest";
+
+const s3Mock = mockClient(S3Client);
+
+afterEach(() => {
+  s3Mock.reset();
+});
+
+const s3Error = (name: string, status: number) =>
+  Object.assign(new Error(name), {
+    name,
+    $metadata: { httpStatusCode: status },
+  });
+
+it("retries S3 throttling and then succeeds", async () => {
+  s3Mock
+    .on(PutObjectCommand)
+    .rejectsOnce(s3Error("SlowDown", 503))
+    .resolves({ ETag: '"9a0364b9e99bb480dd25e1f0284c8555"' });
+
+  const files = createFiles({
+    adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+    retries: 2,
+  });
+  const stored = await files.upload("report.csv", "id,total\n", {
+    contentType: "text/csv",
+  });
+
+  expect(stored.etag).toBe("9a0364b9e99bb480dd25e1f0284c8555");
+  expect(s3Mock.commandCalls(PutObjectCommand)).toHaveLength(2);
+});
+
+it("maps AccessDenied to Unauthorized", async () => {
+  s3Mock.on(PutObjectCommand).rejects(s3Error("AccessDenied", 403));
+
+  const files = createFiles({
+    adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+  });
+
+  await expect(files.upload("report.csv", "id,total\n")).rejects.toMatchObject({
+    code: "Unauthorized",
+  });
+});
+```
+
+Reach for it when the test is about S3's own answers: a specific error code, the exact command input (`commandCalls(PutObjectCommand)[0].args[0].input` shows the `Bucket`, `Key`, and `ContentType` the adapter sent), or code of yours that calls `@aws-sdk/client-s3` directly. For everything else, memory is less work and doesn't tie the test to how the adapter talks to S3, which can change between releases without changing what `files.upload()` does.
+
+## Troubleshooting
+
+**`aws-sdk-client-mock` doesn't intercept, and the test fails with `The AWS Access Key Id you provided does not exist in our records`.** The request went to real AWS. `mockClient(S3Client)` patches the `S3Client` class you import, and the adapter constructed a different copy. This happens when two copies of `@aws-sdk/client-s3` are installed. With `files-sdk` linked from a local checkout, for example, the adapter resolved the SDK from the checkout's `node_modules`, not the app's. Run `npm ls @aws-sdk/client-s3` and make sure the adapter and the test import the same copy.
+
+**`files-sdk/api: no secret and no FILES_API_SECRET` in the test output.** Each `createFilesRouter` call without a secret warns once. Set `FILES_API_SECRET` in `test.env`, as in the config above.
+
+**Code that works on S3 throws `Unsupported` against memory.** It asked for something memory can't do: an expiring `url()`, a conditional write, or anything else `files.capabilities` reports as unsupported. Branch on the capability in the code under test, or move that case to the MinIO or mocked-client tests.

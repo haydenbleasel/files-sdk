@@ -1,6 +1,8 @@
 ---
 title: Errors
 description: Every method throws a single FilesError with a normalized code, the original provider error on cause, and an aborted flag for timeouts and cancellations.
+related:
+  - /guides/s3-conditional-upload-conflicts
 ---
 
 Every single-key method throws a `FilesError` on failure. It collapses the dozens of provider-specific error shapes into one type with a small `code` enum, while keeping the original error on `cause` so nothing is lost.

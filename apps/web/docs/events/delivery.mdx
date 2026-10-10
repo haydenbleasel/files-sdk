@@ -1,6 +1,8 @@
 ---
 title: Delivery and idempotency
 description: Providers deliver at least once (Supabase at most once) and out of order. Write handlers that can run twice, keyed on event.id.
+related:
+  - /guides/r2-upload-events-queues
 ---
 
 Every provider files-sdk reads, except Supabase, delivers notifications **at least once**, and none of them promise order:

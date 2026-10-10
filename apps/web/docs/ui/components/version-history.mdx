@@ -1,6 +1,8 @@
 ---
 title: Version History
 description: A version timeline for one key with one-click restore - driven by useFiles and the versioning plugin; restore snapshots the current bytes first.
+related:
+  - /guides/restore-deleted-files-s3-r2
 ---
 
 Lists the saved snapshots of a key's earlier contents (newest first) and restores any of them. The current file isn't a snapshot, so it isn't listed — the top row is the previous version. Backed by the [`versioning()`](/docs/plugins/versioning) plugin, so it needs a gateway whose `Files` instance is wrapped with it and whose `authorize` allow-lists the `versions` and `restoreVersion` operations.

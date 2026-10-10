@@ -1,0 +1,383 @@
+---
+title: Upload files in Nuxt to a private Backblaze B2 bucket
+description: A Nuxt server route signs browser uploads straight to a private B2 bucket, checks each file once it lands, and serves downloads through short-lived signed URLs, behind nginx or not.
+sidebar:
+  label: Nuxt uploads
+seo:
+  title: Nuxt file uploads with Nitro, Vue, and B2
+related:
+  - /guides/nextjs-r2-file-upload
+  - /guides/presigned-upload-validation
+  - /guides/multi-tenant-file-storage
+  - /docs/ui/server/nitro
+  - /docs/ui/client/vue
+  - /docs/adapters/backblaze-b2
+---
+
+One Nuxt server route, `server/api/files.ts`, mounts the Files SDK gateway with `files-sdk/nitro`. The B2 credentials stay in server-only `runtimeConfig`. For each file, the route checks the session, mints a key under that user's prefix, and signs a short-lived `PUT` URL. The browser then sends the file straight to B2 and reports progress, and the route checks the stored object before your app counts it. A Vue component built on `useFiles` from `files-sdk/vue` shows progress per file and lets the user cancel or retry each one.
+
+Two things are specific to this stack. First, B2 doesn't support presigned `POST` uploads, so a signed URL can't cap the file size. You either check the size after the file lands or route the bytes through Nitro. Second, behind a reverse proxy such as nginx, the gateway has to see the original `Host` header and scheme. Otherwise uploads fail with `403 origin not allowed` while listing still works.
+
+## Before you start
+
+- A Backblaze B2 account with a private bucket (this guide calls it `uploads`). Create an application key under **Application Keys** that can only reach that bucket, with read and write access. The bucket's S3 endpoint looks like `s3.us-west-004.backblazeb2.com`. The middle part, `us-west-004`, is the region the adapter needs.
+- A Nuxt 4 app. Sessions here come from [nuxt-auth-utils](https://github.com/atinux/nuxt-auth-utils), and [Mount the gateway](#mount-the-gateway) shows what to change for an auth library that reads request headers.
+- Written against files-sdk 3.0, Nuxt 4.6 (Nitro 2.13, h3 1.15), Vue 3.5, and nuxt-auth-utils 0.5. The results below come from a Nuxt 4.6 production build and `nuxt dev`, with a local MinIO server standing in for B2 through the adapter's `endpoint` option. B2-specific behavior comes from Backblaze's documentation.
+
+```package-install
+files-sdk nuxt-auth-utils @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage
+```
+
+The B2 adapter wraps the S3 adapter, which imports the first three AWS packages. The S3 adapter only loads `@aws-sdk/lib-storage` when an upload streams through your server, as in [the proxied variant](#route-uploads-through-nitro-instead).
+
+## Configure the credentials
+
+Declare the values in `runtimeConfig`. Top-level keys (anything outside `public`) never reach the browser bundle:
+
+```ts title="nuxt.config.ts" lineNumbers
+export default defineNuxtConfig({
+  modules: ["nuxt-auth-utils"],
+  runtimeConfig: {
+    b2: { applicationKey: "", bucket: "", keyId: "", region: "" },
+    filesApiSecret: "",
+  },
+});
+```
+
+Nuxt overrides each key at runtime from an environment variable named after its path with a `NUXT_` prefix, so `b2.keyId` reads `NUXT_B2_KEY_ID`:
+
+```bash title=".env"
+NUXT_B2_KEY_ID=your-application-key-id
+NUXT_B2_APPLICATION_KEY=your-application-key
+NUXT_B2_BUCKET=uploads
+NUXT_B2_REGION=us-west-004
+# Signs the presign → complete token. Generate with: openssl rand -hex 32
+NUXT_FILES_API_SECRET=a-long-random-string
+# nuxt-auth-utils seals its session cookie with this (32+ characters).
+NUXT_SESSION_PASSWORD=another-long-random-string
+```
+
+`nuxt dev` reads `.env`, but a production build doesn't. Set the same variables in the environment that runs `node .output/server/index.mjs`. Use the same `NUXT_FILES_API_SECRET` on every instance, because the token minted at presign has to verify at complete, which may land on another process.
+
+## Create the storage instance
+
+```ts title="server/utils/files.ts" lineNumbers
+import { createFiles, type Files } from "files-sdk";
+import { backblazeB2 } from "files-sdk/backblaze-b2";
+
+let files: Files | undefined;
+
+// Created on first use, so it reads the runtime values of the NUXT_B2_*
+// variables rather than whatever was set at build time.
+export function getFiles(): Files {
+  if (!files) {
+    const { b2 } = useRuntimeConfig();
+    files = createFiles({
+      adapter: backblazeB2({
+        accessKeyId: b2.keyId,
+        bucket: b2.bucket,
+        region: b2.region,
+        secretAccessKey: b2.applicationKey,
+      }),
+    });
+  }
+  return files;
+}
+```
+
+Nitro auto-imports everything exported from `server/utils`, so `getFiles()` is available in every server route without an import. The adapter derives the endpoint `https://s3.<region>.backblazeb2.com` from `region`. If you leave the two credentials out, it falls back to `B2_APPLICATION_KEY_ID` and `B2_APPLICATION_KEY`. Passing them explicitly keeps all configuration in `runtimeConfig`.
+
+## Mount the gateway
+
+The type in `shared/types/auth.d.ts` gives nuxt-auth-utils' `User` an `id`:
+
+```ts title="shared/types/auth.d.ts" lineNumbers
+declare module "#auth-utils" {
+  interface User {
+    id: string;
+  }
+}
+
+export {};
+```
+
+Then the route. A file in `server/api` with no method suffix handles every method, which is what the gateway expects: `GET` serves downloads, `POST` the JSON operations, and `PUT` the upload bytes.
+
+```ts title="server/api/files.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import {
+  createFilesRouter,
+  type FilesOperation,
+  UploadRejectedError,
+} from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/nitro";
+
+// The verbs the UI calls. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "download",
+  "delete",
+]);
+
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MiB
+
+export default defineEventHandler(async (event) => {
+  // nuxt-auth-utils reads the session from the h3 event, which `authorize`
+  // never sees, so resolve it here and close over it.
+  const { user } = await getUserSession(event);
+  const { filesApiSecret } = useRuntimeConfig(event);
+
+  const router = createFilesRouter({
+    files: getFiles(),
+    secret: filesApiSecret,
+    authorize: ({ operation, key }) => {
+      if (!user) {
+        throw new FilesError("Unauthorized", "Sign in to manage files");
+      }
+      if (!ALLOWED.has(operation)) {
+        throw new FilesError("ReadOnly", `${operation} is not allowed`);
+      }
+      // A keyed upload(key, file) streams through Nitro. This app only
+      // uses upload(file), whose keys the server mints.
+      if (operation === "upload" && key !== undefined) {
+        throw new FilesError("ReadOnly", "Upload files with upload(file)");
+      }
+      return { keyPrefix: `users/${user.id}/`, maxExpiresIn: 300 };
+    },
+    onUploadComplete: ({ file }) => {
+      // B2 can't cap a presigned PUT, so check the size once it has landed.
+      // Throwing deletes the object and fails the browser's upload().
+      if (file.size > MAX_UPLOAD_BYTES) {
+        throw new UploadRejectedError("Files are limited to 50 MiB");
+      }
+    },
+  });
+
+  return createRouteHandler(router)(event);
+});
+```
+
+What the route does with each request:
+
+- **The router is built per request.** `authorize` receives the Web `Request`, not the h3 event. On Nuxt 4 (Nitro 2, h3 1) the binding builds that `Request` from `event.node.req`, so nothing on the event, like `event.context` or a session helper's cache, reaches it. Resolving the session first and closing over `user` is the simplest bridge, and building the router costs a few object allocations. If your auth library reads request headers instead, such as Better Auth's `auth.api.getSession({ headers: req.headers })`, create the router once at module scope and call it from `authorize({ req })`.
+- **The secret must be stable.** Without `secret` (or `FILES_API_SECRET`), each router falls back to a random secret and logs `no secret and no FILES_API_SECRET`. With a router per request, that happens on every request, and every upload fails at complete with `upload token signature`.
+- **`authorize` runs before every operation.** A thrown `FilesError` becomes the response: `Unauthorized` is a `401`, and `ReadOnly` is a `403`. Any other error becomes a generic `500`, so its message never reaches the browser. [Authorization](/docs/ui/server/authorization) covers the rest of what `authorize` can return.
+- **The prefix isolates users.** Every key the browser sends or receives is relative to `users/<id>/`, and the gateway refuses keys that try to climb out of it. [Isolate each tenant's files](/guides/multi-tenant-file-storage) shows what it returns when one user reaches for another's keys.
+- **`onUploadComplete` runs once the file has landed.** For `upload(file)`, that's in the complete step, after the gateway `head`s the object in B2. [Check sizes after upload](#check-sizes-after-upload) covers what happens when it throws.
+
+## Let the browser PUT to B2
+
+The browser sends each file to `<bucket>.s3.<region>.backblazeb2.com`, a different origin from your app, so the bucket needs a CORS rule. B2 accepts the S3 `PutBucketCors` format through its [S3-compatible API](https://www.backblaze.com/docs/cloud-storage-cross-origin-resource-sharing-rules):
+
+```json title="cors.json" lineNumbers
+{
+  "CORSRules": [
+    {
+      "AllowedOrigins": ["http://localhost:3000", "https://app.example.com"],
+      "AllowedMethods": ["PUT"],
+      "AllowedHeaders": ["content-type"],
+      "MaxAgeSeconds": 3600
+    }
+  ]
+}
+```
+
+```bash
+AWS_ACCESS_KEY_ID=your-application-key-id \
+AWS_SECRET_ACCESS_KEY=your-application-key \
+aws s3api put-bucket-cors \
+  --bucket uploads \
+  --cors-configuration file://cors.json \
+  --endpoint-url https://s3.us-west-004.backblazeb2.com \
+  --region us-west-004
+```
+
+`PUT` is the only method the browser uses against B2. The signed URL binds the `Content-Type` the browser declared, and the browser sends it as a header, so the preflight has to allow `content-type`. Downloads are top-level navigations to a signed `GET` URL, and those aren't CORS requests.
+
+Backblaze keeps rules set through its native API (and the web UI) separate from rules set through the S3 API, and the S3 API can't modify native ones. Manage the bucket's rules in one place.
+
+## Build the upload component
+
+```vue title="app/components/FileManager.vue" lineNumbers
+<script setup lang="ts">
+import { type FileUploadState, useFiles, useList } from "files-sdk/vue";
+
+const files = useFiles();
+const { uploads, isUploading, progress } = files;
+const { data: listing, error: listError, refetch } = useList({ limit: 100 });
+
+// One controller per file, so each row can be cancelled on its own.
+const controllers = new Map<Blob, AbortController>();
+
+async function start(file: Blob) {
+  const controller = new AbortController();
+  controllers.set(file, controller);
+  try {
+    await files.upload(file, { signal: controller.signal });
+    refetch();
+  } catch {
+    // The file's entry in `uploads` already holds its status and error.
+  } finally {
+    controllers.delete(file);
+  }
+}
+
+function onSelect(event: Event) {
+  const input = event.target as HTMLInputElement;
+  for (const file of input.files ?? []) {
+    void start(file);
+  }
+  input.value = "";
+}
+
+function cancel(upload: FileUploadState) {
+  controllers.get(upload.file as Blob)?.abort();
+}
+
+function retry(upload: FileUploadState) {
+  void start(upload.file as Blob);
+}
+
+function downloadHref(key: string) {
+  return `/api/files?op=download&key=${encodeURIComponent(key)}`;
+}
+</script>
+
+<template>
+  <section>
+    <input type="file" multiple @change="onSelect" />
+    <progress v-if="isUploading" :value="progress.fraction" />
+
+    <ul>
+      <li v-for="(upload, index) in uploads" :key="index">
+        {{ upload.name }}: {{ upload.status }}
+        <template v-if="upload.status === 'uploading'">
+          {{ Math.round(upload.progress * 100) }}%
+          <button type="button" @click="cancel(upload)">Cancel</button>
+        </template>
+        <template
+          v-else-if="upload.status === 'error' || upload.status === 'aborted'"
+        >
+          {{ upload.error?.message }}
+          <button type="button" @click="retry(upload)">Retry</button>
+        </template>
+      </li>
+    </ul>
+    <button type="button" @click="files.reset()">Clear finished</button>
+
+    <p v-if="listError" role="alert">{{ listError.message }}</p>
+    <ul>
+      <li v-for="item in listing?.items ?? []" :key="item.key">
+        <a :href="downloadHref(item.key)">{{ item.key }}</a>
+        ({{ item.size }} bytes)
+      </li>
+    </ul>
+  </section>
+</template>
+```
+
+```vue title="app/pages/files.vue" lineNumbers
+<template>
+  <main>
+    <h1>Files</h1>
+    <ClientOnly>
+      <FileManager />
+      <template #fallback><p>Loading files…</p></template>
+    </ClientOnly>
+  </main>
+</template>
+```
+
+How the pieces behave:
+
+- **`upload(file)` is three requests.** It presigns at `/api/files`, `PUT`s the bytes to B2 with `XMLHttpRequest` so it can report progress, then completes at `/api/files`. The file's entry in `uploads` moves from `"uploading"` to `"success"`, `"error"`, or `"aborted"`.
+- **Cancel aborts one file.** Each upload gets its own `AbortController`, and aborting it ends that entry as `"aborted"` without touching the others. `files.abort()` cancels everything, and the composable calls it for you when the component unmounts.
+- **Retry starts over.** Calling `upload()` again with the same `File` presigns a new key and adds a new entry. The failed entry stays until `files.reset()` clears finished entries. When this was driven from Node against MinIO, a 40 MiB upload aborted after 30 ms ended as `"aborted"` while a second file in the same batch succeeded, and retrying the aborted `File` stored it under a fresh key.
+- **The list loads in the browser.** `useList` and `useFiles` call `fetch("/api/files")`, a relative URL that only resolves in the browser, and on the server the request wouldn't carry the user's cookie anyway. `<ClientOnly>` keeps the component out of server rendering. For files in server-rendered HTML, call `getFiles()` from your own server route and list the user's prefix directly.
+- **Downloads redirect.** The link answers with a `302` to a presigned B2 `GET` URL that lives at most 300 seconds (`maxExpiresIn`). [Vue](/docs/ui/client/vue) documents the rest of the composable.
+
+## Check sizes after upload
+
+A presigned `PUT` signs the key, the content type, and the expiry, but not the size. S3 caps size with presigned `POST` policies, and B2 lists those under [unsupported features](https://www.backblaze.com/docs/cloud-storage-s3-compatible-api). Files SDK reflects that: `files.capabilities.signedUpload.maxSize` is `false` for the B2 adapter, and `signedUploadUrl()` throws if you pass `maxSize`.
+
+The route above keeps the direct path and checks afterwards. When `onUploadComplete` throws `UploadRejectedError`, the gateway deletes the object and the browser's `upload()` rejects with a `FilesError` (code `Invalid`) carrying your message. In a test with the limit lowered to 500 bytes, a 1,000-byte upload rejected with the hook's message, and the object was gone from the bucket.
+
+This leaves two gaps. The bytes are already in B2 before you reject them. And a client that never calls complete, like a closed tab or a hand-rolled script, never triggers the hook, so its object stays. To catch those, subscribe to [B2 Event Notifications](/docs/events/b2) and reconcile objects your database doesn't know about.
+
+### Route uploads through Nitro instead
+
+Set `maxUploadSize` on the router and the same `upload(file)` call changes path:
+
+```ts title="server/api/files.ts" lineNumbers
+const router = createFilesRouter({
+  files: getFiles(),
+  secret: filesApiSecret,
+  maxUploadSize: MAX_UPLOAD_BYTES,
+  // authorize as above
+});
+```
+
+A file whose declared size is over the limit is refused at presign with `422` (`upload exceeds maxUploadSize`). For the rest, the gateway sees that B2 can't enforce `maxSize` on a signed URL and returns its own proxy target. The browser then `PUT`s the bytes to `/api/files?op=proxy&token=…`, and the gateway counts them as they stream through to B2, aborting past the limit. Against MinIO with a 500-byte limit, a 1,000-byte file failed at presign, and a 400-byte file landed with `via: "proxy"` in `onUploadComplete`.
+
+The cost is that every byte crosses your server twice: in from the browser, out to B2, where `@aws-sdk/lib-storage` sends the stream as a multipart upload. Proxied uploads are same-origin, so they don't need the B2 CORS rule, but they do pass through your reverse proxy's body limits.
+
+## Run behind a reverse proxy
+
+On Nuxt 4 the binding builds the request URL from `X-Forwarded-Proto` and the `Host` header. The gateway uses that URL in two places: as the origin that a state-changing request's `Origin` header must match, and as the base of the proxy upload URL it hands back. nginx sends neither by default: its `proxy_set_header` defaults [replace `Host` with the upstream address](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header) and add no scheme. Forward both:
+
+```nginx title="/etc/nginx/sites-available/app.conf" lineNumbers
+server {
+  listen 443 ssl;
+  server_name app.example.com;
+  # ssl_certificate / ssl_certificate_key …
+
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+  }
+}
+```
+
+With nginx's defaults simulated (`Host: 127.0.0.1:3000`, no `X-Forwarded-Proto`, `Origin: https://app.example.com`), `list` still answered `200`, but presign answered `403` with `origin not allowed`. Delete and complete fail the same way. With `Host` and `X-Forwarded-Proto` forwarded, presign succeeded.
+
+Setting `allowedOrigins: ["https://app.example.com"]` on the router also gets past the origin check, but it doesn't fix the proxy upload URL. With nginx's defaults and `maxUploadSize` set, the presign response pointed the browser at `http://127.0.0.1:3000/api/files?op=proxy&token=…`. Forward the headers either way.
+
+Proxied uploads (with `maxUploadSize`) also pass through nginx's own body limits:
+
+- [`client_max_body_size`](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size) defaults to `1m`. A larger body gets nginx's `413`, which the browser reports as `upload failed (413)`. Raise it to at least `maxUploadSize` in the `location` that serves `/api/files`.
+- [`proxy_request_buffering`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_request_buffering) is on by default, so nginx reads the whole body before passing it to Nuxt. The browser's progress bar then measures the upload to nginx. Turn it off for that location to stream through.
+
+Caddy's `reverse_proxy` [passes the original `Host` and sets `X-Forwarded-Proto`](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy) by default, so it needs no extra headers.
+
+### On Nitro 3
+
+Nitro 3 is in beta, and Nuxt 4.6 still runs Nitro 2. Standalone Nitro 3 apps import `defineHandler` from `nitro` instead of using the auto-imported `defineEventHandler`, as [Nitro](/docs/ui/server/nitro) shows. h3 2 hands the gateway its own Web `Request`, and that request's URL doesn't follow `X-Forwarded-Proto`. Served by h3 2.0.2's Node server (srvx 1.0.5) with `Host: app.example.com` and `X-Forwarded-Proto: https`, the request URL was `http://app.example.com/api/files`. As a result, presign failed with `origin not allowed`. After adding `allowedOrigins`, the proxy upload URL came back as `http://app.example.com/…`, which an `https` page can't send an upload to. On Nitro 3 behind a TLS-terminating proxy, list your origin in `allowedOrigins` and keep uploads on the direct path.
+
+## Limits and tradeoffs
+
+- **The signed URL isn't single-use.** It accepts `PUT`s to its key until it expires, whether or not the client completed. `maxExpiresIn: 300` keeps that window to five minutes.
+- **The content type is the browser's claim.** The signed `PUT` binds the `Content-Type` the browser declared, not what the bytes are. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) shows how to check the bytes in `onUploadComplete`.
+- **B2 deletes hide files.** The adapter deletes through the S3 API without a version ID, which [creates a hide marker](/docs/events/b2#hide-markers-are-deletes) rather than removing the bytes. Rejected uploads and user deletes keep counting toward storage until a lifecycle rule removes them. Setting the bucket's lifecycle to [Keep only the last version of the file](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules) removes hidden versions a day later.
+- **Crashed proxied uploads leave parts.** If the Nuxt process dies mid-stream, the multipart upload is never aborted. A custom lifecycle rule with `daysFromStartingToCancelingUnfinishedLargeFiles` cleans those up.
+- **Empty files pass.** Nothing above refuses a 0-byte file. Check `file.size` in the browser or in `onUploadComplete` if they aren't useful to you.
+- **Server-side calls can skip the gateway.** `event.$fetch("/api/files", { method: "POST", body: { op: "list" } })` works from another server route: the binding reads in-process request bodies from the event, and Nuxt forwards the session cookie. But that's your own server calling itself over the gateway's wire format. Call `getFiles()` directly instead.
+
+## Troubleshooting
+
+**`origin not allowed` (403) on upload, delete, or complete, while the list loads.** The request URL the gateway built doesn't match the page's origin. Behind a proxy, forward `Host` and `X-Forwarded-Proto` ([above](#run-behind-a-reverse-proxy)). Reads don't check the origin, which is why the list still works.
+
+**`upload token signature` at complete.** Presign and complete were signed with different secrets. `NUXT_FILES_API_SECRET` is missing in that environment, or it differs between instances. Look for `no secret and no FILES_API_SECRET` in the server log.
+
+**`network error during upload` and a CORS error in the console.** The browser's preflight to B2 didn't match a rule. Check that the page's exact origin is in `AllowedOrigins`, `PUT` is in `AllowedMethods`, and `content-type` is in `AllowedHeaders`.
+
+**`upload failed (403)` from B2.** B2 refused the signed request. The URL expired, the server clock is off, or the `Content-Type` header changed after signing.
+
+**`upload failed (413)` on a proxied upload.** nginx refused the body before Nuxt saw it. Raise `client_max_body_size`.
+
+**`Sign in to manage files` (401) after signing in.** `getUserSession` found no user, so the session cookie didn't reach the route. Check that `NUXT_SESSION_PASSWORD` is the same on every instance and hasn't changed since the cookie was set.
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'`.** A proxied upload streamed through the gateway. Install `@aws-sdk/lib-storage`.

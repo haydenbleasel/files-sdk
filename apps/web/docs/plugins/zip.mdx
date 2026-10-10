@@ -1,6 +1,8 @@
 ---
 title: zip
 description: Stream many stored objects as one ZIP archive, store archives back as objects, and extract archives into individual keys - no native dependencies.
+related:
+  - /guides/s3-r2-zip-download
 ---
 
 The built-in `zip()` plugin bundles stored objects into ZIP archives — and back out of them — entirely through the `Files` instance. It's an [`extend`](/docs/plugins/api#filesplugin)-only plugin: it intercepts nothing and adds three methods.

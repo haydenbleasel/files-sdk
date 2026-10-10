@@ -1,6 +1,8 @@
 ---
 title: Trash Bin
 description: A recycle bin that lists, restores and permanently purges soft-deleted files — driven by useFiles and the softDelete plugin.
+related:
+  - /guides/restore-deleted-files-s3-r2
 ---
 
 Lists soft-deleted objects and restores or permanently purges them. Backed by the [`softDelete()`](/docs/plugins/soft-delete) plugin, so it needs a gateway whose `Files` instance is wrapped with it and whose `authorize` allow-lists the `trashed`, `restoreTrashed` and `purge` operations. Purges confirm first — they're the only way the bytes actually leave storage.

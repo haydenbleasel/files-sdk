@@ -1,6 +1,8 @@
 ---
 title: Express
 description: Mount the Files gateway on a Node server. Bridges IncomingMessage/ServerResponse to Web Request/Response - also serves Connect and a raw http server.
+related:
+  - /guides/express-s3-file-upload
 ---
 
 `files-sdk/express` mounts a [`createFilesRouter`](/docs/ui/server/gateway) on a Node server. It bridges a Node `IncomingMessage`/`ServerResponse` to the Web `Request`/`Response` the gateway speaks (`Readable.toWeb`/`fromWeb` + `pipeline`). It's typed against `node:http`, so it also serves **Connect** and a raw **`http.createServer`**. A client disconnect is wired through to abort the upstream read on a proxied download.

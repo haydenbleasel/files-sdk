@@ -3,6 +3,8 @@ title: Capabilities
 description: Query what an adapter can do up front with files.capabilities - including range reads, signed URLs, server-side copy, and native conditional operations.
 related:
   - /guides/unified-storage-api-typescript
+  - /guides/test-s3-code-without-aws
+  - /guides/client-side-encryption-s3-r2
 ---
 
 The unified surface is the common subset every adapter implements, but adapters differ at the edges: some honor byte-range reads, some can mint a signed URL, some copy server-side. The wrapper already gates on these per-adapter — pass a `range` to an adapter that has no range primitive and it throws _before_ any provider call. `files.capabilities` turns that implicit knowledge into a queryable surface, so you can branch up front instead of discovering a limit by catching an error.

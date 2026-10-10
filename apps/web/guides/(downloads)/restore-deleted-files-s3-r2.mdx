@@ -1,0 +1,327 @@
+---
+title: Let users restore deleted files and earlier versions in S3 or R2
+description: Add a trash bin and per-file version history to an S3 or R2 app with softDelete() and versioning(), authorize restore and permanent deletion separately, and run a retention job that actually frees the space.
+sidebar:
+  label: Restore deleted files
+seo:
+  title: Restore deleted files and versions in S3 or R2
+related:
+  - /docs/plugins/soft-delete
+  - /docs/plugins/versioning
+  - /docs/ui/components/trash-bin
+  - /docs/ui/components/version-history
+  - /guides/shadcn-file-manager
+  - /guides/multi-tenant-file-storage
+---
+
+Install two plugins on the `Files` instance your app writes through. `softDelete()` turns every `delete` into a move into a hidden `.trash/` prefix. `versioning()` copies an object's current bytes into `.versions/` before an upload overwrites it or a delete removes it. With versioning first, `[versioning({ ignore: [".trash"] }), softDelete()]`, users can bring a deleted file back from the trash or roll a live file back to an earlier version, through the same gateway that serves the rest of your file UI. Both plugins store plain object copies under prefixes in your own bucket, so they work the same on S3, R2, and every other adapter.
+
+Neither plugin expires anything. The trash and the history grow until you remove them, and with both installed, a file purged from the trash still has its last bytes in version history. This guide sets up both plugins, authorizes restoring and permanent deletion separately, adds the Trash Bin and Version History components, and adds a retention job that really frees the space.
+
+## Before you start
+
+- An S3 bucket (this guide calls it `uploads`) with each workspace's files under `workspaces/<id>/`, and credentials that allow `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, and `s3:ListBucket`. Snapshots and soft deletes are server-side copies, which read the source and write the destination.
+- A Next.js App Router app with [shadcn/ui](https://ui.shadcn.com/docs/installation/next) initialized, and an auth library that resolves the signed-in user, their workspace, and their role on the server.
+- Written against files-sdk 3.0, Next.js 16.4, and React 19.3. The plugin behavior described below was observed against the memory adapter and a local MinIO server (RELEASE.2025-09-06), through `createFilesRouter` and `createFilesClient`.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+On R2, use `r2({ bucket: "uploads" })` from `files-sdk/r2` instead. Everything below applies to both.
+
+## Where everything is stored
+
+For a key `workspaces/7/report.pdf`, the plugins write to four places in the same bucket:
+
+| What | Key |
+| --- | --- |
+| The live file | `workspaces/7/report.pdf` |
+| Its trashed copy, one per key | `.trash/workspaces/7/report.pdf` |
+| Its saved versions | `.versions/workspaces/7/report.pdf/<versionId>` |
+| Versions pruned by `limit` | `.trash/.versions/workspaces/7/report.pdf/<versionId>` |
+
+Uploading a file, overwriting it once, and then deleting it left three objects in a MinIO bucket, shown here for `report.pdf`:
+
+```text
+.trash/workspaces/7/report.pdf               second upload (the trashed copy)
+.versions/workspaces/7/report.pdf/<id-1>     first upload (saved by the overwrite)
+.versions/workspaces/7/report.pdf/<id-2>     second upload (saved by the delete)
+```
+
+The deleted file's last bytes are stored twice, once in the trash and once as the newest version. That's what the plugin order is for: with versioning outermost, it sees the `delete` and saves a version before `softDelete()` turns the delete into a move. In the other order, versioning only sees a move into the trash and saves nothing, so purging the trash destroys the last write for good. The `ignore: [".trash"]` option is needed because a purge is a real `delete` of a trash key, and without it versioning would save that purge into `.versions/.trash/…`, where nothing lists or reclaims it. [Pairing with soft delete](/docs/plugins/versioning#pairing-with-soft-delete) covers both rules.
+
+## Set up the storage client
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { softDelete } from "files-sdk/soft-delete";
+import { versioning } from "files-sdk/versioning";
+
+const adapter = s3({ bucket: "uploads", region: "us-east-1" });
+
+export const files = createFiles({
+  adapter,
+  plugins: [versioning({ ignore: [".trash"], limit: 20 }), softDelete()],
+});
+
+// The same bucket with no plugins, for jobs that must really delete.
+export const storage = createFiles({ adapter });
+```
+
+Construct with `createFiles` so `versions()`, `restoreVersion()`, `trashed()`, `restoreTrashed()`, and `purge()` are on the type. If you add other plugins, put write checks such as `validation()` before `versioning()`, and plugins that transform bytes, such as `encryption()`, after `softDelete()`. A version of an encrypted object is still encrypted and restores to plaintext.
+
+`limit: 20` keeps the newest 20 versions of each key. After a write that saves a version, versioning deletes the oldest ones past the limit. Those deletes go through `softDelete()` too, so pruned versions move to `.trash/.versions/…` instead of disappearing. Server-side, `files.trashed()` lists them with keys like `.versions/workspaces/7/report.pdf/<id>`. A prefix-scoped listing, which is what the gateway runs for a workspace, doesn't show them: against MinIO, `trashed({ prefix })` came back empty while the unscoped call listed six pruned versions. Users can't see or purge pruned versions, so the retention job below is what removes them.
+
+## Authorize restore and purge separately
+
+Mount the gateway with a rule set where every member can delete and restore, but only admins can delete permanently:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { type FilesOperation, createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+// What every workspace member may do. Permanent deletion isn't on the list.
+const MEMBER = new Set<FilesOperation>([
+  "list",
+  "head",
+  "download",
+  "upload",
+  "delete",
+  "versions",
+  "restoreVersion",
+  "trashed",
+  "restoreTrashed",
+]);
+
+const router = createFilesRouter({
+  authorize: async ({ operation, key, req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    const allowed =
+      operation === "purge" ? session.role === "admin" : MEMBER.has(operation);
+    if (!allowed) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    const keyPrefix = `workspaces/${session.workspaceId}/`;
+    // Refuse to restore over a file that exists again.
+    if (
+      operation === "restoreTrashed" &&
+      key &&
+      (await files.exists(`${keyPrefix}${key}`))
+    ) {
+      throw new FilesError("Conflict", `${key} already exists`);
+    }
+    return { keyPrefix };
+  },
+  files,
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`getSession` stands in for your auth library and returns `{ user: { id: string }, workspaceId: string, role: "admin" | "member" }` or `null`.
+
+Each plugin method is its own operation in `authorize`, so restoring and purging are separate decisions. Here's what the gateway did with this setup, driven through `createFilesClient`:
+
+- **A member's `delete("report.pdf")`** saved a version and moved the file to the trash. `trashed()` then returned only that workspace's entries, with keys relative to the prefix (`report.pdf`, not `workspaces/7/report.pdf`) plus `size`, `lastModified`, and `etag`.
+- **A member's `purge()`** got `403` and `{"error":{"code":"ReadOnly","message":"…"}}`.
+- **An admin's `purge()` with no key** emptied only that workspace's trash. Under a `keyPrefix`, the gateway purges just the entries the caller can see, and another tenant's trashed file was still there afterwards.
+- **Restoring over an existing file** got `409` from the `Conflict` check. Without that check, `restoreTrashed` overwrites the live file, but with versioning installed the overwritten file isn't lost: calling `files.restoreTrashed()` directly over a re-created 12-byte file put a 12-byte version at the top of `versions()`.
+- **Nothing to restore** answers `404`: `softDelete: nothing trashed for "…"` or `versioning: no versions to restore for "…"`.
+
+The gateway also blocks the plugins' storage prefixes. With no `keyPrefix`, a client request to download `.trash/…` or list `.versions/` gets `403` and `key is outside authorized scope`, so a client that's allowed to `delete` can't hard-delete a trashed copy or forge a version. Under a `keyPrefix`, the client's `.trash/report.pdf` resolves to `workspaces/7/.trash/report.pdf`, an ordinary key, and the real trash at `.trash/workspaces/7/…` is outside the prefix. If the gateway's `Files` instance doesn't have a plugin, its methods answer `422` `Unsupported`.
+
+Uploads need one more decision. A keyless `upload(file)` gets a new key from the gateway each time, so it never overwrites anything. A keyed `upload(key, file)` streams through your server and the instance, so its overwrite is saved as a version. `signedUploadUrl` is left off the list on purpose: a browser `PUT` to a signed URL goes straight to storage and never reaches the plugin, so an overwrite through it saves no version.
+
+## Add the Trash Bin and Version History
+
+Both components are in the Files SDK shadcn registry:
+
+```bash
+npx shadcn@latest add https://files-sdk.dev/r/trash-bin.json https://files-sdk.dev/r/version-history.json
+```
+
+They land in `components/files-sdk/` and take a `useFiles()` result:
+
+```tsx title="app/files/recovery.tsx" lineNumbers
+"use client";
+
+import { useFiles } from "files-sdk/react";
+
+import { TrashBin } from "@/components/files-sdk/trash-bin";
+import { VersionHistory } from "@/components/files-sdk/version-history";
+
+export function Recovery({ fileKey }: { fileKey?: string }) {
+  const files = useFiles();
+
+  return (
+    <div className="flex flex-col gap-6">
+      {fileKey && <VersionHistory fileKey={fileKey} files={files} />}
+      <TrashBin files={files} />
+      {files.error && <p role="alert">{files.error.message}</p>}
+    </div>
+  );
+}
+```
+
+`VersionHistory` lists `versions(fileKey)`, newest first. The current file isn't a version, so the top row is the previous one. Its restore button calls `restoreVersion`, which saves the current bytes first, so a restore can itself be undone. It works for a deleted key too, because the delete saved a version.
+
+`TrashBin` lists `trashed()`, restores with `restoreTrashed`, and purges one item or the whole trash after a confirmation dialog. Two things to change after you add it, since the component is now your code:
+
+- **Purge buttons for members.** The component always shows **Delete forever** and **Empty trash**. With the `authorize` above, a member who clicks one gets the `403`, which `useFiles` puts on `files.error`. Pass a prop such as `canPurge` and hide the buttons for members.
+- **The confirmation text.** The dialog says the file "will be permanently deleted. This can't be undone." With versioning installed, that isn't true yet: after `delete` and `purge`, `restoreVersion` still brought the file back. The bytes leave storage when the retention job below runs, or when you call `eraseForever`. Reword the dialog to match your policy.
+
+[Build a shadcn file manager](/guides/shadcn-file-manager) covers the browser, upload, and preview components this sits next to.
+
+## Empty the trash on a schedule
+
+The trash grows until something removes it. Choose one of two approaches.
+
+### Lifecycle rules, with no code
+
+S3 and R2 lifecycle rules delete objects under a prefix once they're a set number of days old. On these adapters the trashed copy is a new object written by a server-side copy, so it's created at the moment of deletion. Against MinIO, the trashed copy's `lastModified` was 13 ms after the `delete` call, and a saved version's was within 2 ms of when it was taken.
+
+```json title="lifecycle.json" lineNumbers
+{
+  "Rules": [
+    {
+      "ID": "empty-trash",
+      "Filter": { "Prefix": ".trash/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 30 }
+    },
+    {
+      "ID": "expire-history",
+      "Filter": { "Prefix": ".versions/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 90 }
+    }
+  ]
+}
+```
+
+Apply it with `aws s3api put-bucket-lifecycle-configuration --bucket uploads --lifecycle-configuration file://lifecycle.json`, which replaces any lifecycle rules the bucket already has. S3 counts the days [from each object's creation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html), and on a bucket without S3 Versioning, expiration permanently removes the objects, asynchronously. On R2, add each rule with Wrangler, for example `npx wrangler r2 bucket lifecycle add uploads empty-trash .trash/ --expire-days 30`. R2 [removes expired objects](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) typically within 24 hours. Its docs don't say what the age is counted from, so try a rule on a test prefix first.
+
+A rule only knows a prefix and an age. The `.trash/` rule empties the trash, but it leaves a purged file's history in `.versions/`, which is why the second rule exists. That rule also expires old versions of files that are still live, whatever `limit` is set to.
+
+### A job you run
+
+When the history should go with the trashed file, run a sweep instead:
+
+```ts title="scripts/empty-trash.ts" lineNumbers
+import { files, storage } from "../lib/files";
+
+const RETENTION_DAYS = 30;
+const dryRun = process.argv.includes("--dry-run");
+const cutoff = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+
+// Everything in the trash, across every workspace, deleted before the cutoff.
+const expired = (await files.trashed()).filter(
+  (item) => item.lastModified !== undefined && item.lastModified < cutoff
+);
+
+// A file that's still deleted takes its version history with it. Pruned
+// versions (keys under .versions/) and files that exist again are skipped.
+const history: string[] = [];
+for (const item of expired) {
+  if (item.key.startsWith(".versions/") || (await files.exists(item.key))) {
+    continue;
+  }
+  const dir = `.versions/${item.key}/`;
+  for await (const file of storage.listAll({ prefix: dir })) {
+    // ".versions/a/" also lists ".versions/a/b/…", which belongs to "a/b".
+    if (!file.key.slice(dir.length).includes("/")) {
+      history.push(file.key);
+    }
+  }
+}
+
+const doomed = [...expired.map((item) => item.trashKey), ...history];
+console.log(`${dryRun ? "Would delete" : "Deleting"} ${doomed.length} objects`);
+for (const key of doomed) {
+  console.log(`  ${key}`);
+}
+
+if (!dryRun && doomed.length > 0) {
+  const { errors } = await storage.delete(doomed);
+  for (const { key, error } of errors ?? []) {
+    console.error(`Failed: ${key}: ${error.message}`);
+  }
+  if (errors) {
+    process.exitCode = 1;
+  }
+}
+```
+
+Run it once with `--dry-run` and read the plan, then schedule it daily with `bun` or `tsx`. The deletes go through `storage`, the instance without plugins, so each one is a real delete. Through `files`, deleting a `.versions/…` key would move it into the trash instead, because `softDelete()` treats only keys inside its own prefix as real deletes.
+
+With the retention period shortened to two seconds, against MinIO, the job deleted the trashed copies of `notes` and `back.txt` and both saved versions of `notes`. It kept the versions of `back.txt`, which had been uploaded again after its delete, and the history of `notes/today.txt`, whose version folder sits inside the one for `notes`.
+
+:::warning
+`lastModified` is the deletion time only where a soft delete is a copy: S3, R2 (the binding copies with a get and a put), and the S3-compatible adapters. The filesystem, memory, FTP, and SFTP adapters move objects natively and keep the file's last write time. On the memory adapter, the trashed entry's `lastModified` was 1.1 seconds before the delete, when the file was uploaded. On those adapters, record the deletion time yourself when a delete succeeds.
+:::
+
+## Erase a file for good
+
+An account deletion or an erasure request can't wait for retention. This removes a key, its trashed copy, and all of its history, saved and pruned:
+
+```ts title="lib/erase.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { storage } from "./files";
+
+/** Remove a key, its trashed copy, and its whole history. Not reversible. */
+export async function eraseForever(key: string): Promise<void> {
+  const doomed = [key, `.trash/${key}`];
+  for (const dir of [`.versions/${key}/`, `.trash/.versions/${key}/`]) {
+    for await (const file of storage.listAll({ prefix: dir })) {
+      if (!file.key.slice(dir.length).includes("/")) {
+        doomed.push(file.key);
+      }
+    }
+  }
+  const { errors } = await storage.delete(doomed);
+  const [first] = errors ?? [];
+  if (first) {
+    throw new FilesError(
+      first.error.code,
+      `Couldn't erase ${first.key}: ${first.error.message}`,
+      first.error
+    );
+  }
+}
+```
+
+Keys that don't exist count as deleted. Against MinIO, after several overwrites with `limit: 3` and a delete, one call removed all 11 objects for the key. In a second run, the list included the live key and a key that had never existed: all 7 came back as deleted, with no errors, and the bucket was empty afterwards. To erase a whole workspace, list and delete the four prefixes from the table at the top: `workspaces/7/`, `.trash/workspaces/7/`, `.versions/workspaces/7/`, and `.trash/.versions/workspaces/7/`.
+
+## Limits and tradeoffs
+
+- **Only changes made through the instance are protected.** Deletes made directly against the provider, lifecycle rules, and browser uploads to signed URLs bypass both plugins. [S3 Versioning](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html) protects at the bucket level, including writes from outside your app. Files SDK doesn't manage it, but `files.raw` gives you the native client.
+- **Every version is a full copy.** There are no deltas: a 50 MB file overwritten ten times takes 550 MB until versions are pruned. Each overwrite or delete of an existing key also costs a `head` and a `copy` on top of the write.
+- **One trashed copy per key.** Deleting a key again replaces its trashed copy (the latest delete wins). The earlier generation is still in version history.
+- **Versions are ordered by the app's clock.** Instances writing the same key need reasonably synchronized clocks.
+- **Conditional writes are refused.** `versioning()` vetoes conditional uploads, deletes, and copies, and `softDelete()` vetoes conditional deletes outside the trash. Both report it through [`files.capabilities`](/docs/capabilities).
+- **A restore can race the retention job.** If a user restores a file between the sweep's `exists` check and its delete, the sweep can remove history the restored file should have kept. Run the sweep at a quiet hour, or skip keys restored recently.
+- **Keep your own data out of `.trash/` and `.versions/`.** Both prefixes are hidden from `list()`, and a delete inside `.trash/` is a real delete.
+
+## Troubleshooting
+
+**`422` with `softDelete plugin is not configured on this gateway` or `versioning plugin is not configured on this gateway`.** The `Files` instance passed to `createFilesRouter` doesn't have the plugin. Pass the instance from `lib/files.ts`, not a new one.
+
+**`403` `key is outside authorized scope`.** The client sent a key or list prefix inside `.trash/` or `.versions/`. Use the plugin methods (`trashed`, `restoreTrashed`, `versions`, `restoreVersion`, `purge`) instead.
+
+**A purged file comes back with `restoreVersion`.** That's the pairing working as designed: the delete saved a version. Use `eraseForever`, or let the retention job remove the history.
+
+**`trashed()` on the server lists keys starting with `.versions/`.** Those are versions pruned by `limit`. They aren't user files, and the retention job removes them with the rest of the trash.
+
+**The bucket keeps growing after purges.** Look under `.versions/` and `.trash/.versions/`. Purging a file from the trash doesn't remove its history.
+
+**`versioning: limit must be a positive integer`.** `limit` must be a whole number of 1 or more. Leave it out to keep every version.

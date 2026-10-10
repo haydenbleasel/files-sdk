@@ -1,6 +1,8 @@
 ---
 title: NestJS
 description: First-class NestJS integration - a dynamic FilesModule that mounts the gateway, plus InjectFiles() for sharing the Files instance through DI.
+related:
+  - /guides/express-s3-file-upload
 ---
 
 `files-sdk/nestjs` wraps the [gateway](/docs/ui/server/gateway) in an idiomatic NestJS module. `FilesModule.forRoot()` (or `forRootAsync()`) configures [`createFilesRouter`](/docs/ui/server/gateway), mounts it at a configurable path via Nest's middleware layer, and exposes the `Files` instance through dependency injection — inject it anywhere with `@InjectFiles()`. Both the Express and Fastify platform adapters are supported.

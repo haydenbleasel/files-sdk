@@ -1,0 +1,323 @@
+---
+title: Run a read-only MCP server for S3 or R2 and connect Claude Code
+description: Start the files-sdk MCP server against one S3 or R2 bucket so Claude Code, Cursor, Claude Desktop, or Codex can list, search, and read objects with keys that can't change anything.
+sidebar:
+  label: S3 and R2 MCP server
+seo:
+  title: S3 and R2 MCP server for Claude Code, Cursor, and Codex
+related:
+  - /docs/cli/mcp
+  - /docs/cli/commands
+  - /docs/prefixes
+  - /docs/adapters/r2
+  - /guides/ai-sdk-storage-tools
+---
+
+The `files-sdk` package includes an MCP server. `files --provider r2 --bucket reports mcp` starts it on stdio, bound to one bucket. The provider, the bucket, the credentials, and an optional key prefix are fixed when the process starts, so the agent only sends operation arguments, such as a key or a glob pattern. Unless you pass `--allow-writes`, the server registers seven tools that read and none that write. Claude Code, Cursor, Claude Desktop, and Codex all launch it the same way: a command, its arguments, and an environment block in their MCP config.
+
+The read-only tool list doesn't protect the bucket by itself. The server can do anything its credentials allow, and in Claude Code the variables you export for the server are also in the environment of the shell commands the agent runs. Give the server keys that can only read, scoped to one bucket (and on S3, to one prefix). Then the keys allow exactly what the tool list shows.
+
+## Before you start
+
+- An R2 bucket and permission to create R2 API tokens, or an S3 bucket and permission to create an IAM user or role. In this guide the bucket is `reports`, and the agent gets the `team/` prefix.
+- Node 22 or later on the machine that runs the MCP client.
+- Claude Code, or one of the [other clients](#cursor-claude-desktop-and-codex).
+- Written against files-sdk 3.0.1 and `@modelcontextprotocol/sdk` 1.32. The tool calls shown below were made over stdio with the MCP SDK's own client, against a local MinIO server. The client configuration comes from each client's documentation as of October 2026.
+
+Install the CLI globally, or skip this and let the client run it with `npx` (shown in each config below).
+
+```bash
+# R2, using the fetch engine described below: nothing else to install
+npm install -g files-sdk
+
+# S3: also install the AWS SDK packages the s3 provider loads
+npm install -g files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+The MCP SDK is an optional dependency of `files-sdk`, so npm installs it by default, and it brings `zod` with it. In a clean `npm install files-sdk`, both landed next to the CLI without being named. `npx -y files-sdk@3 <args>` runs the package's `files` binary directly.
+
+## What the agent can call
+
+| Tool | What it does | Registered |
+| --- | --- | --- |
+| `list` | One page of keys, every page with `all`, or one folder level with `delimiter` | Always |
+| `search` | Glob, regex, substring, or exact match over every key, following the cursor | Always |
+| `head` | Size, type, ETag, and metadata for one key, or an array of keys | Always |
+| `exists` | Whether one key, or each key in an array, exists | Always |
+| `download` | The body as base64, refused above 10 MiB, with an optional byte `range` | Always |
+| `url` | A presigned `GET` URL, or a public URL on public buckets | Always |
+| `capabilities` | What the adapter supports. Makes no provider call | Always |
+| `upload`, `delete`, `copy`, `move`, `sign-upload` | Writes | With `--allow-writes` |
+| `transfer`, `sync` | Copy or mirror to a destination you configure | With `--allow-writes` and `--to` |
+
+A tool that isn't registered doesn't exist as far as the client is concerned. These calls went to a server started with `--key-prefix team/` and the read-only S3 credentials from the next section. Long fields are trimmed:
+
+```text title="MCP tool calls and results"
+> search {"pattern":"**/summary.csv"}
+{"items":[{"key":"2026/q2/summary.csv","size":35,…},{"key":"2026/q3/summary.csv","size":35,…}]}
+
+> download {"key":"2026/q3/summary.csv"}
+{"contentType":"text/csv","key":"2026/q3/summary.csv","size":35,…,"base64":"cmVnaW9uLHJldmVudWUK…"}
+
+> download {"key":"exports/full-dump.bin"}                          isError
+{"error":{"code":"Invalid","message":"object \"exports/full-dump.bin\" is 12582912 bytes, exceeds maxBytes=10485760 — use the CLI to stream large bodies"}}
+
+> download {"key":"exports/full-dump.bin","range":{"start":0,"end":1023}}
+{"contentType":"application/octet-stream","key":"exports/full-dump.bin","size":1024,…}
+
+> head {"key":"../finance/salaries.csv"}                            isError
+{"error":{"code":"Invalid","message":"key must not contain . or .. path segments"}}
+
+> delete {"key":"2026/q3/notes.md"}                                 isError
+MCP error -32602: Tool delete not found
+```
+
+A failed operation comes back as a tool result with `isError: true` and a `{ error: { code, message } }` body. The model reads that as a result and the session continues. The `code` is a [`FilesError`](/docs/api/errors) code: `NotFound`, `Unauthorized`, `Conflict`, and `Provider` come from the bucket, and `Invalid` and `Unsupported` mean the call itself was refused.
+
+## Create keys that can only read
+
+### R2: an Object Read only token
+
+In the Cloudflare dashboard, open **R2 object storage**, then **Overview**. Under **Account Details**, select **Manage** next to **API Tokens**, then create an account API token. Choose **Object Read only** and limit it to the `reports` bucket. Copy the Access Key ID and the Secret Access Key (the secret is shown only once) and your account ID. Cloudflare's [token reference](https://developers.cloudflare.com/r2/api/tokens/) lists what each permission level allows.
+
+R2 tokens can be scoped to buckets but not to prefixes. Within the bucket, `--key-prefix` is the only thing that narrows what the agent can reach.
+
+### S3: an IAM policy scoped to one prefix
+
+```json title="reports-team-readonly.json" lineNumbers
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListTeamPrefix",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::reports",
+      "Condition": { "StringLike": { "s3:prefix": ["team/*"] } }
+    },
+    {
+      "Sid": "ReadTeamObjects",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::reports/team/*"
+    }
+  ]
+}
+```
+
+`list` and `search` need `s3:ListBucket`, and the condition allows it only when the request's prefix starts with `team/`. `head`, `exists`, and `download` need `s3:GetObject`, which covers `HeadObject` as well ([HeadObject permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)). There's no `PutObject` or `DeleteObject`, so even a server started with `--allow-writes` can't change anything.
+
+The policy was tested against MinIO, which accepts the same policy syntax, not against AWS IAM. Attached to a MinIO user:
+
+- With `--key-prefix team/`, `list`, `head`, and `download` worked.
+- Without the prefix, `list` returned `Unauthorized` with `Access Denied.`, because a listing from the bucket root doesn't match `team/*`.
+- With `--allow-writes`, `upload` and `delete` both returned `Unauthorized` `Access Denied.` from the bucket.
+
+Attach the policy to a role you assume, or to an IAM user. The `s3` provider uses the AWS credential chain, so `AWS_PROFILE` pointing at an SSO or assume-role profile works, and it gives you short-lived credentials instead of a long-lived access key.
+
+## Start the server once by hand
+
+Before you hand the server to an agent, run one command with the same credentials to check them:
+
+```bash
+export R2_ACCOUNT_ID=your-account-id
+export R2_ACCESS_KEY_ID=your-read-only-access-key-id
+export R2_SECRET_ACCESS_KEY=your-read-only-secret
+
+files --provider r2 --bucket reports --key-prefix team/ \
+  --config-json '{"client":"fetch"}' list --limit 5
+```
+
+Replace `list --limit 5` with `mcp` and you have the exact command the client will run. The global flags go before the subcommand.
+
+`--config-json '{"client":"fetch"}'` selects the R2 adapter's `fetch` engine, which signs requests with `aws4fetch` and needs no `@aws-sdk/*` package. On Node the adapter otherwise defaults to the AWS SDK engine. Without the flag, and without the AWS packages installed, the server still started in the clean install, but the first tool call failed with `r2-http adapter: client "aws-sdk" requires the optional peer dependencies …`. The `fetch` engine's limits only affect uploads, which this server doesn't register. The [R2 adapter](/docs/adapters/r2) covers both engines.
+
+For S3, the same check is:
+
+```bash
+AWS_PROFILE=reports-reader files --provider s3 --bucket reports \
+  --region us-east-1 --key-prefix team/ list --limit 5
+```
+
+Keep keys out of `--access-key-id` and `--secret-access-key`. Those flags work, but in an MCP config they'd sit in the arguments array, which ends up in config files and process listings. Use environment variables.
+
+## Connect Claude Code
+
+Add a project-scoped server in `.mcp.json` at the repository root:
+
+```json title=".mcp.json" lineNumbers
+{
+  "mcpServers": {
+    "storage": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "files-sdk@3",
+        "--provider",
+        "r2",
+        "--bucket",
+        "reports",
+        "--key-prefix",
+        "team/",
+        "--config-json",
+        "{\"client\":\"fetch\"}",
+        "mcp"
+      ],
+      "env": {
+        "R2_ACCOUNT_ID": "${R2_ACCOUNT_ID}",
+        "R2_ACCESS_KEY_ID": "${R2_READER_ACCESS_KEY_ID}",
+        "R2_SECRET_ACCESS_KEY": "${R2_READER_SECRET_ACCESS_KEY}"
+      }
+    }
+  }
+}
+```
+
+Claude Code expands `${VAR}` in `command`, `args`, and `env` from its own environment, so this file holds no secrets and can be committed ([Claude Code MCP docs](https://code.claude.com/docs/en/mcp)). Export `R2_READER_ACCESS_KEY_ID` and `R2_READER_SECRET_ACCESS_KEY` in the shell you launch `claude` from. The separate names keep the reader key from colliding with any read-write R2 keys your app uses. If a variable is unset, Claude Code warns and passes the literal `${VAR}` text through, and the first tool call fails to authenticate.
+
+On S3, use `"command": "files"` with the S3 arguments from the previous section, and put `"AWS_PROFILE": "reports-reader"` in `env`.
+
+In an interactive session, Claude Code asks for approval before it uses a project-scoped server from `.mcp.json`. Then:
+
+- `claude mcp list` shows `✔ Connected` for `storage`.
+- `/mcp` inside a session shows the server with its tool count.
+- The tools appear as `mcp__storage__list`, `mcp__storage__search`, and so on.
+
+To keep the server to yourself instead, add it at local scope. Claude Code stores that in `~/.claude.json`, outside the repository. Put `--transport stdio` between the last `--env` and the server name. Otherwise the CLI reads the name as another `KEY=value` pair:
+
+```bash
+claude mcp add --scope local \
+  --env R2_ACCOUNT_ID=your-account-id \
+  --env R2_ACCESS_KEY_ID=your-read-only-access-key-id \
+  --env R2_SECRET_ACCESS_KEY=your-read-only-secret \
+  --transport stdio storage \
+  -- npx -y files-sdk@3 --provider r2 --bucket reports --key-prefix team/ \
+  --config-json '{"client":"fetch"}' mcp
+```
+
+### Decide which tools run without asking
+
+```json title=".claude/settings.json" lineNumbers
+{
+  "permissions": {
+    "allow": [
+      "mcp__storage__list",
+      "mcp__storage__search",
+      "mcp__storage__head",
+      "mcp__storage__exists",
+      "mcp__storage__download",
+      "mcp__storage__capabilities"
+    ],
+    "deny": ["mcp__storage__url"]
+  }
+}
+```
+
+The allow rules let the read tools run without a prompt. The deny rule removes `url` from Claude's context entirely. A presigned URL is a bearer link: anyone who has it can download the object until it expires, and the agent can ask for one that lasts up to seven days. Leave `url` available only if the agent should hand out links. [Limits and tradeoffs](#limits-and-tradeoffs) covers the expiry.
+
+### Credentials in the agent's shell
+
+Claude Code's [sandbox docs](https://code.claude.com/docs/en/sandboxing) say shell commands inherit environment variables from Claude Code, "including any secrets in its environment". So the agent can read `R2_READER_SECRET_ACCESS_KEY` with its Bash tool and call the bucket directly, without going through the MCP server. If you use the sandbox, `sandbox.credentials.envVars` entries with `"mode": "deny"` unset those variables before each sandboxed command. Local MCP servers run outside the sandbox, so the server still gets them. Unsandboxed commands still see them, though, which is why the key's own permissions are what actually limit access.
+
+## Cursor, Claude Desktop, and Codex
+
+The server and its arguments don't change. Only the config file and the way each client passes secrets do.
+
+**Cursor** reads `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for every project. It interpolates `${env:NAME}` in `command`, `args`, and `env`, and an `envFile` field can load a `.env` file instead ([Cursor MCP docs](https://cursor.com/docs/context/mcp)):
+
+```json title=".cursor/mcp.json" lineNumbers
+{
+  "mcpServers": {
+    "storage": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "files-sdk@3",
+        "--provider",
+        "r2",
+        "--bucket",
+        "reports",
+        "--key-prefix",
+        "team/",
+        "--config-json",
+        "{\"client\":\"fetch\"}",
+        "mcp"
+      ],
+      "env": {
+        "R2_ACCOUNT_ID": "${env:R2_ACCOUNT_ID}",
+        "R2_ACCESS_KEY_ID": "${env:R2_READER_ACCESS_KEY_ID}",
+        "R2_SECRET_ACCESS_KEY": "${env:R2_READER_SECRET_ACCESS_KEY}"
+      }
+    }
+  }
+}
+```
+
+**Claude Desktop** reads `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS and `%APPDATA%\Claude\claude_desktop_config.json` on Windows. Open it from **Settings → Developer → Edit Config**. It takes the same `mcpServers` shape as `.mcp.json`, with the values written into `env` directly. That file lives in your user profile, not in a repository. Quit Claude Desktop completely and reopen it after saving. Server stderr goes to `mcp-server-storage.log` in `~/Library/Logs/Claude` ([connecting local servers](https://modelcontextprotocol.io/docs/develop/connect-local-servers)).
+
+**Codex** reads `~/.codex/config.toml`, or `.codex/config.toml` in a trusted project. `env_vars` forwards variables from your environment by name, and `disabled_tools` hides tools ([Codex MCP docs](https://developers.openai.com/codex/mcp)):
+
+```toml title="~/.codex/config.toml" lineNumbers
+[mcp_servers.storage]
+command = "npx"
+args = ["-y", "files-sdk@3", "--provider", "r2", "--bucket", "reports", "--key-prefix", "team/", "--config-json", "{\"client\":\"fetch\"}", "mcp"]
+env_vars = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"]
+disabled_tools = ["url"]
+startup_timeout_sec = 30
+```
+
+`env_vars` forwards variables under their own names, so here the reader key must be in `R2_ACCESS_KEY_ID` itself. Codex gives a server 10 seconds to start by default. The first `npx` run downloads the package, which can take longer, hence the higher `startup_timeout_sec`.
+
+## Scope the server with --key-prefix
+
+`--key-prefix team/` sets the `Files` instance's `prefix`, so it applies on the server side to every tool call:
+
+- Every key the agent sends resolves under `team/`. A key with `.` or `..` segments fails with `Invalid` before any request, as in the transcript above.
+- `list` and `search` start from `team/`, and results come back with `team/` stripped. A `search` for `salaries` as a substring found nothing, although `finance/salaries.csv` exists in the same bucket.
+- The agent's own `prefix` argument narrows the listing further but can't widen it. [Prefixes](/docs/prefixes) has the exact rules.
+
+On S3, keep `--key-prefix` and the policy's `s3:prefix` condition in step, so a mistake in one shows up as an `Unauthorized` from the other. On R2, the flag is the only prefix boundary, and it binds the server's tools, not the key.
+
+## Turn on writes deliberately
+
+`--allow-writes` registers `upload`, `delete`, `copy`, `move`, and `sign-upload`. `delete` is permanent, and `upload` replaces whatever is at the key. If an agent needs to write, run it as a second server entry with separate read-write credentials, and make Claude Code ask before each write:
+
+```json title=".claude/settings.json"
+{
+  "permissions": {
+    "ask": [
+      "mcp__storage-rw__upload",
+      "mcp__storage-rw__delete",
+      "mcp__storage-rw__copy",
+      "mcp__storage-rw__move",
+      "mcp__storage-rw__sign-upload"
+    ]
+  }
+}
+```
+
+`--to '<json>'` adds `transfer` and `sync` to a destination you choose when the server starts. Neither tool takes a destination argument, so the agent can't redirect them. Both are in the [MCP server reference](/docs/cli/mcp).
+
+## Limits and tradeoffs
+
+- **Whole bodies travel as base64 in one response.** `download` refuses anything over 10 MiB. The agent can lower the cap with `maxBytes`, but a value above 10 MiB fails the tool's input schema (`Too big: expected number to be <=10485760`). A `range` counts only the requested bytes: 1 KiB from a 12 MiB object came back. The size is checked with `head()` first and enforced again on the bytes read.
+- **Clients cap tool output much lower.** Claude Code warns when an MCP tool result passes 10,000 tokens and limits it to 25,000 by default (`MAX_MCP_OUTPUT_TOKENS`). Base64 of a 10 MiB file is about 14 million characters, so in practice the agent should read text files, small objects, or ranges. For anything bigger, download it yourself with the [CLI](/docs/cli/commands).
+- **`url` is a bearer link, and the agent picks its lifetime.** It lasts 3600 seconds when the agent passes no `expiresIn`. `--default-url-expires-in 300` changes that default, but it isn't a maximum: a request for 604800 seconds still got a 7-day link, and only values above the SigV4 limit fail (`presigned URLs must expire within 604800 seconds (7 days), the SigV4 limit`). Deny or disable the tool if you don't need links.
+- **`search` and `list` with `all` walk every page.** On a large bucket, one call can mean many `LIST` requests. `--key-prefix`, and the `prefix` argument on `search`, bound the walk.
+- **Stdio only.** Each client session starts its own server process, and nothing listens on a port. Teammates each need their own credentials in their own environment.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `the "s3" provider needs its SDK — install it with npm install @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner` at startup | The `s3` provider imports the AWS SDK, and it isn't installed where the CLI can find it. | Install those packages globally next to `files-sdk`, or run `npx -y -p files-sdk@3 -p @aws-sdk/client-s3 -p @aws-sdk/s3-presigned-post -p @aws-sdk/s3-request-presigner files …`. |
+| `r2-http adapter: client "aws-sdk" requires the optional peer dependencies …` on the first tool call | R2 is on its default AWS SDK engine without the AWS packages. | Add `--config-json '{"client":"fetch"}'`, or install the packages. |
+| `the mcp subcommand requires @modelcontextprotocol/sdk and zod` although both are installed | In files-sdk 3.0.0, the bundled MCP module resolves the package's own `package.json` one directory too high and reports the failure as a missing dependency. | Upgrade to files-sdk 3.0.1 or later. If `npx` keeps running a cached 3.0.0, pin `files-sdk@3.0.1` in the client's arguments. |
+| `Unauthorized` with `Access Denied.` on `list` | The listing's prefix is outside the policy's `s3:prefix` condition, often because `--key-prefix` is missing. | Start the server with the prefix the policy allows. |
+| `Unauthorized` on `head` or `download` of a key that doesn't exist | AWS answers a missing key with `403` instead of `404` when the caller lacks `s3:ListBucket` for it. | Check the key with `search`, or grant `s3:ListBucket` for that prefix. |
+| `MCP error -32602: Tool delete not found` | The server was started without `--allow-writes`. | Intended for a read-only server. Use a separate write server if you need one. |
+| `exceeds maxBytes=10485760` | The object is over the 10 MiB cap. | Ask for a `range`, or download it with the CLI. |
+| `key must not contain . or .. path segments` | The key tried to leave the prefix. | Use keys relative to `--key-prefix`. |
+| The client never connects, and its log shows `spawn npx ENOENT` | Desktop apps don't always get your shell's `PATH`. | Use the absolute path from `which npx`, or from `which files` for a global install. |
+| The client times out on first launch | `npx` is downloading the package. | Install globally and use `files` as the command, or raise the startup timeout (`MCP_TIMEOUT` in Claude Code, `startup_timeout_sec` in Codex). |

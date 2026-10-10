@@ -1,6 +1,8 @@
 ---
 title: Conditional operations
 description: Use provider-native create, replace, exact-read, delete, and copy predicates without bypassing plugins, hooks, receipts, or client policy.
+related:
+  - /guides/s3-conditional-upload-conflicts
 ---
 
 Conditional operations apply an ETag predicate in the provider's mutation or read request. They are the safe building blocks for create-only writes and compare-and-set updates: the SDK never implements them as `head()` / `exists()` followed by an unconditional operation.

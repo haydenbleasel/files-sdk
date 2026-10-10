@@ -1,0 +1,452 @@
+---
+title: Stream S3 or R2 files as a ZIP download without buffering them
+description: A Next.js route that zips a user's selected files or folder from S3 or R2 while it streams, checks the selection before the first byte, and hands larger exports to a background job.
+sidebar:
+  label: ZIP downloads
+seo:
+  title: Download S3 and R2 files as a streaming ZIP
+related:
+  - /docs/plugins/zip
+  - /guides/multi-tenant-file-storage
+  - /guides/private-video-range-streaming
+  - /docs/api/head
+  - /docs/api/url
+---
+
+To download many bucket objects as one ZIP, don't fetch them all and zip the result in memory. `files.zip()`, from the `zip()` plugin, returns a `ReadableStream` that downloads one object at a time and writes the ZIP records as the client reads. Memory stays roughly flat however much is selected, and the first bytes go out within milliseconds. Return that stream as the body of a `Response`.
+
+The stream can't fix two things for you. Once the `200` is sent, an error can only cut the download short, so check the whole selection before you start: build every key server-side, confirm each object exists, and stay under the classic ZIP limits. A streamed response also has to finish within your host's request time limit. Exports that might run longer go to a background job that writes the archive with `zipTo()` and gives the user a signed link.
+
+## Before you start
+
+- An S3 bucket (this guide calls it `uploads`) with each user's files under `users/<id>/`, and credentials that allow `s3:GetObject` and `s3:ListBucket`, plus `s3:PutObject` for the export job.
+- A Next.js App Router app with an auth library that resolves the signed-in user on the server. The routes run on the default Node.js runtime.
+- Written against files-sdk 3.0 (the plugin writes archives with `fflate` 0.8.3), Next.js 16.4, and Node.js 24. The measurements and failure tests below ran on an Apple M1 Pro against a local MinIO server (RELEASE.2025-09-06), under Bun 1.4.2 and the Next.js 16.4 dev server.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage
+```
+
+`@aws-sdk/lib-storage` is only needed for the export path. `zipTo()` uploads an archive whose length isn't known in advance, and the S3 adapter sends that as a multipart upload. On R2, use `r2({ bucket: "uploads" })` from `files-sdk/r2`; in Node.js it uses the same AWS SDK client.
+
+## Set up the storage client
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { zip } from "files-sdk/zip";
+
+export const files = createFiles({
+  // Credentials come from the AWS credential chain.
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+  plugins: [zip()],
+});
+```
+
+`zip()` adds `files.zip()`, `files.zipTo()`, and `files.unzip()`. Construct with `createFiles` so those methods are on the type. The plugin intercepts nothing and reads through the whole instance, so its position in `plugins` doesn't matter. With [`encryption()`](/docs/plugins/encryption) installed, entries are decrypted before they go into the archive.
+
+## Send the selection with a form
+
+Use a plain HTML form that posts the selected keys, not a `fetch()` call:
+
+```tsx title="app/files/download-form.tsx" lineNumbers
+export function DownloadForm({ selected }: { selected: string[] }) {
+  return (
+    <form action="/api/archive" method="post">
+      {selected.map((key) => (
+        <input key={key} name="key" type="hidden" value={key} />
+      ))}
+      <button disabled={selected.length === 0} type="submit">
+        Download {selected.length} files as a ZIP
+      </button>
+    </form>
+  );
+}
+```
+
+A form submission is a navigation. When the response arrives with `Content-Disposition: attachment`, the browser gives it to its download manager, which writes bytes to disk as they arrive, and the page stays where it is. A `fetch()` followed by `response.blob()` holds the whole archive in the tab's memory before the user can save it, which moves the buffering problem from the server to the browser.
+
+To download a folder, send one `folder` field instead: `<input name="folder" type="hidden" value="reports/2026" />`. Keys and folders are relative to the user's own folder (`photos/beach.jpg`), the same paths a gateway with a `users/<id>/` `keyPrefix` returns from `list`.
+
+## Check the whole selection first
+
+This helper turns the form into storage keys and checks everything that can be checked before any bytes go out:
+
+```ts title="lib/archive.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { files } from "./files";
+
+// Policy limits. The ZIP format allows 65,534 entries and just under 4 GiB.
+const MAX_FILES = 1000;
+export const MAX_STREAM_BYTES = 2 * 1024 ** 3;
+// Under the format's 4 GiB, with room for each entry's headers.
+export const MAX_EXPORT_BYTES = 4_000_000_000;
+
+// Text compresses well. Photos, video, PDFs, and archives mostly don't.
+const TEXT = /\.(?:csv|json|txt|md|html|xml|svg|log)$/i;
+
+export interface Selection {
+  keys: string[];
+  method: "deflate" | "store";
+  totalBytes: number;
+}
+
+/** Turn a client-supplied relative path into a storage key under `root`. */
+const toStorageKey = (root: string, value: FormDataEntryValue): string => {
+  if (
+    typeof value !== "string" ||
+    value === "" ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\0") ||
+    value.split("/").some((part) => part === "." || part === "..")
+  ) {
+    throw new FilesError("Invalid", "Invalid file path");
+  }
+  return root + value;
+};
+
+export const resolveSelection = async (
+  root: string,
+  form: FormData,
+  maxBytes = MAX_STREAM_BYTES
+): Promise<Selection> => {
+  const entries: { key: string; size: number }[] = [];
+  const folder = form.get("folder");
+
+  if (folder !== null) {
+    const prefix = toStorageKey(root, folder);
+    for await (const file of files.listAll({
+      prefix: prefix.endsWith("/") ? prefix : `${prefix}/`,
+    })) {
+      // Zero-byte "folder" objects from the S3 console end in "/". They
+      // aren't files, and zip() refuses them as entry names.
+      if (!file.key.endsWith("/")) {
+        entries.push({ key: file.key, size: file.size });
+      }
+      if (entries.length > MAX_FILES) {
+        break;
+      }
+    }
+  } else {
+    const keys = [
+      ...new Set(form.getAll("key").map((value) => toStorageKey(root, value))),
+    ];
+    if (keys.length > MAX_FILES) {
+      throw new FilesError("Invalid", `Select at most ${MAX_FILES} files`);
+    }
+    // One HEAD per key: proves each object exists and gives its size.
+    const { results, errors } = await files.head(keys);
+    const [missing] = errors ?? [];
+    if (missing) {
+      throw new FilesError(
+        missing.error.code,
+        `${missing.key.slice(root.length)}: ${missing.error.message}`
+      );
+    }
+    entries.push(...results.map(({ key, size }) => ({ key, size })));
+  }
+
+  if (entries.length === 0) {
+    throw new FilesError("NotFound", "Nothing to download");
+  }
+  if (entries.length > MAX_FILES) {
+    throw new FilesError("Invalid", `Select at most ${MAX_FILES} files`);
+  }
+  const totalBytes = entries.reduce((sum, entry) => sum + entry.size, 0);
+  if (totalBytes > maxBytes) {
+    throw new FilesError(
+      "Unsupported",
+      "Too large to download directly. Start an export instead."
+    );
+  }
+  const keys = entries.map((entry) => entry.key);
+  return {
+    keys,
+    method: keys.every((key) => TEXT.test(key)) ? "deflate" : "store",
+    totalBytes,
+  };
+};
+```
+
+What each check is for:
+
+- **Keys are built on the server.** Every key is `users/<id>/` plus the client's path, and `toStorageKey` refuses `.` and `..` segments, absolute paths, backslashes, and NUL bytes. S3 treats keys as opaque strings, but the filesystem adapter would resolve `..` upward, and no real selection needs it. A request for `../u2/secret.txt` got `422` `Invalid file path`.
+- **`files.head(keys)` is the bulk form.** It sends one `HEAD` per key, eight at a time by default, and never throws for a single bad key: it resolves to `{ results, errors }` (see [bulk operations](/docs/bulk)). A selection with a missing file got `404` and `{"code":"NotFound","message":"photos/nope.jpg: The specified key does not exist."}`.
+- **Folder selections skip folder markers.** Creating a folder in the S3 console writes a zero-byte object whose key ends in `/`. Passed to `zip()`, that key fails the entry-name check. With a `docs/` marker object in a local MinIO bucket, `files.zip({ prefix: "docs/" })` rejected with `zip: entry name "docs/" has an empty path segment (leading, trailing, or double slash)`.
+- **Sizes are added up before you stream.** The plugin enforces the classic ZIP limits itself, but it checks the archive's total size as it writes, so an archive past 4 GiB would fail after roughly 4 GiB had already been sent. Adding up the sizes first turns that into a `422` before the download starts. `MAX_STREAM_BYTES` is your own policy for how much one request may stream.
+- **`method` is chosen for the selection.** `"deflate"` shrinks text a lot and wastes CPU on data that's already compressed. The plugin applies one method to every entry in an archive. The numbers are under [What it costs](#what-it-costs).
+
+## Stream the archive
+
+```ts title="app/api/archive/route.ts" lineNumbers
+import { errorResponse, resolveSelection, startArchive } from "@/lib/archive";
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to download files", { status: 401 });
+  }
+  const root = `users/${session.user.id}/`;
+
+  try {
+    const selection = await resolveSelection(root, await request.formData());
+    const archive = files.zip(selection.keys, {
+      method: selection.method,
+      // Entry paths mirror the user's folders, without the users/<id>/ prefix.
+      name: (key) => key.slice(root.length),
+    });
+    const body = await startArchive(archive);
+    const date = new Date().toISOString().slice(0, 10);
+    return new Response(body, {
+      headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": `attachment; filename="files-${date}.zip"`,
+        "Content-Type": "application/zip",
+      },
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check) and returns `{ user: { id: string } }` or `null`.
+
+The `name` option sets each entry's path inside the archive. Stripping the user's prefix gives `photos/beach.jpg` rather than `users/u1/photos/beach.jpg`. If you flatten folders instead, two keys can map to the same name, and the plugin refuses that rather than writing an archive that's ambiguous.
+
+The response has no `Content-Length`, because the archive's size isn't known until the last entry is written, so it goes out with `Transfer-Encoding: chunked`. The browser shows how much has arrived but no total or time remaining.
+
+With two JPEGs selected, the route returned `200`, `application/zip`, and 5,000,268 bytes, and `unzip -v` listed both entries as `Stored`. A folder of two CSV files came back with both entries `Defl:N`.
+
+## Return errors before the first byte
+
+`startArchive` and `errorResponse` go in `lib/archive.ts` too:
+
+```ts title="lib/archive.ts" lineNumbers
+/**
+ * Read the first chunk before committing to a 200, so a bad selection or a
+ * missing first object becomes an error response instead of a broken download.
+ */
+export const startArchive = async (
+  archive: ReadableStream<Uint8Array>
+): Promise<ReadableStream<Uint8Array>> => {
+  const reader = archive.getReader();
+  const first = await reader.read();
+  return new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        if (first.done) {
+          controller.close();
+        } else {
+          controller.enqueue(first.value);
+        }
+      },
+      async pull(controller) {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+        } else {
+          controller.enqueue(value);
+        }
+      },
+      // The client went away: stop the archive and its current download.
+      cancel: (reason) => reader.cancel(reason),
+    },
+    { highWaterMark: 0 }
+  );
+};
+
+const STATUS: Partial<Record<FilesError["code"], number>> = {
+  Invalid: 422,
+  NotFound: 404,
+  Unsupported: 422,
+};
+
+export const errorResponse = (error: unknown): Response => {
+  if (error instanceof FilesError && STATUS[error.code]) {
+    return Response.json(
+      { code: error.code, message: error.message },
+      { status: STATUS[error.code] }
+    );
+  }
+  throw error;
+};
+```
+
+`files.zip()` returns its stream synchronously and does no work until the first read. That first read resolves the selection (listing a prefix if you passed one), validates every entry name and the entry count, downloads the first object, and emits its header. Any error there means the archive can't be built, but if you hand the unread stream straight to `Response`, the error only arrives after you've already chosen the status.
+
+Without `startArchive`, and with the first key missing, the Next.js 16.4 dev server closed the connection without sending any response (`curl` exit code 52, empty reply). Bun 1.4.2's `Bun.serve` sent `200 OK` and then dropped the connection. With `startArchive`, the same request got a `404` with the JSON error. Because the form navigates, the browser shows whatever an error response contains, so for a page users will see, have `errorResponse` redirect back to your file list with the message (for example `?error=…`) rather than return JSON.
+
+An error after the first chunk still can't change the status. To simulate a file deleted between the `HEAD` and its turn in the archive, the test selection's third key was missing. Next.js sent `200`, streamed 16,777,346 bytes covering the first two entries, logged the `NotFound` error, and closed the connection. `curl` exited with code 18 (partial file), Node's `fetch` rejected with `TypeError: terminated`, and `unzip` refused the partial file because the central directory, which is written last, was missing. The user gets a download that fails visibly, not an archive that opens with files quietly missing.
+
+## Stop work when the user cancels
+
+If the user cancels the download or closes the tab, the connection closes. Next.js 16.4 pipes a route's response body with an `AbortController` tied to the Node.js response's `close` event (`pipeToNodeResponse` in `next/dist/server/pipe-readable.js`), so it cancels the body stream. Cancelling the stream from `startArchive` cancels the reader, which cancels the `zip()` stream. Its generator stops and cancels the download of the object in progress.
+
+The stream doesn't read ahead either. It's created with `highWaterMark: 0`, so it lists and downloads only when the consumer pulls. With 50 objects of 8 MiB each selected and the client aborting after 20 MB, the route had started 3 of the 50 downloads, and the cancel reached the stream returned by `startArchive`.
+
+## What it costs
+
+Each configuration below ran three times, one request per fresh `Bun.serve` process, with MinIO on the same machine. The ranges cover the three runs. The buffered baseline downloads everything with `files.download(keys)` (eight at a time), then builds the archive with `fflate`'s `zipSync`. The server process used about 50 MiB before each request.
+
+| Dataset | Method | Approach | First byte | Total | Peak RSS |
+| --- | --- | --- | --- | --- | --- |
+| 50 random 8 MiB files (400 MiB) | `store` | `zip()` stream | 17–21 ms | 1.54–1.56 s | 117–128 MiB |
+| 50 random 8 MiB files | `deflate` | `zip()` stream | 22–24 ms | 6.44–6.49 s | 167–185 MiB |
+| 50 random 8 MiB files | `store` | Buffered | 1.67–1.95 s | 1.89–2.19 s | 1,085–1,896 MiB |
+| 2,000 JSON files, 10.8 KiB average (21.2 MiB) | `deflate` | `zip()` stream | 20–24 ms | 1.82–2.05 s | 203–205 MiB |
+| 2,000 JSON files | `store` | `zip()` stream | 19–22 ms | 1.28–1.32 s | 128–135 MiB |
+| 2,000 JSON files | `deflate` | Buffered | 0.95–1.09 s | 0.96–1.10 s | 306–308 MiB |
+
+What the numbers show:
+
+- **The streamed archive's memory doesn't grow with the selection.** Peak RSS rose 65–155 MiB above idle for both 400 MiB of media and 21 MiB of JSON. The buffered approach grew with the data and needed over 1 GiB for 400 MiB of files.
+- **Time to first byte doesn't depend on selection size** when streaming. The buffered approach sends nothing until every object is downloaded and the archive is built.
+- **Deflate on incompressible data costs CPU and saves nothing.** On random bytes, `deflate` took about 4 times as long as `store`, and the archive came out slightly larger (419,580,790 bytes against 419,436,322). On the JSON files it reduced 22,444,152 bytes to 2,535,683.
+- **Many small files depend on latency.** `zip()` downloads one object at a time, and the buffered baseline finished the JSON set sooner because it fetched eight at a time. MinIO on the same machine responds in well under a millisecond. Over a real network, each entry waits at least one request round trip, so as an estimate, 2,000 objects at 30 ms each spend a minute waiting before any compression.
+
+## Large exports: build the archive in a background job
+
+A streamed archive has to finish while the request is open. On Vercel, a function's [maximum duration](https://vercel.com/docs/functions/limitations#max-duration) includes the time spent sending the response, streamed responses included (300 seconds by default). Streamed responses aren't subject to the 4.5 MB body limit ([Vercel's guide](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions)), but a slow connection can keep a download open far longer than the server needs to produce it. For large selections, build the archive once, store it, and give the user a link.
+
+```ts title="lib/exports.ts" lineNumbers
+import { files } from "./files";
+
+export interface ExportJob {
+  id: string;
+  userId: string;
+  /** Storage keys, already checked by resolveSelection(). */
+  keys: string[];
+  method: "deflate" | "store";
+}
+
+export const exportKey = (job: { id: string; userId: string }) =>
+  `exports/${job.userId}/${job.id}.zip`;
+
+/** Build and store the archive. Run it from a queue consumer or worker. */
+export async function runExport(job: ExportJob) {
+  const root = `users/${job.userId}/`;
+  const stored = await files.zipTo(exportKey(job), job.keys, {
+    method: job.method,
+    name: (key) => key.slice(root.length),
+  });
+  return { key: stored.key, size: stored.size };
+}
+```
+
+The route that starts an export runs the same checks with the higher limit, records the job, and queues it. It returns `202` without building anything:
+
+```ts title="app/api/exports/route.ts" lineNumbers
+import {
+  MAX_EXPORT_BYTES,
+  errorResponse,
+  resolveSelection,
+} from "@/lib/archive";
+import { getSession } from "@/lib/auth";
+import { createExport, enqueue } from "@/lib/db";
+
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to export files", { status: 401 });
+  }
+  const userId = session.user.id;
+
+  try {
+    const selection = await resolveSelection(
+      `users/${userId}/`,
+      await request.formData(),
+      MAX_EXPORT_BYTES
+    );
+    const id = crypto.randomUUID();
+    await createExport({ id, status: "queued", userId });
+    await enqueue({
+      id,
+      keys: selection.keys,
+      method: selection.method,
+      userId,
+    });
+    return Response.json({ id }, { status: 202 });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+```
+
+`createExport`, `getExport`, and `enqueue` stand in for your database and job queue. The consumer calls `runExport(job)` and then marks the export `ready`.
+
+When the user clicks the finished export, check ownership and redirect to a short-lived signed URL. Store the key, not a URL, and sign a new one for each click:
+
+```ts title="app/api/exports/[id]/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { getExport } from "@/lib/db";
+import { exportKey } from "@/lib/exports";
+import { files } from "@/lib/files";
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to download exports", { status: 401 });
+  }
+  const { id } = await params;
+  const job = await getExport(id);
+  if (job?.userId !== session.user.id || job.status !== "ready") {
+    return new Response("Not found", { status: 404 });
+  }
+  const url = await files.url(exportKey(job), {
+    expiresIn: 300,
+    responseContentDisposition: `attachment; filename="export-${job.id}.zip"`,
+  });
+  return Response.redirect(url, 302);
+}
+```
+
+Against MinIO, `zipTo()` stored the 400 MiB media set as a 419,436,322-byte object in about 2.1 seconds, with peak RSS of 303–317 MiB. Memory is higher than streaming to a client because lib-storage buffers several multipart parts at a time. A `GET` of the signed URL came back with `Content-Type: application/zip` and `Content-Disposition: attachment; filename="…"`. Because the stored archive is an ordinary object, the download has a `Content-Length`, so the browser shows a total, and S3 serves byte ranges from it, so a download interrupted while the URL is still valid can resume. After the URL expires, the user clicks the export again to get a new one.
+
+On R2, run the job in Node.js with `r2()`'s AWS SDK client. In a Worker it doesn't work as-is: the R2 binding's `put()` rejects a stream of unknown length, and the `client: "fetch"` engine buffers the whole body before its single `PUT` ([R2 adapter](/docs/adapters/r2)).
+
+Exports pile up, so expire them. On S3, a lifecycle rule with a prefix filter deletes matching objects a set number of days [after creation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/lifecycle-expire-general-considerations.html):
+
+```json title="lifecycle.json" lineNumbers
+{
+  "Rules": [
+    {
+      "ID": "expire-exports",
+      "Filter": { "Prefix": "exports/" },
+      "Status": "Enabled",
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}
+```
+
+Apply it with `aws s3api put-bucket-lifecycle-configuration --bucket uploads --lifecycle-configuration file://lifecycle.json`. That call replaces the bucket's whole lifecycle configuration, so include any rules you already have. On R2, run `npx wrangler r2 bucket lifecycle add uploads expire-exports exports/ --expire-days 7`. R2 [removes expired objects](https://developers.cloudflare.com/r2/buckets/object-lifecycles/) typically within 24 hours.
+
+## Limits and tradeoffs
+
+- **Classic ZIP only.** No ZIP64: at most 65,534 entries, each entry and the whole archive under 4 GiB. Past those, the plugin throws `Unsupported` rather than write a corrupt archive.
+- **One object at a time.** Entries download sequentially, so selections of many small files are slow over high-latency links. There's no concurrency option.
+- **A streamed download can't resume.** It has no `Content-Length` or `ETag`, so if it's interrupted, the user starts again. An export stored with `zipTo()` can resume while its signed URL is valid.
+- **The selection can change mid-stream.** A file deleted after the `HEAD` truncates the download, as shown above. A file overwritten after the `HEAD` goes into the archive with its new bytes, so the size total you checked can be stale. The plugin still checks each entry against the 4 GiB limit.
+- **The archive isn't encrypted.** With `encryption()` installed, entries are decrypted when read, and the response is protected only by TLS. An archive stored with `zipTo()` is encrypted at rest, because the upload goes through the same plugins.
+
+## Troubleshooting
+
+**`zip: entry name "…/" has an empty path segment (leading, trailing, or double slash)`.** The selection includes a folder marker object, or a key with `//` in it. Filter keys that end in `/`, as `resolveSelection` does.
+
+**`zip: two keys map to the same entry name "…" — disambiguate via the name option`.** Your `name` function maps two keys to the same path. Keep enough of each key's path to make the names unique.
+
+**`zip: 70000 entries reach the ZIP format's limit of 65535`, or `zip: entry "…" exceeds 4 GiB, which needs ZIP64`.** The selection is too large for classic ZIP. Split it into several archives, and give the user a signed link to any single file over 4 GiB.
+
+**The download stops partway and the file won't open.** An object failed after the response had started, usually because it was deleted after the selection was checked. The server log has the `FilesError` with the key.
+
+**Nothing arrives for a long time, then the whole file arrives at once.** Something between the route and the user is buffering the response: a `fetch()` and `blob()` in the page instead of a form, or a reverse proxy that buffers responses.
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'`.** `zipTo()` always uploads a stream of unknown length. Install `@aws-sdk/lib-storage` where the export job runs.

@@ -1,0 +1,489 @@
+---
+title: Test storage failover and recover writes after an outage
+description: Run an outage drill with failover() and two local MinIO servers, see which backend answers each read, write, and delete, then copy the missed writes back and verify both sides match.
+sidebar:
+  label: Failover recovery drill
+seo:
+  title: Storage failover drill and outage recovery
+related:
+  - /docs/plugins/failover
+  - /docs/api/sync
+  - /docs/timeouts
+  - /guides/migrate-s3-to-r2
+  - /docs/adapters/minio
+---
+
+With [`failover()`](/docs/plugins/failover), reads and writes keep working while the primary store is down. But a write made during the outage lands only on the secondary, and the primary doesn't know about it. When the primary comes back, files written during the outage disappear from view, and files deleted during the outage come back. The plugin doesn't reconcile anything. That part is yours, and a drill is the only way to find out whether your plan works.
+
+This guide runs that drill against two local MinIO servers. It records every write the secondary accepts in a journal, takes the primary down, and notes which backend answered each call. It then brings the primary back and shows why a plain `sync()` gets the reconciliation wrong. Finally, it copies the missed writes back from the journal and checks every object on both sides by SHA-256. The results below come from running exactly this code.
+
+## Before you start
+
+- The MinIO server binary (`brew install minio/stable/minio` on macOS, or a download from [min.io](https://min.io/download)) and three terminals.
+- Node.js 22 or later, or Bun.
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, and MinIO `RELEASE.2025-09-06T17-38-46Z`. The scripts ran under Bun 1.4.2.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+The reconcile step streams objects from one server to the other, and the `minio()` adapter uploads a stream through `@aws-sdk/lib-storage`. The presigner packages are needed for `url()` and `signedUploadUrl()`.
+
+## What the plugin promises
+
+`failover()` wraps every operation. It tries the primary first, then each secondary in order, and returns the first success. Three rules decide what you'll see in the drill, and the [reference](/docs/plugins/failover) covers the rest:
+
+- **It fails over only when a backend looks down.** That means a `Provider` error: a refused connection, a 5xx, or a timeout. A `NotFound` or `Unauthorized` is a definitive answer from a healthy backend, so it comes back as-is.
+- **A write goes to one backend.** It lands on the first reachable backend and isn't copied to the others.
+- **Each call starts at the primary.** The plugin keeps no state between calls. Once the primary answers again, every read goes there first.
+
+## Start two MinIO servers
+
+Run each server in its own terminal, with its own data directory:
+
+```bash
+mkdir -p drill/data-primary drill/data-secondary
+
+# Terminal 1: the primary
+MINIO_ROOT_USER=drilladmin MINIO_ROOT_PASSWORD=drillsecret123 \
+  minio server drill/data-primary --address :9000 --console-address :9001
+
+# Terminal 2: the secondary
+MINIO_ROOT_USER=drilladmin MINIO_ROOT_PASSWORD=drillsecret123 \
+  minio server drill/data-secondary --address :9100 --console-address :9101
+```
+
+Open each console (`http://127.0.0.1:9001` and `http://127.0.0.1:9101`), sign in with those credentials, and create a bucket named `uploads` on each. The third terminal runs the scripts.
+
+## Wire up failover with a write journal
+
+`onFailover` tells you an operation moved to the secondary, but it carries only the verb and backend indices, not the key. To reconcile, you need the keys. The simplest place to collect them is the secondary adapter itself: the plugin only sends a write there when the primary failed, so every write the secondary accepts is a write the primary missed.
+
+```ts title="drill/storage.ts" lineNumbers
+import { appendFile, readFile } from "node:fs/promises";
+
+import { Files } from "files-sdk";
+import type { Adapter, OperationOptions } from "files-sdk";
+import { failover } from "files-sdk/failover";
+import { minio } from "files-sdk/minio";
+
+const credentials = {
+  accessKeyId: "drilladmin",
+  secretAccessKey: "drillsecret123",
+};
+
+// In production these are your real backends, for example r2() and s3().
+const primaryAdapter = () =>
+  minio({
+    bucket: "uploads",
+    endpoint: "http://127.0.0.1:9000",
+    ...credentials,
+  });
+const secondaryAdapter = () =>
+  minio({
+    bucket: "uploads",
+    endpoint: "http://127.0.0.1:9100",
+    ...credentials,
+  });
+
+// Direct handles on each backend, for replication and reconciliation.
+export const primary = new Files({ adapter: primaryAdapter(), timeout: 2000 });
+export const secondary = new Files({
+  adapter: secondaryAdapter(),
+  timeout: 2000,
+});
+
+export interface JournalEntry {
+  op: "upload" | "delete";
+  key: string;
+  at: number;
+}
+
+export const JOURNAL = new URL("failover-journal.jsonl", import.meta.url);
+
+const record = (op: JournalEntry["op"], key: string) =>
+  appendFile(JOURNAL, `${JSON.stringify({ op, key, at: Date.now() })}\n`);
+
+export const readJournal = async (): Promise<JournalEntry[]> => {
+  const text = await readFile(JOURNAL, "utf8").catch(() => "");
+  return text
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as JournalEntry);
+};
+
+// Every write the secondary accepts is a write the primary missed.
+const journaled = (adapter: Adapter): Adapter => {
+  const { move } = adapter;
+  return {
+    ...adapter,
+    async upload(key, body, opts) {
+      const result = await adapter.upload(key, body, opts);
+      await record("upload", key);
+      return result;
+    },
+    async delete(key, opts) {
+      await adapter.delete(key, opts);
+      await record("delete", key);
+    },
+    async copy(from, to, opts) {
+      await adapter.copy(from, to, opts);
+      await record("upload", to);
+    },
+    // Without a native move, Files runs copy + delete, which are journaled.
+    ...(move && {
+      async move(from: string, to: string, opts?: OperationOptions) {
+        await move(from, to, opts);
+        await record("upload", to);
+        await record("delete", from);
+      },
+    }),
+  };
+};
+
+// The instance the app uses.
+export const files = new Files({
+  adapter: primaryAdapter(),
+  timeout: 2000,
+  retries: 2,
+  plugins: [
+    failover({
+      secondaries: journaled(secondaryAdapter()),
+      onFailover: ({ operation, failed, next, error }) =>
+        console.warn(
+          `  failover: ${operation} ${failed} -> ${next} (${error.code}${error.timedOut ? ", timed out" : ""})`
+        ),
+    }),
+  ],
+});
+```
+
+A few details matter here:
+
+- **The journal is written after the secondary accepts the write.** If the process dies between the two, that write isn't journaled. The verification step at the end catches it. In production, write the journal to your database, not a local file, so every app instance appends to the same one.
+- **Spreading the adapter copies its capabilities and other methods**, so the secondary still answers reads and declares what it supports. The `minio()` adapter's `raw` getter is read once at the spread, before the client has loaded, so the wrapped copy's `raw` is `undefined`. The plugin doesn't use it.
+- **`timeout: 2000` matters most.** A refused connection fails fast. A primary that accepts the connection and then never answers stalls the call until the timeout fires. Without one, a call can hang for good. The plugin's internal instance for each secondary inherits the same `timeout` and `retries`.
+- **`retries: 2` delays the failover.** Retries run against the primary before the plugin moves on, so each failed-over call pays for them. A timeout isn't retried, so a hung primary costs one timeout per call.
+
+## Seed and replicate
+
+```ts title="drill/seed.ts" lineNumbers
+import { sync } from "files-sdk";
+
+import { primary, secondary } from "./storage";
+
+await primary.upload("docs/a.txt", "alpha v1");
+await primary.upload("docs/b.txt", "bravo v1");
+await primary.upload("docs/c.json", '{"c":1}');
+await primary.upload("docs/deleted-before.txt", "gone soon");
+
+// Replicate. In production this is native replication or a scheduled sync.
+const { uploaded } = await sync(primary, secondary, { compare: "size" });
+console.log(`replicated ${uploaded.length}`);
+
+// Replication lag: a delete and a write the replica hasn't seen yet.
+await primary.delete("docs/deleted-before.txt");
+await primary.upload("docs/lag.txt", "written after the last sync");
+```
+
+The last two lines model the lag every asynchronous replica has. Whatever your replication interval is, an outage can start inside it.
+
+## Take the primary down
+
+Stop the primary with Ctrl-C in its terminal, then run a mix of operations through the app's instance:
+
+```ts title="drill/outage.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { files } from "./storage";
+
+const steps: [string, () => Promise<unknown>][] = [
+  ["download a.txt", async () => (await files.download("docs/a.txt")).text()],
+  [
+    "download lag.txt",
+    async () => (await files.download("docs/lag.txt")).text(),
+  ],
+  [
+    "download deleted-before.txt",
+    async () => (await files.download("docs/deleted-before.txt")).text(),
+  ],
+  [
+    "upload new.txt",
+    () => files.upload("docs/new.txt", "written during the outage"),
+  ],
+  ["overwrite b.txt", () => files.upload("docs/b.txt", "bravo v2")],
+  [
+    "upload a stream",
+    () => files.upload("docs/stream.txt", new Blob(["streamed"]).stream()),
+  ],
+  ["delete a.txt", () => files.delete("docs/a.txt")],
+  ["copy c.json", () => files.copy("docs/c.json", "docs/c-copy.json")],
+  ["url c.json", () => files.url("docs/c.json", { expiresIn: 60 })],
+];
+
+for (const [label, run] of steps) {
+  console.log(label);
+  try {
+    const value = await run();
+    console.log(`  ok ${typeof value === "string" ? value : ""}`);
+  } catch (error) {
+    const err = FilesError.wrap(error);
+    console.log(`  ${err.code}: ${err.message}`);
+  }
+}
+```
+
+### What the drill showed
+
+With the primary stopped:
+
+| Call | Answered by | Result |
+| --- | --- | --- |
+| `download` of a replicated key | Secondary | The replica's bytes |
+| `head`, `exists`, `list` | Secondary | The replica's view: `list` included `deleted-before.txt` and not `lag.txt` |
+| `download("docs/lag.txt")`, written after the last sync | Secondary | `NotFound` |
+| `download("docs/deleted-before.txt")`, deleted after the last sync | Secondary | `gone soon`: a deleted file, served |
+| `download` of a key that never existed | Secondary | `NotFound` |
+| `upload` with a string body | Secondary | Stored, journaled |
+| `upload("docs/b.txt", "bravo v2")`, same size as before | Secondary | Stored, journaled |
+| `upload` with a `ReadableStream` body | Primary only | `Provider: connect ECONNREFUSED`, no failover |
+| `delete("docs/a.txt")` | Secondary | Deleted there and journaled. The primary still has it |
+| `copy("docs/c.json", "docs/c-copy.json")` | Secondary | Copied, destination journaled |
+| `url("docs/c.json")`, `signedUploadUrl()` | Primary, no failover | A URL on the stopped primary's host. Fetching it failed to connect |
+
+Three more runs used the same instance with the primary in a different state:
+
+| Primary state | Answered by | Result |
+| --- | --- | --- |
+| Hung (`kill -STOP` on its process), `timeout: 2000` | Secondary | `head` returned after 2,035 ms, failing over on a timed-out `Provider` error |
+| Hung, no `timeout` set | Nobody | Still waiting when the harness gave up after 15 s |
+| Running, but the app's secret key was wrong | Primary | `Unauthorized` for both a download and an upload, no failover |
+
+What stands out:
+
+- **`url()` and `signedUploadUrl()` didn't fail over.** The `minio()` adapter signs URLs locally, with no request to the server, so nothing failed and the plugin had no reason to move on. S3 and the S3-compatible adapters sign the same way. During an outage, redirect downloads and direct browser uploads point at a backend that isn't there.
+- **Streams went to the primary only.** A `ReadableStream` can be read once, so the plugin hands it to the primary and surfaces the error. That includes uploads proxied through the [gateway](/docs/ui/server/gateway), which streams the request body into `files.upload()`. Buffer the body first if an upload has to survive an outage.
+- **The replica's lag became visible.** For the length of the outage, a file deleted before it existed again, and a file written just before it didn't exist.
+- **Credential errors don't fail over.** That's by design: a bad key is a definitive answer. A revoked or rotated key on the primary takes reads and writes down rather than quietly moving them to the secondary.
+- **Each failed-over call paid for the primary first.** With `retries: 2`, calls took 0.3–1.1 s against the stopped primary. The AWS SDK also retries a refused connection on its own. With `retries: 0`, the same `head` took 0.1–0.3 s.
+
+## Bring the primary back
+
+Restart the primary with the same command. The data directory still holds everything it had before the outage. Reads now go to the primary, which answers definitively:
+
+| Key | What a read returned | Why |
+| --- | --- | --- |
+| `docs/new.txt` | `NotFound` | Written during the outage, so it exists only on the secondary |
+| `docs/a.txt` | `alpha v1` | Deleted during the outage, but only on the secondary |
+| `docs/b.txt` | `bravo v1` | The overwrite went to the secondary |
+| `docs/c-copy.json` | `NotFound` | The copy went to the secondary |
+
+To make the reconciliation realistic, the drill then uploaded `docs/new.txt` again through `files`, as a user would after seeing their file missing. That write landed on the primary.
+
+## Why a plain sync gets this wrong
+
+The obvious fix is to mirror the secondary back onto the primary:
+
+```ts title="drill/naive.ts" lineNumbers
+import { sync } from "files-sdk";
+
+import { primary, secondary } from "./storage";
+
+const plan = await sync(secondary, primary, {
+  compare: "size",
+  prune: true,
+  dryRun: true,
+});
+console.log({
+  uploaded: plan.uploaded,
+  skipped: plan.skipped,
+  deleted: plan.deleted,
+});
+```
+
+The dry run planned:
+
+```text
+uploaded: docs/c-copy.json, docs/deleted-before.txt, docs/new.txt
+skipped:  docs/b.txt, docs/c.json
+deleted:  docs/a.txt, docs/lag.txt
+```
+
+Three of those seven actions are wrong:
+
+- **It brings `deleted-before.txt` back.** The replica still had a file the primary deleted before the outage.
+- **It deletes `lag.txt`.** The primary wrote it after the last replication, so the secondary never had it, and `prune` treats it as extra.
+- **It skips `b.txt`.** The overwrite during the outage kept the same size, and `compare: "size"` can't see a same-size change. A dry run with the default `compare: "etag"` did plan the upload, because both sides are MinIO and these were single-part uploads, but it still made the other two mistakes. Across providers, ETags don't match even for identical bytes, so `"size"` is often the only built-in choice.
+
+It also uploads the outage copy of `new.txt` over the one the user uploaded after recovery. A two-sided `sync` can't tell a missed write from replication lag. Only a record of what happened during the outage can.
+
+## Reconcile from the journal
+
+```ts title="drill/reconcile.ts" lineNumbers
+import { rename } from "node:fs/promises";
+
+import { FilesError } from "files-sdk";
+import type { FileInfo, Files } from "files-sdk";
+
+import { JOURNAL, primary, readJournal, secondary } from "./storage";
+import type { JournalEntry } from "./storage";
+
+const dryRun = process.argv.includes("--dry-run");
+
+const headOrNull = async (f: Files, key: string): Promise<FileInfo | null> => {
+  try {
+    return await f.head(key);
+  } catch (error) {
+    if (FilesError.wrap(error).code === "NotFound") {
+      return null;
+    }
+    throw error;
+  }
+};
+
+// The last entry per key wins: the secondary's current copy is the outcome.
+const latest = new Map<string, JournalEntry>();
+for (const entry of await readJournal()) {
+  latest.set(entry.key, entry);
+}
+
+for (const [key, entry] of latest) {
+  const [onSecondary, onPrimary] = await Promise.all([
+    headOrNull(secondary, key),
+    headOrNull(primary, key),
+  ]);
+
+  let action: "copy" | "delete" | "conflict" | "none" = "none";
+  if (onPrimary?.lastModified && onPrimary.lastModified > entry.at) {
+    action = "conflict"; // The primary took a newer write since. Decide by hand.
+  } else if (onSecondary) {
+    action = "copy";
+  } else if (onPrimary) {
+    action = "delete";
+  }
+  console.log(`${action.padEnd(8)} ${key}`);
+
+  if (dryRun) {
+    continue;
+  }
+  if (action === "copy") {
+    const file = await secondary.download(key, { as: "stream" });
+    await primary.upload(key, file.stream(), {
+      contentType: file.contentType,
+      ...(file.metadata && { metadata: file.metadata }),
+    });
+  } else if (action === "delete") {
+    await primary.delete(key);
+  }
+}
+
+if (!dryRun && latest.size > 0) {
+  // Keep the applied journal as the incident record and start a fresh one.
+  await rename(
+    JOURNAL,
+    new URL(`failover-journal.${Date.now()}.jsonl`, JOURNAL)
+  );
+}
+```
+
+The script only touches keys in the journal, and for each one it treats the secondary's current state as the result of the outage. If the secondary has the key, the script copies it to the primary. If it doesn't, the key was deleted during the outage, so the script deletes it from the primary. It doesn't need to replay operations in order: an upload followed by a delete of the same key ends as a delete.
+
+The conflict check covers the case `sync` got wrong. If the primary's copy was modified after the journal entry, someone wrote to it after recovery, and the script leaves it alone. `bun drill/reconcile.ts --dry-run` printed:
+
+```text
+conflict docs/new.txt
+copy     docs/b.txt
+delete   docs/a.txt
+copy     docs/c-copy.json
+```
+
+Running it without `--dry-run` applied the three actions, left `new.txt` for review, and archived the journal. `lag.txt` and `deleted-before.txt` weren't in the journal, so the script didn't touch them.
+
+## Verify, then re-seed the replica
+
+```ts title="drill/verify.ts" lineNumbers
+import { createHash } from "node:crypto";
+
+import type { Files } from "files-sdk";
+
+import { primary, secondary } from "./storage";
+
+const hashes = async (f: Files) => {
+  const out = new Map<string, string>();
+  for await (const { key } of f.listAll()) {
+    const file = await f.download(key, { as: "stream" });
+    const hash = createHash("sha256");
+    for await (const chunk of file.stream()) {
+      hash.update(chunk);
+    }
+    out.set(key, hash.digest("hex"));
+  }
+  return out;
+};
+
+const [p, s] = await Promise.all([hashes(primary), hashes(secondary)]);
+const report = {
+  onlyPrimary: [...p.keys()].filter((key) => !s.has(key)),
+  onlySecondary: [...s.keys()].filter((key) => !p.has(key)),
+  different: [...p.keys()].filter(
+    (key) => s.has(key) && p.get(key) !== s.get(key)
+  ),
+};
+console.log(report);
+process.exitCode = Object.values(report).some((keys) => keys.length) ? 1 : 0;
+```
+
+After the reconcile, it reported `onlyPrimary: ["docs/lag.txt"]`, `onlySecondary: ["docs/deleted-before.txt"]`, and `different: ["docs/new.txt"]`. The primary was now correct. The differences were all on the secondary: the replication lag from before the outage, plus the conflict resolved in the primary's favor. Re-seeding the replica from the primary is now a one-way mirror with a known answer:
+
+```ts title="drill/reseed.ts" lineNumbers
+import { sync } from "files-sdk";
+
+import { primary, secondary } from "./storage";
+
+const plan = await sync(primary, secondary, {
+  compare: "etag",
+  prune: true,
+  dryRun: process.argv.includes("--dry-run"),
+});
+console.log({
+  uploaded: plan.uploaded,
+  deleted: plan.deleted,
+  errors: plan.errors,
+});
+```
+
+The dry run planned uploads of `lag.txt` and `new.txt` and a prune of `deleted-before.txt`, which is exactly the drift `verify.ts` found. After the real run, `verify.ts` reported three empty lists and exited 0. `compare: "etag"` works here because both sides are MinIO. Between different providers, use `"size"` or a comparator that reads a checksum you control, and review the dry run before you prune. [Migrate S3 files to R2](/guides/migrate-s3-to-r2#verify-every-object) covers verification at bucket scale, where hashing every object costs real money.
+
+## The recovery runbook
+
+1. **During the outage,** let `onFailover` alert you, and treat `url()` and `signedUploadUrl()` as broken for locally signed adapters.
+2. **When the primary returns,** keep the app running. New writes land on the primary, and the reconcile's conflict check protects them.
+3. **Dry-run the reconcile,** review conflicts, then apply it.
+4. **Run the verification.** Re-seed the replica from the primary with a reviewed dry run, then verify again until it exits 0.
+
+## Limits and tradeoffs
+
+- **No circuit breaker.** Each call tries the primary first, so every call during an outage pays for the primary's failure: a fast refusal, or the full `timeout` when the primary hangs. If that's too slow, switch the app to a secondary-first instance when `onFailover` fires repeatedly, and switch back yourself.
+- **The journal has a gap.** A crash between the secondary write and the journal append loses the entry. Verification finds those keys. Uploads that use an [`UploadControl`](/docs/resumable) go through the adapter's `resumableUpload` driver, which the wrapper doesn't intercept, so they aren't journaled either.
+- **Conflict detection relies on clocks.** It compares the app's clock, which stamps the journal, with the primary's `lastModified`. Clock skew between the two can hide a conflict or report a false one. Leave a margin, or flag every journaled key the primary changed after the outage started.
+- **The reconcile copies body, content type, and metadata.** It doesn't copy `Cache-Control`, because [`FileInfo`](/docs/api/stored-file) has no field for it. [Migrate S3 files to R2](/guides/migrate-s3-to-r2#configure-both-sides) shows a plugin that carries it.
+- **Keep the direct handles plugin-free.** On the app's instance, list `encryption()` or `compression()` before `failover()` in `plugins`, so the same stored bytes reach both backends. The reconcile's plain `primary` and `secondary` instances then copy those stored bytes and their `fsenc_` or `fscmp_` metadata as they are, without decoding them.
+- **Conditional operations are refused** on a failover instance, before any I/O. See [conditional operations](/docs/conditional-operations).
+- **The options you can use are limited to what both backends support.** `files.capabilities` is the intersection of the backends, so an option the secondary lacks is refused even while the primary is healthy.
+- **This drill doesn't test** a secondary outage while the primary is healthy (nothing fails over, and nothing needs reconciling), or both backends down (the last error is thrown).
+
+## Troubleshooting
+
+**Every call takes about two seconds during the drill.** The primary is hung rather than stopped, so each call waits for `timeout` before failing over. Lower the timeout, or switch instances as described under [Limits and tradeoffs](#limits-and-tradeoffs).
+
+**Calls hang forever when the primary hangs.** No `timeout` is set. Set one on the `Files` constructor. The plugin applies it to the secondary too. See [Timeouts](/docs/timeouts).
+
+**`Unauthorized` with no failover.** The primary rejected the credentials, which the plugin treats as a definitive answer. Fix the credentials. Pass a custom `shouldFailover` only if you really want auth failures to move traffic.
+
+**An upload fails with `connect ECONNREFUSED` even though `failover()` is installed.** The body was a `ReadableStream`, which only goes to the primary. Pass bytes, a string, or a `Blob` instead.
+
+**Download links and presigned uploads fail during the outage.** They were signed against the primary without a network call. Serve downloads through `download()` from your server, which does fail over, until the primary is back.
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'.`** The reconcile streams each copy into the primary. Install `@aws-sdk/lib-storage`.
+
+**`verify.ts` keeps reporting the same keys under `different`.** Those are conflicts, or writes that weren't journaled. Decide which copy is right, write it to the primary, and re-seed the secondary.

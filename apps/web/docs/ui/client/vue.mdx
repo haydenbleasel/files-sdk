@@ -1,6 +1,8 @@
 ---
 title: Vue
 description: The full Files API in the browser as a Vue 3 composable - useFiles returns the verbs plus refs for ambient state, with reactive useList / useFile / useSearch.
+related:
+  - /guides/nuxt-file-upload
 ---
 
 `files-sdk/vue` brings the full Files API to the browser as an idiomatic Vue 3 composable. `useFiles` returns one method per `Files` verb — `upload`, `download`, `url`, `list`, and the rest — plus ambient upload/error state as refs. The refs are nested in the returned object, so use `.value` in templates (as below) or destructure them first.

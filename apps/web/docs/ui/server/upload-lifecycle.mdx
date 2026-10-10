@@ -1,6 +1,8 @@
 ---
 title: Upload lifecycle
 description: onUploadComplete runs on the server once per verified upload, so you can record it, hand data back to the browser, or reject it, without a second endpoint.
+related:
+  - /guides/r2-upload-events-queues
 ---
 
 A browser upload through the [gateway](/docs/ui/server/gateway) ends on your server. `onUploadComplete` runs once the object has landed and been verified. It's the place to write the upload into your database, and whatever it returns is handed back to the client.

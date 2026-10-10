@@ -1,0 +1,343 @@
+---
+title: Upload to Azure Blob Storage with managed identity and user delegation SAS
+description: Let browsers upload to a private Azure Blob container with no account key anywhere, using DefaultAzureCredential on the server and user delegation SAS URLs, with the roles each step needs.
+sidebar:
+  label: Azure Blob with managed identity
+seo:
+  title: Azure Blob uploads with managed identity and SAS
+related:
+  - /docs/adapters/azure
+  - /docs/api/signed-upload-url
+  - /guides/presigned-upload-validation
+  - /guides/multi-tenant-file-storage
+  - /guides/unified-storage-api-typescript
+---
+
+Give `azure()` a Microsoft Entra credential instead of an account key. With `credential: new DefaultAzureCredential()` and an account name, the adapter authenticates every server-side call with an Entra token. `url()` and `signedUploadUrl()` return user delegation SAS URLs, which are signed with a short-lived key that Azure issues to that identity. Your machine signs in with `az login`, production uses the app's managed identity, and the same code runs in both with no secret to store or rotate.
+
+What it takes is two role assignments. One lets the identity read and write blobs in the container. The other lets it request the user delegation key. That request is made against the storage account, so the second role has to be assigned at the account (or higher) even when the data role covers only one container. Most cases where server uploads work but signing fails come down to that second role.
+
+## Before you start
+
+- An Azure storage account (this guide calls it `acmefiles`) with a private container named `uploads`.
+- The Azure CLI, signed in as someone who can create role assignments (`Microsoft.Authorization/roleAssignments/write`, which Owner and User Access Administrator include).
+- A host that gives your app a managed identity: App Service, Azure Functions, Container Apps, a VM, or AKS with workload identity.
+- Written against files-sdk 3.0, `@azure/storage-blob` 12.34, `@azure/identity` 4.13, and Next.js 16.4. The routes use only `Request` and `Response`.
+
+```package-install
+files-sdk @azure/storage-blob @azure/identity
+```
+
+## What each call needs
+
+| Call | How it's authorized | What the identity needs |
+| --- | --- | --- |
+| Server-side `upload`, `head`, `list`, `download`, `delete` | An Entra token for `https://storage.azure.com/.default` | A data role on the container, such as Storage Blob Data Contributor |
+| `url()` and `signedUploadUrl()` | Signed locally with a user delegation key, fetched by one Get User Delegation Key request | The `generateUserDelegationKey` action at account scope, such as Storage Blob Delegator |
+| The browser's `PUT` or `GET` with the SAS | The SAS itself, checked against the signing identity's roles | Both: the SAS permission and a matching role |
+
+The last row is easy to miss. Microsoft's [user delegation SAS reference](https://learn.microsoft.com/en-us/rest/api/storageservices/create-user-delegation-sas) says the permissions a SAS holder gets "are the intersection of the permissions that were granted to the security principal that requested the user delegation key and the permissions that were granted to the resource on the SAS token." A SAS can't grant more than the identity that signed it has.
+
+To see the requests behind the table, the adapter was run in Bun with a stand-in credential against a local HTTPS stub of the Blob service. Signing one download URL made the credential ask for a token with scope `https://storage.azure.com/.default`. Then the SDK sent `POST /?restype=service&comp=userdelegationkey` with that bearer token. Two more URLs signed right afterwards reused the same key, with no further request. Each SAS carried `skoid` and `sktid`: the object ID and tenant of the identity that requested the key. That's how Azure ties the SAS back to the identity when it's used.
+
+## Grant the roles
+
+Assign the data role at the container and the delegator role at the account:
+
+```bash lineNumbers
+SUB=$(az account show --query id -o tsv)
+RG=files-rg
+ACCOUNT=acmefiles
+ACCOUNT_SCOPE="/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Storage/storageAccounts/$ACCOUNT"
+CONTAINER_SCOPE="$ACCOUNT_SCOPE/blobServices/default/containers/uploads"
+
+# Read, write, list, and delete blobs in one container.
+az role assignment create \
+  --role "Storage Blob Data Contributor" \
+  --assignee you@example.com \
+  --scope "$CONTAINER_SCOPE"
+
+# Request user delegation keys. Must be the account scope or higher.
+az role assignment create \
+  --role "Storage Blob Delegator" \
+  --assignee you@example.com \
+  --scope "$ACCOUNT_SCOPE"
+```
+
+This is for local development; you'll repeat it for the managed identity in [Deploy with a managed identity](#deploy-with-a-managed-identity). Microsoft's reference explains the split: "Because the Get User Delegation Key operation acts at the level of the storage account," the action "must be scoped at the level of the storage account, the resource group, or the subscription." For a data role scoped to a container, it suggests adding Storage Blob Delegator at the account. Storage Blob Data Contributor includes the delegation action too, but only where it's assigned. Scoped to the container, as here, it doesn't cover a request made against the account.
+
+Two more things to know before testing:
+
+- **Creating the account didn't give you data access.** Per Microsoft's [role assignment guide](https://learn.microsoft.com/en-us/azure/storage/blobs/assign-azure-role-data-access), "When you create an Azure Storage account, you aren't automatically assigned permissions to access data via Microsoft Entra ID." Owner and Contributor manage the account; they don't read blobs.
+- **Assignments take time to apply.** The same guide says "it can take up to 10 minutes for changes to take effect." A `403` in the first few minutes after an assignment doesn't mean it's wrong.
+
+## Configure the adapter
+
+```ts title="lib/files.ts" lineNumbers
+import { DefaultAzureCredential } from "@azure/identity";
+import { createFiles } from "files-sdk";
+import { azure } from "files-sdk/azure";
+
+export const files = createFiles({
+  adapter: azure({
+    accountName: "acmefiles",
+    container: "uploads",
+    credential: new DefaultAzureCredential(),
+  }),
+});
+```
+
+`accountName` can come from `AZURE_STORAGE_ACCOUNT_NAME` instead. The adapter's credential handling, from its source:
+
+- **Passing `credential` turns off the key fallbacks.** The adapter reads `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_KEY`, and `AZURE_STORAGE_SAS_TOKEN` only when you pass none of `connectionString`, `accountKey`, `credential`, or `sasToken`. A connection string left in a `.env` file can't take over.
+- **Don't pass a key alongside it.** With both, the adapter picks `connectionString` first, then `accountKey`, then `credential`, and signs with the key.
+- **User delegation SAS is on by default.** `useUserDelegationSas` defaults to `true` with a credential. Set it to `false` and `url()` and `signedUploadUrl()` throw `Unsupported`.
+
+`DefaultAzureCredential` tries a fixed list of sources and uses the first that returns a token. In `@azure/identity` 4.13 the order is: environment variables (a service principal secret or certificate), workload identity, managed identity, then developer tools: VS Code, the Azure CLI, Azure PowerShell, the Azure Developer CLI, and a broker. Two consequences:
+
+- **An app setting can outrank the managed identity.** If `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID`, and `AZURE_CLIENT_ID` are set on the host, the environment credential wins. Set `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential` in production to use only the managed identity, or `prod` for the first three sources. Locally, `dev` limits it to the developer tools.
+- **A user-assigned identity needs its client ID.** Set `AZURE_CLIENT_ID` on the host, or pass `new DefaultAzureCredential({ managedIdentityClientId })`. A system-assigned identity needs neither.
+
+Sign in and check both roles from a script:
+
+```ts title="scripts/check-azure.ts" lineNumbers
+import { files } from "../lib/files";
+
+// Exercises the data role.
+const { items } = await files.list({ limit: 5 });
+console.log(
+  "Listed:",
+  items.map((item) => item.key)
+);
+
+// Exercises the delegator role. The blob doesn't need to exist.
+console.log("Signed:", await files.url("check.txt", { expiresIn: 60 }));
+```
+
+```bash
+az login
+bun scripts/check-azure.ts
+```
+
+If the list succeeds and the signing fails, the delegator role is missing or still propagating. If both fail with the same `403`, the data role is.
+
+## Allow the browser origin
+
+The browser sends the file to `acmefiles.blob.core.windows.net`, so the Blob service needs a CORS rule. Azure sets CORS rules [per service, not per container](https://learn.microsoft.com/en-us/rest/api/storageservices/cross-origin-resource-sharing--cors--support-for-the-azure-storage-services). In the portal, open the storage account, then **Settings** > **Resource sharing (CORS)** > **Blob service**, and add:
+
+| Field           | Value                                           |
+| --------------- | ----------------------------------------------- |
+| Allowed origins | `http://localhost:3000,https://app.example.com` |
+| Allowed methods | `PUT`                                           |
+| Allowed headers | `content-type,x-ms-blob-type`                   |
+| Exposed headers | `etag`                                          |
+| Max age         | `3600`                                          |
+
+The upload sends `x-ms-blob-type` and a `Content-Type`, so the browser preflights it, and both headers must be allowed. If no rule matches, Azure answers the preflight with `403`. Downloads are top-level navigations to the SAS URL, which need no CORS rule.
+
+## Sign the upload
+
+Keep the upload rules in one module, because the server checks them twice:
+
+```ts title="lib/upload-rules.ts" lineNumbers
+export const MAX_BYTES = 25 * 1024 * 1024;
+export const ALLOWED_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+]);
+```
+
+```ts title="app/api/uploads/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+import { ALLOWED_TYPES, MAX_BYTES } from "@/lib/upload-rules";
+
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in first", { status: 401 });
+  }
+  // What the browser says it will send. Azure won't enforce either value,
+  // so the complete route checks the blob that actually lands.
+  const { size, type } = (await request.json()) as {
+    size: number;
+    type: string;
+  };
+  if (!(size > 0 && size <= MAX_BYTES) || !ALLOWED_TYPES.has(type)) {
+    return new Response("File type or size not allowed", { status: 422 });
+  }
+  const key = `users/${session.user.id}/${crypto.randomUUID()}`;
+  const target = await files.signedUploadUrl(key, { expiresIn: 300 });
+  return Response.json({ key, target });
+}
+```
+
+`getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check). This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+`target` is `{ method: "PUT", url, headers: { "x-ms-blob-type": "BlockBlob" } }`. The URL is scoped to one blob (`sr=b`), grants create and write (`sp=cw`), and works only over HTTPS (`spr=https`). Its start time is set a minute in the past to absorb clock skew. Those were the parameters on the URL from the stubbed run.
+
+The call passes only `expiresIn`, and that's deliberate. A SAS can't carry a size limit or a content type, so the adapter refuses `maxSize`, a positive `minSize`, and `contentType` instead of returning a URL that ignores them. In the run, `signedUploadUrl(key, { expiresIn: 300, contentType: "application/pdf" })` threw `Unsupported` with ``azure: `contentType` is not supported for signed upload URLs``, and `maxSize` threw the matching ``azure: `maxSize` is not supported`` error. `files.capabilities.signedUpload` reports both as `false`.
+
+## Upload from the browser
+
+```ts title="lib/upload-to-azure.ts" lineNumbers
+export async function uploadToAzure(file: File): Promise<string> {
+  const signed = await fetch("/api/uploads", {
+    body: JSON.stringify({ size: file.size, type: file.type }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!signed.ok) {
+    throw new Error(await signed.text());
+  }
+  const { key, target } = await signed.json();
+
+  // Straight to Azure. x-ms-blob-type comes from target.headers; the
+  // Content-Type is stored as the blob's content type.
+  const put = await fetch(target.url, {
+    body: file,
+    headers: { ...target.headers, "Content-Type": file.type },
+    method: target.method,
+  });
+  if (!put.ok) {
+    throw new Error(`Azure refused the upload (${put.status})`);
+  }
+
+  const done = await fetch("/api/uploads/complete", {
+    body: JSON.stringify({ key }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!done.ok) {
+    throw new Error(await done.text());
+  }
+  return key;
+}
+```
+
+Send `target.headers` as given. [Put Blob](https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob) marks `x-ms-blob-type` as required. If a request sets `Content-Type` but not `x-ms-blob-content-type`, Azure stores the `Content-Type` value as the blob's type. Without either, the type defaults to `application/octet-stream`.
+
+One `PUT` writes the whole blob, up to 5,000 MiB on current service versions. `fetch` doesn't report upload progress; use `XMLHttpRequest` with an `upload.onprogress` listener if you need a progress bar.
+
+## Check the blob after it lands
+
+The SAS limited the key and the time window. It didn't check what arrived. This route does:
+
+```ts title="app/api/uploads/complete/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+import { ALLOWED_TYPES, MAX_BYTES } from "@/lib/upload-rules";
+
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in first", { status: 401 });
+  }
+  const { key } = (await request.json()) as { key: string };
+  if (!key.startsWith(`users/${session.user.id}/`)) {
+    return new Response("Not your upload", { status: 403 });
+  }
+  try {
+    const info = await files.head(key);
+    if (info.size > MAX_BYTES || !ALLOWED_TYPES.has(info.contentType)) {
+      await files.delete(key);
+      return new Response("File type or size not allowed", { status: 422 });
+    }
+    // Save info.key, info.size, and info.contentType to your database here.
+    return Response.json({ key: info.key, size: info.size });
+  } catch (error) {
+    if (error instanceof FilesError && error.code === "NotFound") {
+      return new Response("Upload not found", { status: 404 });
+    }
+    throw error;
+  }
+}
+```
+
+`head()` reads the stored size and type with the server's Entra token, so it needs only the data role. The type is still what the browser declared, not what the bytes are. To check the bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation). [Isolate each tenant's files](/guides/multi-tenant-file-storage) covers the prefix check in more depth.
+
+## Serve private downloads
+
+```ts title="app/api/download/route.ts" lineNumbers
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+export async function GET(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in first", { status: 401 });
+  }
+  const key = new URL(request.url).searchParams.get("key") ?? "";
+  if (!key.startsWith(`users/${session.user.id}/`)) {
+    return new Response("Not found", { status: 404 });
+  }
+  const url = await files.url(key, {
+    expiresIn: 300,
+    responseContentDisposition: "attachment",
+  });
+  return Response.redirect(url, 302);
+}
+```
+
+The read SAS is scoped the same way: `sp=r`, `sr=b`, `spr=https`, and the disposition is signed in as `rscd`. After the first call, signing is local. The adapter requests a key that outlives the SAS by an hour and five minutes, capped at Azure's 7 days, and reuses it for every URL that fits inside that window. In the stubbed run, three signed URLs cost one key request.
+
+## Deploy with a managed identity
+
+Turn on the app's system-assigned identity and give it the same two roles. For App Service:
+
+```bash lineNumbers
+PRINCIPAL_ID=$(az webapp identity assign \
+  --name files-app --resource-group $RG \
+  --query principalId -o tsv)
+
+az role assignment create \
+  --role "Storage Blob Data Contributor" \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --scope "$CONTAINER_SCOPE"
+
+az role assignment create \
+  --role "Storage Blob Delegator" \
+  --assignee-object-id "$PRINCIPAL_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --scope "$ACCOUNT_SCOPE"
+```
+
+Functions, Container Apps, and VMs each have their own switch for the identity, and the role assignments are identical. On AKS, workload identity gives the pod a federated token file, which `DefaultAzureCredential` picks up through its workload identity source.
+
+Then set `AZURE_TOKEN_CREDENTIALS=ManagedIdentityCredential` as an app setting, and `AZURE_CLIENT_ID` if the identity is user-assigned. The code doesn't change.
+
+With nothing left that uses the account key, you can turn off key access on the account: `az storage account update --name $ACCOUNT --resource-group $RG --allow-shared-key-access false`. Per the [Put Blob docs](https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob), "When Shared Key access is disallowed for the storage account, a service SAS token or an account SAS token will not be permitted on a request to Blob Storage." User delegation SAS, which is all this setup uses, isn't affected.
+
+## Use the gateway instead
+
+If the size limit has to hold before bytes reach the container, upload through your server. With `createFilesRouter({ files, maxUploadSize, authorize })` and `useFiles`, the gateway signs a direct upload only when the adapter can enforce everything the upload carries. On Azure, `signedUpload.contentType` and `signedUpload.maxSize` are `false`. A file with a type, or any upload when `maxUploadSize` is set, therefore gets the gateway's proxy `PUT` instead, and the server streams it into the container with its Entra token while counting bytes. The browser client always sends a type, so in practice every gateway upload to Azure is proxied. Downloads still redirect to a user delegation SAS. See [Gateway](/docs/ui/server/gateway) and the [validation guide's provider table](/guides/presigned-upload-validation).
+
+## Limits and tradeoffs
+
+- **7 days at most.** A user delegation SAS can't outlive the key that signs it, and Azure caps the key at seven days. `url(key, { expiresIn: 8 * 86400 })` threw `Invalid` before any request. `files.capabilities.signedUrl.maxExpiresIn` and `signedUpload.maxExpiresIn` are both `604800`. An account key signs longer-lived SAS, at the cost of holding the key.
+- **The upload SAS can overwrite.** `sp=cw` includes write, and Put Blob replaces an existing blob. Until it expires, the same URL can replace the blob, even after the complete route accepted it. Keep `expiresIn` short, and key each upload with a fresh UUID so a URL never points at someone else's blob.
+- **Uploads nobody completes stay.** A browser can `PUT` and never call complete. Delete stale objects under `users/` that have no database record, on a schedule.
+- **Revoking a SAS isn't instant.** Microsoft lists two ways: revoke the account's user delegation keys (`az storage account revoke-delegation-keys --name $ACCOUNT --resource-group $RG`), or remove the identity's role. Both are cached by Azure Storage, "so there may be a delay." The adapter also caches its key in memory, for up to an hour and five minutes past the SAS it was fetched for. A running process keeps signing with a revoked key, and the URLs it returns fail, until that key expires or the process restarts. Restart the app after revoking.
+- **SAS tokens and anonymous access can't sign.** An adapter built from `sasToken` alone, or with no credential, reports `signedUrl.supported: false`, and `url()` throws `Unsupported`. Only an account key or an Entra `credential` can mint new SAS.
+- **Credential failures surface as `Provider`.** When `DefaultAzureCredential` finds no identity, the error has code `Provider`, not `Unauthorized`, so a `retries` setting retries it. A `403` from Azure, such as a missing role, maps to `Unauthorized` as expected.
+- **`copy()` signs too.** A server-side copy sends Azure a 5-minute read SAS for the source, signed with the same delegation key, so it needs the delegator role as well.
+
+## Troubleshooting
+
+**`This request is not authorized to perform this operation using this permission.`** Azure answered `403` with a role-permission error code such as `AuthorizationPermissionMismatch`, and the `FilesError` code is `Unauthorized`. If `list()` works but `url()` fails, the delegator role is missing at account scope. If everything fails, the data role is missing. If you assigned either in the last 10 minutes, wait.
+
+**`ChainedTokenCredential authentication failed.` followed by `CredentialUnavailableError` lines.** `DefaultAzureCredential` found no identity. The code is `Provider`, and the lines list each source it tried and why that source was unavailable. Locally, run `az login`. On Azure, check that the identity is enabled on the app and that `AZURE_CLIENT_ID` is set for a user-assigned identity.
+
+**`azure: cannot sign URLs without a shared key or User Delegation SAS credential…`** The adapter has no signer: it was built with `sasToken`, with no credentials, or with `useUserDelegationSas: false`. The code is `Unsupported`.
+
+**``azure: `expiresIn` of …s exceeds the 604800s (7-day) maximum for a User Delegation SAS…``** Lower `expiresIn` or `defaultUrlExpiresIn`. The code is `Invalid`, so retries skip it.
+
+**``azure: `contentType` is not supported for signed upload URLs…`` or ``azure: `maxSize` is not supported…``** Don't pass them to `signedUploadUrl()` on Azure. Check the blob after it lands, as the complete route does, or upload through the gateway.
+
+**A CORS error in the browser console, with the preflight answered `403`.** No CORS rule on the Blob service matches the page's origin, the `PUT` method, and both request headers. Origins must match exactly, including scheme and port.
+
+**The upload succeeds, but the blob's type is `application/octet-stream`.** The `PUT` didn't send a `Content-Type`. Send `file.type` as in the browser code above.

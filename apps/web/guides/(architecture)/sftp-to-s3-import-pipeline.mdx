@@ -1,0 +1,363 @@
+---
+title: Import SFTP files into S3 with retries and a durable checkpoint
+description: A scheduled Node job that pulls a partner's files from SFTP into S3, pins the server's host key, imports each file version once, and picks up from a manifest after a crash.
+sidebar:
+  label: SFTP to S3 imports
+seo:
+  title: SFTP to S3 import pipeline in Node.js
+related:
+  - /docs/adapters/sftp
+  - /docs/adapters/s3
+  - /docs/api/search
+  - /docs/api/sync
+  - /guides/migrate-s3-to-r2
+---
+
+A partner drops a CSV into an SFTP folder every day, and you need it in S3. The job in this guide opens one SFTP connection, pins the server's host key, lists the drop folder, and streams each new file into S3 through the `sftp()` and `s3()` adapters. A manifest on disk records what's new. Each entry names one version of a file (its name, size, and modification time) and is written only after S3 holds the whole object. Run the job from cron. A run that crashes loses at most the file in flight, and the next run retries only files with no `done` entry.
+
+Two decisions do most of the work. First, the partner has to signal when a file is finished, because SFTP will serve a half-written file without complaint. Second, SFTP has no ETag, so "the same file" has to mean the same name, size, and modification time. That catches most replacements, but it misses one that keeps both, and [the local run](#what-a-crash-and-a-restart-look-like) shows exactly that case.
+
+## Before you start
+
+- An SFTP account on the partner's server with key authentication. You also need the server's host key fingerprint, sent by the partner over a channel other than SFTP itself.
+- An S3 bucket (`partner-imports` here) and credentials whose policy allows `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:AbortMultipartUpload` on its objects. The guide explains where each one is needed.
+- Node 22.18 or later, or Bun, on a machine with a persistent disk for the manifest. The `sftp()` adapter needs raw sockets, so it doesn't run on edge runtimes.
+- Written against files-sdk 3.0, `ssh2-sftp-client` 12.1, `ssh2` 1.17, and `@aws-sdk/client-s3` 3.1148. The runs described below used the SFTP server from OpenSSH 10.3 and a local MinIO server.
+
+```package-install
+files-sdk ssh2-sftp-client @aws-sdk/client-s3 @aws-sdk/lib-storage @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+`@aws-sdk/lib-storage` is required here. Each file reaches S3 as a stream of unknown length, and the S3 adapter uploads such streams as multipart through lib-storage.
+
+## A script or a managed connector
+
+If the destination is S3, AWS Transfer Family's [SFTP connectors](https://docs.aws.amazon.com/transfer/latest/userguide/sftp-connectors-tutorial.html) can do the transfer for you. They keep the login in Secrets Manager and the host key in `TrustedHostKeys`, and you run no process yourself. They don't decide what's new, though. [`StartDirectoryListing`](https://docs.aws.amazon.com/transfer/latest/APIReference/API_StartDirectoryListing.html) writes a one-level listing to S3 as JSON, and [`StartFileTransfer`](https://docs.aws.amazon.com/transfer/latest/APIReference/API_StartFileTransfer.html) takes up to 10 `RetrieveFilePaths` per call. You still schedule the calls and keep a record of what you've retrieved, which is most of what this guide builds. A script is the better fit when the destination isn't S3 (the same code works with any adapter), when you need the readiness rules below, or when one scheduled process is simpler than a connector, its IAM role, and a secret.
+
+Files SDK's own [`transfer()`](/docs/api/transfer) and [`sync()`](/docs/api/sync) don't fit either:
+
+- `transfer()` copies by key. With `overwrite: false`, it skips any key already at the destination, including a replacement that kept the old name.
+- `sync()` compares ETags by default. SFTP has none, so every file counts as changed on every run. With `compare: "size"`, a replacement of the same size counts as unchanged.
+- Neither knows when a file is ready.
+
+## Agree on when a file is ready
+
+Settle this with the partner before you write any code. In order of preference:
+
+**Upload under a temporary name, then rename.** The partner writes `orders-2026-10-09.csv.part` and renames it to `orders-2026-10-09.csv` when the upload is done. The job only ever matches `*.csv`, so it never sees the partial file. This guide assumes this convention.
+
+**Write a marker file.** The partner writes `orders-2026-10-09.csv`, then an empty `orders-2026-10-09.csv.done`. The job imports a file only when its marker exists:
+
+```ts lineNumbers
+const done = new Set<string>();
+for await (const marker of source.search("*.csv.done")) {
+  done.add(marker.key.slice(0, -".done".length));
+}
+// Import only the *.csv files whose key is in `done`.
+```
+
+**Neither.** Treat a version as ready only once two runs in a row have listed it with the same size and modification time. That delays every file by one run interval, and a producer that stalls for longer than the interval can still be caught mid-write. The size check in [Import each new version](#import-each-new-version) is the backstop for that case.
+
+## Connect and pin the host key
+
+```ts title="import/storage.ts" lineNumbers
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+import { Files } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+import { sftp } from "files-sdk/sftp";
+import SftpClient from "ssh2-sftp-client";
+
+const required = (name: string): string => {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Set ${name}`);
+  }
+  return value;
+};
+
+/** The fingerprint format `ssh-keygen -lf` prints: SHA256:<base64, no padding>. */
+export const fingerprintOf = (key: Buffer): string =>
+  `SHA256:${createHash("sha256").update(key).digest("base64").replace(/=+$/, "")}`;
+
+export async function connectSource() {
+  const expected = required("SFTP_HOST_FINGERPRINT");
+  const client = new SftpClient();
+  await client.connect({
+    host: required("SFTP_HOST"),
+    port: Number(process.env.SFTP_PORT ?? "22"),
+    username: required("SFTP_USERNAME"),
+    privateKey: await readFile(required("SFTP_PRIVATE_KEY_PATH")),
+    // Without a verifier, ssh2 accepts whatever host key the server presents.
+    hostVerifier: (key: Buffer) => fingerprintOf(key) === expected,
+  });
+  const files = new Files({
+    adapter: sftp({ client, root: "/outbound" }),
+    retries: 3,
+  });
+  return { client, files };
+}
+
+export const dest = new Files({
+  adapter: s3({ bucket: "partner-imports", region: "us-east-1" }),
+  retries: 3,
+});
+```
+
+```bash title=".env"
+SFTP_HOST=sftp.partner.example
+SFTP_USERNAME=acme-feed
+SFTP_PRIVATE_KEY_PATH=/etc/sftp-import/id_ed25519
+# From the partner, checked against ssh-keyscan below
+SFTP_HOST_FINGERPRINT=SHA256:R1ryYUbAJYQjXTVHH2zRLbMH9HWyOy0WyCkxaKx+Ls8
+MANIFEST_PATH=/var/lib/sftp-import/manifest.json
+```
+
+**Verify the host key.** The [ssh2 README](https://github.com/mscdex/ssh2#client-methods) says that when `hostVerifier` isn't set, the client auto-accepts the host key. Without it, anyone who can redirect the connection can serve you their own files and collect your login. `ssh2` passes the raw key to the verifier, and `fingerprintOf` hashes it into the same `SHA256:…` string OpenSSH prints. To cross-check the partner's value:
+
+```bash
+ssh-keyscan -p 22 -t ed25519 sftp.partner.example | ssh-keygen -lf -
+# 256 SHA256:R1ryYUbAJYQjXTVHH2zRLbMH9HWyOy0WyCkxaKx+Ls8 sftp.partner.example (ED25519)
+```
+
+`ssh-keyscan` trusts whatever answers at that moment, so compare its output with the fingerprint the partner sent, not instead of it. A server can have several host keys. `ssh2` 1.17 asks for `ssh-ed25519` first when Node supports it, then ECDSA, then RSA. If the partner gives you an RSA fingerprint, add `algorithms: { serverHostKey: ["rsa-sha2-512", "rsa-sha2-256"] }` to `connect()`, so the key the server presents is the one you pinned. With a wrong fingerprint, the run stopped at `getConnection: Host denied (verification failed)` before it touched a file.
+
+**Reuse one connection.** Passing `client` to `sftp()` makes every call reuse that connection. The adapter never opens or closes it, so the job ends it in a `finally` block. Without `client`, the adapter connects and disconnects on every operation, and SSH servers often cap sessions per IP ([SFTP adapter](/docs/adapters/sftp)).
+
+**Point `root` at the drop folder and nothing else.** Keys are relative to `root`, and a key that climbs out of it throws `Invalid`. SFTP has no prefix scan, so every `list()` walks the whole tree under `root`, including subfolders. Keep archives somewhere else.
+
+**Retries cover the calls that can be repeated.** `retries: 3` retries `list()`, the `download()` call that opens the stream, and `delete()` when they fail with a `Provider` error. An upload with a stream body is never retried, because a consumed stream can't be replayed ([Retries](/docs/retries)). A failed upload waits for the next run.
+
+## Record what you've imported
+
+```ts title="import/manifest.ts" lineNumbers
+import { readFile, rename, writeFile } from "node:fs/promises";
+
+import type { FileInfo } from "files-sdk";
+
+export interface ManifestEntry {
+  status: "done" | "failed";
+  sourceKey: string;
+  size: number;
+  mtime: number;
+  attempts: number;
+  at: string;
+  destKey?: string;
+  sha256?: string;
+  error?: string;
+}
+
+export type Manifest = Record<string, ManifestEntry>;
+
+/** One version of a source file: same name, same size, same mtime. */
+export const versionId = (file: FileInfo): string =>
+  `${file.key}|${file.size}|${file.lastModified}`;
+
+export async function loadManifest(path: string): Promise<Manifest> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as Manifest;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+}
+
+export async function saveManifest(path: string, manifest: Manifest) {
+  // Write a sibling file, then rename it over the old one. A crash leaves
+  // either the old manifest or the new one, never half of each.
+  const temp = `${path}.tmp`;
+  await writeFile(temp, `${JSON.stringify(manifest, null, 2)}\n`);
+  await rename(temp, path);
+}
+```
+
+The manifest is keyed by version, not by file name, so a replacement with a new size or modification time is a new entry and gets imported. Each version also gets its own destination key, stamped with its modification time: `acme/20261010T013928Z/orders-2026-10-07.csv`. That key does two jobs:
+
+- A replacement lands next to the copy it replaces instead of over it, so you keep both.
+- If the job crashes after S3 has the object but before the manifest is saved, the next run imports the same version to the same key and overwrites it with the same bytes.
+
+The manifest records what's been imported. The deterministic key is what makes importing a version twice harmless.
+
+## Import each new version
+
+```ts title="import/run.ts" lineNumbers
+import { createHash } from "node:crypto";
+
+import type { FileInfo, Files } from "files-sdk";
+
+import { loadManifest, saveManifest, versionId } from "./manifest.ts";
+import { connectSource, dest } from "./storage.ts";
+
+const MANIFEST_PATH = process.env.MANIFEST_PATH ?? "manifest.json";
+const READY_PATTERN = "*.csv"; // the producer renames *.csv.part to *.csv when done
+const MAX_ATTEMPTS = 5;
+
+/** Where one version lands. A replacement gets a new key; a re-run overwrites its own. */
+const destKeyOf = (file: FileInfo): string => {
+  if (file.lastModified === undefined) {
+    throw new Error(`${file.key} has no modification time`);
+  }
+  const stamp = new Date(file.lastModified)
+    .toISOString()
+    .replace(/[-:]|\.\d{3}/g, "");
+  return `acme/${stamp}/${file.key}`;
+};
+
+async function importOne(source: Files, file: FileInfo) {
+  const destKey = destKeyOf(file);
+  const hash = createHash("sha256");
+  let read = 0;
+  const meter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      hash.update(chunk);
+      read += chunk.byteLength;
+      controller.enqueue(chunk);
+    },
+  });
+
+  const body = await source.download(file.key, { as: "stream" });
+  const stored = await dest.upload(destKey, body.stream().pipeThrough(meter), {
+    contentType: body.contentType,
+    metadata: {
+      "source-mtime": String(file.lastModified),
+      "source-size": String(file.size),
+    },
+  });
+
+  if (read !== file.size || stored.size !== file.size) {
+    // The file changed while it was read. Keep no copy that matches no version.
+    await dest.delete(destKey);
+    throw new Error(
+      `listed ${file.size} bytes, read ${read}, stored ${stored.size}`
+    );
+  }
+  return { destKey, sha256: hash.digest("hex") };
+}
+
+const manifest = await loadManifest(MANIFEST_PATH);
+const { client, files: source } = await connectSource();
+const counts = { failed: 0, imported: 0, skipped: 0 };
+
+try {
+  const ready: FileInfo[] = [];
+  for await (const file of source.search(READY_PATTERN, { limit: 10_000 })) {
+    ready.push(file);
+  }
+
+  for (const file of ready) {
+    const id = versionId(file);
+    const previous = manifest[id];
+    if (previous?.status === "done") {
+      counts.skipped += 1;
+      continue;
+    }
+    const attempts = (previous?.attempts ?? 0) + 1;
+    if (attempts > MAX_ATTEMPTS) {
+      console.warn(`${file.key}: gave up after ${MAX_ATTEMPTS} attempts`);
+      counts.failed += 1;
+      continue;
+    }
+    const base = {
+      at: new Date().toISOString(),
+      attempts,
+      mtime: file.lastModified ?? 0,
+      size: file.size,
+      sourceKey: file.key,
+    };
+    try {
+      const { destKey, sha256 } = await importOne(source, file);
+      manifest[id] = { ...base, destKey, sha256, status: "done" };
+      counts.imported += 1;
+      console.log(`imported ${file.key} -> ${destKey}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      manifest[id] = { ...base, error: message, status: "failed" };
+      counts.failed += 1;
+      console.error(`failed ${file.key}: ${message}`);
+    }
+    // Checkpoint after every file, so a crash loses at most the one in flight.
+    await saveManifest(MANIFEST_PATH, manifest);
+  }
+} finally {
+  await client.end();
+}
+
+console.log(counts);
+process.exitCode = counts.failed > 0 ? 1 : 0;
+```
+
+```bash
+node --env-file=.env import/run.ts    # or: bun import/run.ts
+```
+
+What each step relies on:
+
+- **`search("*.csv")` lists only finished files.** It's a glob over keys ([search](/docs/api/search)), and `*` doesn't cross `/`, so `orders.csv.part` and `archive/old.csv` don't match. The walk still descends into subfolders. Each page of `list()` walks the whole tree again, and pages default to 1,000 keys, so a `limit` above the folder's file count keeps it to one walk.
+- **The body streams from SFTP into S3.** `download(key, { as: "stream" })` holds an SFTP read stream open, and the upload pulls from it. A stream of unknown length goes to lib-storage, which uploads it in 5 MiB parts with four in flight ([Multipart](/docs/multipart)). If the stream errors, the adapter aborts the multipart upload, which is what `s3:AbortMultipartUpload` is for.
+- **Three byte counts must agree.** The size in the listing, the bytes that passed through `meter`, and the size S3 stored should all be the same number. If they aren't, the file changed while it was read, so the job deletes the copy (hence `s3:DeleteObject`) and records a failure. The S3 adapter gets `stored.size` from a `HeadObject` after a streamed upload. Without `s3:GetObject`, that call fails and the adapter returns `size: 0`, which this check reports as `stored 0`.
+- **The SHA-256 is recorded, not compared.** It's a hash of the bytes that went through the job, kept in the manifest for audits and for checking against a hash the partner publishes. S3 metadata can't hold it, because metadata is sent before the body and the hash is known only after it.
+- **A file that keeps failing stops being retried.** After `MAX_ATTEMPTS`, the job logs it and exits with status 1. To retry it, delete its entry from the manifest.
+
+## What a crash and a restart look like
+
+The local run used OpenSSH's `sftp-server` and a MinIO bucket. The drop folder held two finished CSVs, an `orders-2026-10-09.csv.part`, and an `archive/` subfolder with a CSV of its own. In order:
+
+1. **First run.** The two finished CSVs were imported. The `.part` file and `archive/orders-2026-09-01.csv` were ignored.
+2. **A second run with nothing new** printed `{ failed: 0, imported: 0, skipped: 2 }`.
+3. **The producer renamed the `.part` file.** The next run imported `orders-2026-10-09.csv`.
+4. **A replacement with the same size and a new modification time.** `orders-2026-10-07.csv` was rewritten with different 19 bytes a second later. It was imported to a new key, and the earlier copy stayed.
+5. **A replacement with the same size and the old modification time.** `orders-2026-10-08.csv` got different content of the same size, with its modification time copied from the old file (`touch -r`). The run skipped it, so S3 still holds the old content. This is the case that size-and-mtime identity can't see.
+6. **`kill -9` mid-upload.** The job was killed while a 1.5 GB file was uploading. Afterwards there was no object at its key, one unfinished multipart upload in the bucket, and no manifest entry for the file. The next run imported it from the first byte to the same key in about six seconds. The recorded SHA-256 matched `shasum -a 256` of the source, and the abandoned multipart upload was still in the bucket.
+7. **The source grew during the read.** 1 MB was appended to a 1.5 GB file while it was being imported. The run reported `failed grow-2026-10-10.csv: listed 1500000000 bytes, read 1501000000, stored 1501000000` and deleted the copy. The next run listed the new size and time as a new version and imported it.
+8. **Memory stayed bounded.** Peak resident memory under Bun was 78 MB for a run that imported one small file, 302 MB for a 400 MB file, and 336 MB for a 1.5 GB file.
+
+The same code also ran unchanged under Node 24.
+
+## Run it on a schedule
+
+```bash title="crontab"
+*/15 * * * * cd /opt/sftp-import && flock -n /tmp/sftp-import.lock node --env-file=.env import/run.ts >> /var/log/sftp-import.log 2>&1
+```
+
+`flock -n` skips a run while the previous one is still going. Two concurrent runs would import the same versions twice and race to write the manifest. A nonzero exit means at least one file failed, so alert on it.
+
+Add an S3 lifecycle rule that [aborts incomplete multipart uploads](https://docs.aws.amazon.com/AmazonS3/latest/userguide/mpu-abort-incomplete-mpu-lifecycle-config.html) after a day or two. The adapter aborts an upload whose stream fails, but a killed process never gets that far, as step 6 showed.
+
+If the partner wants imported files moved out of the drop folder, rename them with the native client after the manifest is saved:
+
+```ts
+await client.rename(
+  `/outbound/${file.key}`,
+  `/processed/${destKeyOf(file).replaceAll("/", "_")}`
+);
+```
+
+On OpenSSH, renaming onto an existing file failed with `_rename: Failure`, so give each target a unique name, as above. The manifest is still the record: if the rename fails, the next run skips the file anyway.
+
+## Limits and tradeoffs
+
+- **Size and mtime are a weak identity.** The listing reported modification times in whole seconds, so two writes of the same size within one second look identical, and so does a replacement that keeps the old time (step 5). Hashing every source file on every run catches both, but it reads every byte every time. That's fine for a small daily feed and not for a large archive.
+- **Matching sizes don't prove the bytes match.** SSH protects the bytes between the server and the job. On AWS, `@aws-sdk/client-s3` adds a CRC32 checksum to each `PutObject` and `UploadPart` by default. The adapter turns that off when you set a custom `endpoint`, because some S3-compatible services reject it. For end-to-end proof, ask the partner to publish a hash next to each file and compare it with the manifest's `sha256`.
+- **Every listing walks the whole tree** under `root`, and the walk is sequential over one connection. Keep `root` to the drop folder.
+- **One file at a time.** Throughput is one SFTP stream. For a feed with many large files, run a few workers with a connection each, staying under the server's session limit.
+- **The manifest needs a disk that survives the run.** On an ephemeral runner, keep it in a database row per version, or upload it to the bucket after each file. Losing it costs a re-import of everything still in the drop folder, not correctness, because each version maps to the same key.
+- **Downstream can see a version twice.** A crash between the upload and the checkpoint re-uploads the same object, which fires any S3 event notification again. Make consumers idempotent.
+
+## Troubleshooting
+
+**`getConnection: Host denied (verification failed)`.** The server's key doesn't match `SFTP_HOST_FINGERPRINT`. Check that the key type you pinned is the one being negotiated (`algorithms.serverHostKey`), then ask the partner whether they rotated keys. Don't fix it by removing `hostVerifier`.
+
+**`getConnection: All configured authentication methods failed`.** Wrong username, wrong private key, or the partner hasn't installed your public key yet.
+
+**`getConnection: connect ECONNREFUSED`.** Wrong host or port, or a firewall. Partners often allowlist the source IP, so check that the job runs from the address you gave them.
+
+**`failed <file>: listed N bytes, read M, stored M`.** The file changed while the job read it, so the producer isn't following the readiness rule. The next run imports the version that's there once it settles.
+
+**`failed <file>: listed N bytes, read N, stored 0`.** The credentials can write but can't `HeadObject`, so the adapter reports `size: 0` after the upload. Add `s3:GetObject` on the destination objects.
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'`.** Install `@aws-sdk/lib-storage`. Every import in this job is a stream.
+
+**`<file>: gave up after 5 attempts`.** Read the entry's `error` in the manifest, fix the cause, and delete the entry to try again.

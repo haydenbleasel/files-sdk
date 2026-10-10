@@ -1,0 +1,381 @@
+---
+title: Encrypt files before they reach S3 or R2
+description: Encrypt every upload with AES-256-GCM in your own process so the bucket only ever holds ciphertext, then decrypt on download, behind a gateway, and across a key rotation.
+sidebar:
+  label: Client-side encryption
+seo:
+  title: Client-side encryption for S3 and R2 uploads
+related:
+  - /docs/plugins/encryption
+  - /docs/capabilities
+  - /docs/plugins/compression
+  - /guides/s3-conditional-upload-conflicts
+  - /guides/multi-tenant-file-storage
+  - /guides/private-video-range-streaming
+---
+
+Add `encryption(masterKey)` as the last plugin on your `Files` instance. Every `upload()` then encrypts the body in your process before any byte leaves it: a fresh AES-256-GCM data key per object, wrapped with your master key and stored next to the ciphertext in the object's metadata. `download()` unwraps it and hands back plaintext. S3 or R2 stores ciphertext and never sees the key, so a leaked read credential, a bucket accidentally made public, or the provider itself reads nothing useful.
+
+That protection has a cost. Everything that reads or writes the bucket without passing through your process stops working on these objects: presigned download URLs, direct browser-to-bucket uploads, range requests, and provider features that look at content. The object key, content type, size, and your own metadata also stay readable. This guide sets up the plugin, shows what the bucket actually holds, puts it behind the upload gateway, and rotates the master key.
+
+## Before you start
+
+- An S3 bucket (this guide calls it `records`) and credentials the AWS credential chain can find, or an R2 bucket. The plugin works the same on any adapter that supports object metadata.
+- A secret store for a 32-byte master key: your platform's environment secrets, AWS Secrets Manager, or a KMS-wrapped key (shown below).
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, and Bun 1.4. The outputs below come from running these snippets against a local MinIO server (RELEASE.2025-09-06T17-38-46Z) through the `s3()` adapter.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+The plugin itself has no dependencies. It uses the Web Crypto API, so the same code runs on Node, Bun, Deno, and Cloudflare Workers.
+
+## Server-side encryption, or this
+
+S3 and R2 already encrypt everything at rest. The question is who can turn the stored bytes back into plaintext.
+
+|  | Who holds the key | Who can read plaintext |
+| --- | --- | --- |
+| [SSE-S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/default-encryption-faq.html) (S3's default since January 2023) | AWS | Anyone S3 lets call `GetObject`. S3 decrypts for them. |
+| [SSE-KMS](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingKMSEncryption.html) | AWS KMS, under your key policy | Anyone with `s3:GetObject` and `kms:Decrypt` on the key. |
+| [SSE-C](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerSideEncryptionCustomerKeys.html) | You, sent with every request | Anyone who has the key. S3 sees it for each request but doesn't store it. |
+| [R2 at rest](https://developers.cloudflare.com/r2/reference/data-security/) | Cloudflare | Anyone R2 lets read the object. R2 also offers [SSE-C](https://developers.cloudflare.com/r2/examples/ssec/). |
+| `encryption()` plugin | You, in your process | Only code that holds your master key. The provider never sees plaintext or the key. |
+
+Server-side encryption protects against stolen disks and decommissioned hardware. It doesn't help when the credentials themselves leak, or when the provider's own systems are part of your threat model, because the provider decrypts for any authorized request. SSE-C comes closest to the plugin, but the key still travels to the provider on every request. S3 also disables SSE-C by default on general purpose buckets created since April 2026.
+
+The plugin doesn't replace server-side encryption. It adds a layer on top. S3 still applies SSE-S3 to the ciphertext the plugin uploads, and AWS's [default-encryption FAQ](https://docs.aws.amazon.com/AmazonS3/latest/userguide/default-encryption-faq.html) notes that client-side encrypted objects get exactly that extra layer.
+
+Choose server-side encryption if you need presigned URLs, direct browser uploads, range requests, or AWS services that read your objects. Choose the plugin if the bucket must hold nothing readable without your key.
+
+## Create and store the master key
+
+Generate 32 random bytes and store them base64-encoded:
+
+```bash
+openssl rand -base64 32
+```
+
+```bash title=".env"
+FILES_ENCRYPTION_KEY=paste-the-base64-output-here
+```
+
+Then build the instance once and import it everywhere:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { encryption } from "files-sdk/encryption";
+import { s3 } from "files-sdk/s3";
+
+const masterKey = Buffer.from(process.env.FILES_ENCRYPTION_KEY ?? "", "base64");
+// The plugin only checks the key on first use. Fail at startup instead.
+if (masterKey.byteLength !== 32) {
+  throw new Error("FILES_ENCRYPTION_KEY must be 32 base64-encoded bytes");
+}
+
+export const files = createFiles({
+  adapter: s3({ bucket: "records", region: "us-east-1" }),
+  plugins: [encryption(masterKey)],
+});
+```
+
+`encryption()` accepts a Web Crypto `CryptoKey` or raw AES key bytes of 16, 24, or 32 bytes, and imports raw bytes as a non-extractable key on first use. That import is lazy, so without the length check above, a missing variable surfaces at the first upload as an `Invalid` error: `encryption: a raw key must be 16, 24, or 32 bytes, received 0`.
+
+For R2, swap the adapter for `r2({ bucket: "records" })` and leave the plugin as it is.
+
+### Keep the key wrapped in KMS
+
+If the base64 key in an environment variable is more exposure than you want, store it encrypted under an AWS KMS key and decrypt it once at boot. [`GenerateDataKeyWithoutPlaintext`](https://docs.aws.amazon.com/kms/latest/APIReference/API_GenerateDataKeyWithoutPlaintext.html) creates a random 256-bit key and returns only its encrypted copy, so the plaintext never appears in your terminal:
+
+```bash
+aws kms generate-data-key-without-plaintext \
+  --key-id alias/files-master --key-spec AES_256 \
+  --query CiphertextBlob --output text
+```
+
+Store that output as `FILES_WRAPPED_KEY`, and unwrap it when the process starts:
+
+```ts title="lib/files.ts" lineNumbers
+import { DecryptCommand, KMSClient } from "@aws-sdk/client-kms";
+
+const kms = new KMSClient({});
+const { Plaintext } = await kms.send(
+  new DecryptCommand({
+    CiphertextBlob: Buffer.from(process.env.FILES_WRAPPED_KEY ?? "", "base64"),
+  })
+);
+if (Plaintext?.byteLength !== 32) {
+  throw new Error("FILES_WRAPPED_KEY did not decrypt to a 32-byte key");
+}
+
+export const files = createFiles({
+  adapter: s3({ bucket: "records", region: "us-east-1" }),
+  plugins: [encryption(Plaintext)],
+});
+```
+
+Reading the key now takes `kms:Decrypt` on that KMS key, which you can grant to the application role and audit in CloudTrail. The unwrapped key stays in process memory, as it does with the environment variable. This snippet follows the [KMS API reference](https://docs.aws.amazon.com/kms/latest/APIReference/API_Decrypt.html). The local runs in this guide didn't call KMS.
+
+## Upload, then look at what the bucket holds
+
+The plugin's view and the bucket's view differ, and it's worth checking both. `files.raw` is the adapter's own `S3Client`, which bypasses the plugin:
+
+```ts title="verify.ts" lineNumbers
+import { GetObjectCommand } from "@aws-sdk/client-s3";
+
+import { files } from "./lib/files";
+
+const key = "records/7f3c9a.txt";
+await files.upload(key, "Blood panel normal. Follow up in 6 months.\n", {
+  contentType: "text/plain",
+  metadata: { patient: "4471" },
+});
+
+// The plugin's view: plaintext in, plaintext out.
+const file = await files.download(key);
+console.log(
+  "download():",
+  file.size,
+  "bytes",
+  JSON.stringify(await file.text())
+);
+console.log("metadata:  ", file.metadata);
+
+// The bucket's view: the same object through the raw S3 client.
+const stored = await files.raw.send(
+  new GetObjectCommand({ Bucket: "records", Key: key })
+);
+const bytes = await stored.Body!.transformToByteArray();
+console.log("stored:    ", bytes.byteLength, "bytes");
+console.log("plaintext? ", Buffer.from(bytes).includes(Buffer.from("Blood")));
+console.log("type:      ", stored.ContentType);
+console.log("metadata:  ", stored.Metadata);
+```
+
+Against MinIO it printed:
+
+```text
+download(): 43 bytes "Blood panel normal. Follow up in 6 months.\n"
+metadata:   { patient: "4471" }
+stored:     59 bytes
+plaintext?  false
+type:       text/plain
+metadata:   {
+  fsenc_dek: "yDAo01b0JWt1UjtEiZLt195/sb16n6wN3ZJqdHnmKgXQFHIpUhV8tI2o3orRhGhV",
+  fsenc_dek_iv: "JRruFDblz7awZjUj",
+  fsenc_iv: "sFjsJoVDXgO/zCnW",
+  fsenc_scheme: "aes-gcm/envelope/v1",
+  fsenc_size: "43",
+  patient: "4471",
+}
+```
+
+The stored body is the 43-byte plaintext plus GCM's 16-byte authentication tag, and contains none of the original text. `fsenc_dek` is the per-object data key, encrypted under your master key. The two IVs and the scheme marker are what `download()` needs to reverse it. `download()` strips every `fsenc_` field, so callers only see their own metadata.
+
+`head()` reports the plaintext size (43) from `fsenc_size` without decrypting. `list()` on S3 and the S3-compatible adapters reports the stored size instead, because S3's listing carries no metadata. In a run with a 34-byte file, `list()` reported 50.
+
+## What stays readable
+
+Anyone who can read the bucket, including through the raw client above, still sees:
+
+| Field | Stored as |
+| --- | --- |
+| Object body | AES-256-GCM ciphertext |
+| Object key (`records/7f3c9a.txt`) | Plain text |
+| `Content-Type` | Plain text |
+| Your `metadata` (`patient: "4471"`) | Plain text |
+| Plaintext size | Plain text in `fsenc_size`. The stored size is 16 bytes larger. |
+| ETag, last-modified time, access logs | Plain text |
+
+Keep anything sensitive out of all of these. Use opaque keys such as `records/${crypto.randomUUID()}.pdf`, not `records/jane-doe-biopsy.pdf`, and keep your database, not object metadata, as the place where names map to files.
+
+## What the plugin turns off
+
+A presigned URL or a direct upload never passes through your process, so the plugin refuses both instead of quietly handing out ciphertext or accepting plaintext. It also narrows [`files.capabilities`](/docs/capabilities) to match. On the instance above:
+
+```text
+signedUrl:    { supported: false, disposition: false, expiry: "none" }
+signedUpload: { supported: false, contentType: false, maxSize: false }
+rangeRead:    false
+resumable:    false
+publicUrl:    false
+```
+
+Calling the refused verbs anyway fails before any provider request, with an `Unsupported` code:
+
+| Call | Message |
+| --- | --- |
+| `files.url(key)` | `encryption: url() returns a link to ciphertext that clients cannot decrypt; download through the Files instance instead` |
+| `files.signedUploadUrl(key)` | `encryption: signedUploadUrl() bypasses at-rest encryption (the client would store unencrypted bytes); upload through the Files instance instead` |
+| `files.download(key, { range })` | `range downloads are not supported by the "encryption" plugin` |
+| `files.upload(key, body, { control })` | `pause-able/resumable uploads are not supported by the "encryption" plugin` |
+
+A range read fails because a slice of a GCM ciphertext can't be authenticated or decrypted on its own. Resumable uploads fail because each attempt seals the body under a new random data key, so parts from two processes would never form one decryptable object. `multipart: true` without a `control` still works inside a single call.
+
+Branch on `files.capabilities` instead of catching these errors. The gateway below already does.
+
+## Serve encrypted files through the gateway
+
+The [gateway](/docs/ui/server/gateway) reads the same capabilities and routes around what the plugin refuses. Mount it as usual. This is the Next.js binding:
+
+```ts title="app/api/files/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/next";
+
+import { getSession } from "@/lib/auth";
+import { files } from "@/lib/files";
+
+const router = createFilesRouter({
+  files,
+  // Each upload is held in memory while it is encrypted. Cap it.
+  maxUploadSize: 25 * 1024 * 1024,
+  authorize: async ({ req }) => {
+    const session = await getSession(req.headers);
+    if (!session) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    return { keyPrefix: `users/${session.user.id}/` };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+`getSession` stands in for your auth library. Nothing in the browser changes: `useFiles().upload(file)` and download links work as they would without encryption. What changes is the path the bytes take. Running the gateway against MinIO with and without the plugin:
+
+| Request | Without `encryption()` | With `encryption()` |
+| --- | --- | --- |
+| Presign an upload | `POST` form pointing at the bucket | `PUT` to `/api/files?op=proxy&token=…` |
+| Upload bytes | Browser to bucket | Browser to your route (`200`), encrypted there |
+| Complete | Reports the stored size | Reported `size: 5` for a 5-byte file, the plaintext size |
+| `GET ?op=download` | `302` to a presigned URL | `200` with the decrypted body |
+| `GET` with `Range: bytes=0-1` | `302` | `416` |
+
+Every byte now crosses your server twice, and the plugin holds the whole body in memory while it encrypts or decrypts it: the plaintext plus a ciphertext copy. `maxUploadSize` is what bounds that. The gateway counts bytes as the upload streams in and aborts past the limit. Serverless request-body limits apply too. On Vercel that is 4.5 MB per function request, and [the direct-upload fix](/guides/vercel-large-file-upload) doesn't apply here, because direct uploads are exactly what encryption rules out.
+
+For video, the `416` means a player can't seek. If you need to stream encrypted media, encrypt it with a format designed for that (segmented HLS with AES-128, for example) instead of this plugin. [Stream private video with Range requests](/guides/private-video-range-streaming) covers the unencrypted path.
+
+## Put it last, after compression and validation
+
+Plugins run in array order on the way in, so encryption should be the last thing to touch the body. Anything that needs plaintext, such as [`compression()`](/docs/plugins/compression), [`validation()`](/docs/plugins/validation), or [`contentType()`](/docs/plugins/content-type) sniffing, goes before it:
+
+```ts
+plugins: [compression(), encryption(masterKey)];
+```
+
+The order is visible in the bucket. A 56,000-byte repetitive log file uploaded with `[compression(), encryption(key)]` was stored as 409 bytes. Reversed, `compression()` received ciphertext, which doesn't compress. It stored the object uncompressed (`fscmp_alg: "identity"`) at 56,016 bytes. Downloads unwind in reverse automatically: decrypt, then decompress.
+
+The two exceptions are [`failover()`](/docs/plugins/failover) and [`tiering()`](/docs/plugins/tiering). They write to their secondary or cold backend outside the rest of the plugin chain, so they go after encryption. Placed before it, whatever they route elsewhere is stored unencrypted.
+
+Compressing before encrypting has a cost: the stored size now reflects how compressible the content was, which says a little more about it than the raw length does. For files at rest this is usually acceptable. Leave compression off if an attacker could influence part of a file's contents and observe its stored size.
+
+## Rotate the master key
+
+The plugin takes one master key and records no key ID. An object wrapped under a different key fails to open:
+
+```text
+FilesError: encryption: failed to decrypt "docs/a.txt" (wrong key or corrupted data)
+  code: "Provider", permanent: true
+```
+
+The same error covers tampered ciphertext, so the plugin can't tell you which key an object needs. Record that yourself from the first upload, with a `kid` in your own metadata:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles, type Files } from "files-sdk";
+import { encryption } from "files-sdk/encryption";
+import { s3 } from "files-sdk/s3";
+
+const adapter = s3({ bucket: "records", region: "us-east-1" });
+
+const KEYS = {
+  k1: Buffer.from(process.env.FILES_KEY_K1 ?? "", "base64"),
+  k2: Buffer.from(process.env.FILES_KEY_K2 ?? "", "base64"),
+};
+type Kid = keyof typeof KEYS;
+export const CURRENT: Kid = "k2";
+
+export const byKid = Object.fromEntries(
+  Object.entries(KEYS).map(([kid, key]) => [
+    kid,
+    createFiles({ adapter, plugins: [encryption(key)] }),
+  ])
+) as Record<Kid, Files>;
+
+export const files = byKid[CURRENT];
+
+export const upload = (key: string, body: Blob | string) =>
+  files.upload(key, body, { metadata: { kid: CURRENT } });
+
+// head() never decrypts, so any instance can read the kid.
+export const download = async (key: string) => {
+  const info = await files.head(key);
+  const kid = (info.metadata?.kid ?? "k1") as Kid;
+  return byKid[kid].download(key);
+};
+```
+
+Then re-encrypt old objects in a background job. Read each one with its old key and write it back under the current one. On AWS S3, make the write a [conditional replace](/guides/s3-conditional-upload-conflicts) so the job can't overwrite a newer upload that lands between its read and its write:
+
+```ts title="rotate.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { byKid, CURRENT, files } from "./lib/files";
+
+export async function rotate(key: string) {
+  const info = await files.head(key);
+  const kid = (info.metadata?.kid ?? "k1") as keyof typeof byKid;
+  if (kid === CURRENT) {
+    return "already current";
+  }
+  const old = await byKid[kid].download(key);
+  try {
+    await files.upload(key, await old.arrayBuffer(), {
+      condition: { type: "replace", etag: old.etag! },
+      contentType: old.contentType,
+      metadata: { ...old.metadata, kid: CURRENT },
+    });
+    return "rotated";
+  } catch (error) {
+    if (error instanceof FilesError && error.code === "Conflict") {
+      return "changed during rotation; try again on the next pass";
+    }
+    throw error;
+  }
+}
+```
+
+Against MinIO (with `conditional: true`, explained in the conditional-writes guide), the first call returned `rotated`, a second call returned `already current`, the object still downloaded as the original plaintext with `kid: "k2"`, and reading it with the `k1` instance now failed with the decrypt error. Once a full listing pass finds no `k1` objects, drop `k1` from `KEYS` and destroy it.
+
+R2 and the other S3-compatible adapters don't offer conditional writes through the SDK, so on those, pause writes to a prefix while you rotate it.
+
+Rotation re-encrypts every body, because the plugin has no way to re-wrap a data key on its own. For a large bucket, budget the read and write traffic accordingly.
+
+## Conditional operations and copies still work
+
+On adapters with native conditional support, the plugin is compatible with conditional create, replace, and exact reads. The predicate applies to the stored ciphertext's ETag, and the plugin transforms the body around it. The rotation job above relies on that. `copy()` and `move()` copy ciphertext server-side, and the wrapped data key travels in the metadata, so a copy decrypts with the same master key. Both behaved this way against MinIO.
+
+## Limits and tradeoffs
+
+- **The whole body is held in memory.** AES-GCM authenticates the entire ciphertext, so the plugin buffers plaintext and ciphertext together on upload and on download. Streams in, streams out: neither stays a stream. Keep files to tens of megabytes on servers, and smaller in memory-constrained runtimes such as [Cloudflare Workers](https://developers.cloudflare.com/workers/platform/limits/).
+- **Losing the master key loses the data.** Nothing, including the provider, can decrypt the objects without it. Back it up as carefully as a database encryption key, and test restoring it.
+- **Envelopes aren't bound to keys.** Someone with raw write access to the bucket can copy one object's ciphertext and `fsenc_` metadata onto another key, and a download of that key decrypts to the first object's plaintext. If that matters, keep provider write credentials tight and give each tenant its own master key, with one `Files` instance per key.
+- **Provider-side processing sees ciphertext.** S3 Object Lambda, Athena, in-bucket malware scanners, and CDN image resizing all receive encrypted bytes. Scan and transform before upload, in plugins placed before `encryption()`.
+- **Readers without the plugin get ciphertext.** The `files` CLI, the S3 console, and any service using a plain instance download the encrypted body. A plain instance in the run above returned 50 bytes with the `fsenc_` fields visible in `metadata`.
+- **Old plaintext objects pass through.** An object without the plugin's marker downloads unchanged, so you can enable encryption on a bucket that already holds data. Re-upload those objects through the encrypted instance to encrypt them.
+- **The envelope uses part of the metadata budget.** The five `fsenc_` fields take about 170 bytes of S3's [2 KB user-metadata limit](https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingMetadata.html).
+- **Storage events carry no size.** With [`events()`](/docs/events), the plugin clears `size` from every provider event, because an event has no metadata to tell an encrypted object from a plain one.
+
+## Troubleshooting
+
+**`encryption: a raw key must be 16, 24, or 32 bytes, received 0`.** The variable is missing or empty. A different number usually means it isn't base64, or was decoded as text. `Buffer.from(value, "base64")` of `openssl rand -base64 32` output is 32 bytes.
+
+**`encryption: failed to decrypt "<key>" (wrong key or corrupted data)`.** The object was written under another master key, or its ciphertext or `fsenc_` metadata was changed. Check the object's `kid`, and whether the key in this environment matches the one that wrote it. The error is `permanent`, so retries won't help.
+
+**`encryption: "<key>" decrypted to N bytes but its envelope declares M — the metadata has been tampered with`.** The ciphertext authenticated, but `fsenc_size` was edited. Treat the object as tampered.
+
+**`encryption: url() returns a link to ciphertext that clients cannot decrypt`.** Something called `files.url()`. A component such as an image preview that asks for a signed URL first needs to fall back to a gateway download (`/api/files?op=download&key=…`), which the gateway serves decrypted.
+
+**Downloads return `416` behind the gateway.** The client sent a `Range` header. Video and audio elements do this to seek. Set `onUnsupportedRange: "ignore"` on the router to send the full body instead, or serve that media from somewhere unencrypted.
+
+**Downloaded files are unreadable bytes.** The download went around the plugin: a presigned URL issued before you enabled it, a CLI or console download, or a second `Files` instance without `encryption()`. Read through the instance that has the plugin.

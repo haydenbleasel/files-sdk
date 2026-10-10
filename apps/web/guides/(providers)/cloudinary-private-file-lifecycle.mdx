@@ -1,0 +1,447 @@
+---
+title: Upload, serve, and delete private Cloudinary files correctly
+description: Sign browser uploads into authenticated Cloudinary assets, check each file before it goes live, serve it through short-lived signed URLs, and delete it with the settings it was stored under.
+sidebar:
+  label: Private Cloudinary files
+seo:
+  title: Private Cloudinary uploads, downloads, and deletes
+related:
+  - /docs/adapters/cloudinary
+  - /guides/presigned-upload-validation
+  - /guides/vercel-blob-private-downloads
+  - /docs/api/signed-upload-url
+  - /docs/events/cloudinary
+---
+
+Cloudinary identifies every asset by three values: its resource type (`image`, `video`, or `raw`), its delivery type (`upload`, `private`, or `authenticated`), and its public ID. An upload, a signed URL, and a delete only reach the same asset if all three match. A delete with the wrong resource type doesn't fail; Cloudinary reports `not found`, and the asset stays where it is. Files SDK fixes the resource type and delivery type when you create a `cloudinary()` adapter. So the pattern is one adapter per combination you use, and a database row that records which one holds each asset.
+
+For files only their owner should see, use the `authenticated` delivery type. The browser uploads to a staging key with a signature from your server. Your server then moves the file into place and checks its size and format before marking it ready. Downloads go through a route that checks ownership and redirects to a signed URL that expires in a minute. Deleting removes the asset for good, but it can't recall a link you've already handed out.
+
+## Before you start
+
+- A Cloudinary account and an API key and secret, set as `CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>`. The adapter also reads `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, and `CLOUDINARY_API_SECRET`.
+- A Next.js app with an auth library that can resolve the signed-in user on the server, and a table for asset records. The route handlers use only the Web `Request` and `Response`, so they port to other frameworks.
+- Written against files-sdk 3.0, `cloudinary` 2.11, and Next.js 16.4. The adapter behavior below was observed by running the adapter with the real `cloudinary` SDK's signing helpers and its network calls stubbed. Cloudinary's own behavior comes from its documentation, linked where it's used.
+
+```package-install
+files-sdk cloudinary
+```
+
+## Choose a resource type and a delivery type
+
+The adapter defaults to `resourceType: "raw"` and `type: "upload"`: arbitrary bytes, served publicly. Private user files need different settings.
+
+**Resource type.** Cloudinary's [upload reference](https://cloudinary.com/documentation/image_upload_api_reference) says image and video public IDs shouldn't include a file extension, because the format is stored separately, while raw public IDs must include one.
+
+| Files | `resourceType` | Example key |
+| --- | --- | --- |
+| Photos and other images | `"image"` | `users/u_1/ast_7f3a` |
+| PDFs | `"image"` | `users/u_1/ast_9c21` |
+| Video | `"video"` | `users/u_1/ast_04be` |
+| Other documents (`.docx`, `.csv`, `.zip`) | `"raw"` | `users/u_1/ast_5d10.docx` |
+
+PDFs belong under `image`. That's how Cloudinary [uploads them by default](https://cloudinary.com/documentation/ts_how_to_upload_manage_and_deliver_pdf_files), so page previews work. The exception is a password-protected PDF, which has to be `raw`.
+
+**Delivery type.** From Cloudinary's [access control docs](https://cloudinary.com/documentation/control_access_to_media):
+
+| `type` | The original file | Transformed versions | What `files.url()` returns |
+| --- | --- | --- | --- |
+| `"upload"` (default) | Public | Public | A permanent CDN URL. Passing `expiresIn` throws `Unsupported` |
+| `"private"` | Signed URL only | **Public** | A signed download URL that expires |
+| `"authenticated"` | Signed URL only | Signed URL only | A signed download URL that expires |
+
+With `private`, anyone who can guess or find a transformed URL (a resized image, a PDF page rendered as a picture) can fetch it. Use `authenticated` for files that belong to one user.
+
+:::warning
+For `private` and `authenticated` assets, the adapter looks up the asset's stored format before it signs a URL, and throws `Unsupported` (`resource has no format`) when there isn't one. Cloudinary's documented upload response for a raw file has no `format` field. We couldn't check a live account to see whether a raw asset ever reports one. Before you rely on private raw files, upload one and download it end to end. Storing PDFs as `image` avoids the problem.
+:::
+
+## One adapter per combination
+
+```ts title="lib/cloudinary.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { cloudinary } from "files-sdk/cloudinary";
+
+// Credentials come from CLOUDINARY_URL. Each adapter is pinned to one
+// resource type and one delivery type, and only reaches assets stored under both.
+export const stores = {
+  image: createFiles({
+    adapter: cloudinary({ resourceType: "image", type: "authenticated" }),
+  }),
+  video: createFiles({
+    adapter: cloudinary({ resourceType: "video", type: "authenticated" }),
+  }),
+};
+
+export type StoreName = keyof typeof stores;
+
+export const MAX_BYTES = 20 * 1024 * 1024;
+
+// Formats as Cloudinary reports them, not MIME types.
+export const ALLOWED_FORMATS: Record<StoreName, Set<string>> = {
+  image: new Set(["jpg", "png", "webp", "gif", "pdf"]),
+  video: new Set(["mp4", "mov", "webm"]),
+};
+
+export const storeFor = (mime: string): StoreName | null => {
+  if (mime.startsWith("image/") || mime === "application/pdf") {
+    return "image";
+  }
+  if (mime.startsWith("video/")) {
+    return "video";
+  }
+  return null;
+};
+```
+
+Every `cloudinary()` adapter calls `cloudinary.config()` on the SDK's shared module, so the last adapter created sets the credentials for all of them. That's harmless here, since both use the same account. To use two Cloudinary accounts in one process, pass separately configured SDK instances through the adapter's `client` option.
+
+## Record each asset
+
+The browser only sees an asset ID. Your database maps that ID to an owner, a store, and a key:
+
+```ts lineNumbers
+export interface Asset {
+  id: string; // "ast_…", what the browser sees
+  ownerId: string;
+  store: StoreName; // which adapter holds it
+  stagingKey: string; // where the browser uploads: "staging/ast_…"
+  key: string; // where it lives once accepted: "users/<ownerId>/ast_…"
+  status: "pending" | "ready" | "rejected";
+  size?: number;
+  format?: string;
+}
+```
+
+This guide assumes `lib/assets.ts` exports that type and a few queries against your database: `createAsset`, `getAsset(id)`, `markReady(id, { size, format })`, `markRejected(id)`, and `deleteAsset(id)`.
+
+Storing `store` is not optional. The adapter's `delete()` sends Cloudinary's `destroy` with the adapter's resource type and delivery type. When Cloudinary answers `{ result: "not found" }`, the adapter resolves as if the delete worked. A delete through the wrong adapter looks like a success, and the row is the only record of which adapter is right.
+
+## Sign the upload
+
+```ts title="app/api/uploads/route.ts" lineNumbers
+import { createAsset } from "@/lib/assets";
+import { getSession } from "@/lib/auth";
+import { MAX_BYTES, storeFor, stores } from "@/lib/cloudinary";
+
+export async function POST(request: Request) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to upload", { status: 401 });
+  }
+
+  const { type, size } = (await request.json()) as {
+    type: string;
+    size: number;
+  };
+  const store = storeFor(type);
+  if (!store) {
+    return new Response("Unsupported file type", { status: 415 });
+  }
+  // The browser's claim. The real check runs after the upload.
+  if (size > MAX_BYTES) {
+    return new Response("File too large", { status: 413 });
+  }
+
+  const id = `ast_${crypto.randomUUID()}`;
+  const stagingKey = `staging/${id}`;
+  const signed = await stores[store].signedUploadUrl(stagingKey, {
+    expiresIn: 3600,
+  });
+  if (signed.method !== "POST") {
+    throw new Error("Expected a Cloudinary form upload");
+  }
+
+  await createAsset({
+    id,
+    key: `users/${session.user.id}/${id}`,
+    ownerId: session.user.id,
+    stagingKey,
+    status: "pending",
+    store,
+  });
+
+  return Response.json({ fields: signed.fields, id, url: signed.url });
+}
+```
+
+`getSession` stands in for your auth library. This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
+
+For the image store, `signedUploadUrl` returned:
+
+```json
+{
+  "method": "POST",
+  "url": "https://api.cloudinary.com/v1_1/<cloud_name>/image/upload",
+  "fields": {
+    "api_key": "<api_key>",
+    "public_id": "staging/ast_…",
+    "signature": "…",
+    "timestamp": "1791596503",
+    "type": "authenticated"
+  }
+}
+```
+
+The signature covers `public_id`, `timestamp`, and `type`, and nothing else. Recomputing it with the SDK's `api_sign_request` over those three values gave the same signature. That has three consequences:
+
+- **It lasts an hour, whatever you ask for.** Cloudinary [accepts a signature for one hour](https://cloudinary.com/documentation/authentication_signatures) from its `timestamp`. The adapter stamps the current time, so `expiresIn` changes nothing: `300` and `86400` produced identical fields.
+- **It can't limit size or type.** `signedUploadUrl` throws `Unsupported` if you pass `maxSize`, a positive `minSize`, or `contentType`, because there's no field in the signature to carry them. Any extra form field, such as an `upload_preset`, also breaks the signature, because Cloudinary checks every parameter except `file`, `cloud_name`, `resource_type`, and `api_key`.
+- **It can be reused.** Signed uploads [overwrite by default](https://cloudinary.com/documentation/image_upload_api_reference), so the same fields can replace the file at that public ID as often as the browser likes until the hour is up.
+
+The last point is why the browser gets a staging key. If it got a signature for the final key, it could replace a file your server had already checked with anything else, for the rest of the hour.
+
+The [gateway](/docs/ui/server/gateway) isn't a good fit here. The Cloudinary adapter can't bind a content type into a signature, so for any file with a type, the gateway's presign falls back to proxying the upload through your server. The adapter then buffers the whole body in memory. The gateway also names files `<uuid>.<ext>`, and image and video public IDs shouldn't carry an extension.
+
+## Upload from the browser
+
+```tsx title="components/upload-button.tsx" lineNumbers
+"use client";
+
+async function uploadFile(file: File): Promise<string> {
+  const res = await fetch("/api/uploads", {
+    body: JSON.stringify({ size: file.size, type: file.type }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(await res.text());
+  }
+  const { id, url, fields } = (await res.json()) as {
+    id: string;
+    url: string;
+    fields: Record<string, string>;
+  };
+
+  // Send the signed fields exactly as returned, plus the file.
+  const form = new FormData();
+  for (const [name, value] of Object.entries(fields)) {
+    form.append(name, value);
+  }
+  form.append("file", file);
+  const sent = await fetch(url, { body: form, method: "POST" });
+  if (!sent.ok) {
+    throw new Error(`Cloudinary refused the upload (${sent.status})`);
+  }
+
+  const done = await fetch(`/api/uploads/${id}/complete`, { method: "POST" });
+  if (!done.ok) {
+    throw new Error(await done.text());
+  }
+  return id;
+}
+
+export function UploadButton({ onUploaded }: { onUploaded: () => void }) {
+  return (
+    <input
+      accept="image/*,application/pdf,video/*"
+      onChange={async (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (file) {
+          await uploadFile(file);
+          onUploaded();
+        }
+      }}
+      type="file"
+    />
+  );
+}
+```
+
+The upload URL already names the resource type (`/image/upload`), so post to it exactly as returned. Cloudinary's [client-side upload docs](https://cloudinary.com/documentation/client_side_uploading) use the same `fetch` and `FormData` pattern. Cloudinary's response includes the asset's details, but the server doesn't trust them; it looks the asset up itself.
+
+## Check the file and move it into place
+
+```ts title="app/api/uploads/[id]/complete/route.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { getAsset, markReady, markRejected } from "@/lib/assets";
+import { getSession } from "@/lib/auth";
+import { ALLOWED_FORMATS, MAX_BYTES, stores } from "@/lib/cloudinary";
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession(request.headers);
+  const { id } = await params;
+  const asset = await getAsset(id);
+  if (!session || !asset || asset.ownerId !== session.user.id) {
+    return new Response("Not found", { status: 404 });
+  }
+  if (asset.status !== "pending") {
+    return new Response("Already completed", { status: 409 });
+  }
+
+  const files = stores[asset.store];
+  try {
+    // Move first: the browser's signature can't touch the final key.
+    await files.move(asset.stagingKey, asset.key);
+  } catch (error) {
+    if (FilesError.wrap(error).code === "NotFound") {
+      return new Response("Upload not found", { status: 404 });
+    }
+    throw error;
+  }
+
+  // contentType is "image/<format>" or "video/<format>", e.g. "image/pdf".
+  const info = await files.head(asset.key);
+  const format = info.contentType.split("/")[1] ?? "";
+  if (info.size > MAX_BYTES || !ALLOWED_FORMATS[asset.store].has(format)) {
+    await files.delete(asset.key);
+    await markRejected(asset.id);
+    return new Response("File rejected", { status: 422 });
+  }
+
+  await markReady(asset.id, { format, size: info.size });
+  return Response.json({ id: asset.id });
+}
+```
+
+The order matters. `files.move()` is Cloudinary's native `rename` (the adapter sends `invalidate: true` and `overwrite: true`), which keeps the same asset rather than uploading a copy. Once the asset is at `users/…`, the staging signature can no longer change it, so the `head()` that follows describes the bytes that will be served. If you checked first and moved second, the browser could swap the file in between.
+
+`head()` builds `contentType` from Cloudinary's stored resource type and format. A PDF stored as an image comes back as `image/pdf`, and a JPEG as `image/jpg`. Neither is a real MIME type, so the check compares Cloudinary's format names. Cloudinary detects the format from the file's bytes, not from its name or the type the browser claimed.
+
+## Serve downloads through signed URLs
+
+```ts title="app/assets/[id]/download/route.ts" lineNumbers
+import { getAsset } from "@/lib/assets";
+import { getSession } from "@/lib/auth";
+import { stores } from "@/lib/cloudinary";
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession(request.headers);
+  if (!session) {
+    return new Response("Sign in to download", { status: 401 });
+  }
+  const { id } = await params;
+  const asset = await getAsset(id);
+  // One answer for "no such asset" and "not yours".
+  if (!asset || asset.ownerId !== session.user.id || asset.status !== "ready") {
+    return new Response("Not found", { status: 404 });
+  }
+
+  const url = await stores[asset.store].url(asset.key, { expiresIn: 60 });
+  return new Response(null, {
+    headers: { "Cache-Control": "private, no-store", Location: url },
+    status: 302,
+  });
+}
+```
+
+For an `authenticated` image, `url()` made one Admin API `resource` lookup to read the stored format, then returned a URL of this shape:
+
+```text
+https://api.cloudinary.com/v1_1/<cloud_name>/image/download?timestamp=…&public_id=users%2Fu_1%2Fast_9c21&format=pdf&type=authenticated&expires_at=…&signature=…&api_key=…
+```
+
+That's Cloudinary's `private_download_url`, signed with `expires_at` set from `expiresIn`. Cloudinary describes it as an authenticated API request [made each time the file is downloaded](https://cloudinary.com/documentation/control_access_to_media), not a cached CDN copy. Within its 60 seconds, the URL works for anyone who holds it. Linking to the route rather than the URL means each click gets a fresh ownership check.
+
+`url()` throws `Unsupported` if you pass `responseContentDisposition`; Cloudinary has no per-request override for it.
+
+### Skip the Admin API lookup
+
+Each `url()` call on a private or authenticated asset costs one Admin API request. Cloudinary's [Admin API limits](https://cloudinary.com/documentation/admin_api_overview) are 500 requests an hour on the free plan, with paid plans starting at 2,000. Upload API calls (uploads, renames, deletes) don't count. A busy download route can run out. The format is already stored on the row, so you can sign the URL locally with the SDK through `files.raw`:
+
+```ts lineNumbers
+if (!asset.format) {
+  throw new Error(`asset ${asset.id} has no stored format`);
+}
+const url = stores[asset.store].raw.utils.private_download_url(
+  asset.key,
+  asset.format,
+  {
+    expires_at: Math.floor(Date.now() / 1000) + 60,
+    resource_type: asset.store, // "image" or "video", matching the adapter
+    type: "authenticated",
+  }
+);
+```
+
+That produced the same URL shape without any request to Cloudinary. The helper signs with the credentials the adapter configured on the shared SDK module. It also takes an `attachment: true` flag, which it signs into the URL and which the adapter's `url()` can't pass.
+
+## Delete and what it revokes
+
+```ts title="app/api/assets/[id]/route.ts" lineNumbers
+import { deleteAsset, getAsset } from "@/lib/assets";
+import { getSession } from "@/lib/auth";
+import { stores } from "@/lib/cloudinary";
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession(request.headers);
+  const { id } = await params;
+  const asset = await getAsset(id);
+  if (!session || !asset || asset.ownerId !== session.user.id) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  // The store recorded at upload, so the resource and delivery types match.
+  await stores[asset.store].delete(asset.key);
+  await deleteAsset(asset.id);
+  return new Response(null, { status: 204 });
+}
+```
+
+The adapter sends `destroy` with the adapter's `resource_type` and `type` and `invalidate: true`. Delete the asset before the row: if the row delete fails, retrying is safe, because a second `destroy` for a missing asset resolves too.
+
+What deletion takes away, and when:
+
+- **Signed download URLs you've already issued** stop finding the file once it's gone, since each one is a fresh request to Cloudinary's API. Until then, they work for anyone who has them, up to their expiry. Keep `expiresIn` short. This guide didn't run against a live account, so it can't tell you the exact status code an expired or orphaned link returns.
+- **CDN copies** matter for `upload` assets and for the public transformed versions of `private` ones. `invalidate: true` asks Cloudinary to clear cached copies of the asset and its transformed versions. Cloudinary's upload reference says invalidation [takes from a few seconds to a few minutes](https://cloudinary.com/documentation/image_upload_api_reference) to propagate. Don't promise users instant removal of public files.
+
+## Sweep abandoned uploads
+
+A browser can stop after the upload and never call complete, or keep using its signature to post more files to the staging key. Nothing references those assets. Delete them once the signature that created them has expired:
+
+```ts title="scripts/sweep-staging.ts" lineNumbers
+import { stores } from "@/lib/cloudinary";
+
+// Signatures last an hour, so nothing older than two can still change.
+const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+
+for (const files of Object.values(stores)) {
+  for await (const file of files.listAll({ limit: 500, prefix: "staging/" })) {
+    if ((file.lastModified ?? 0) < cutoff) {
+      await files.delete(file.key);
+    }
+  }
+}
+```
+
+Run it on a schedule, and mark `pending` rows older than the cutoff as `rejected` in the same job. Each page `listAll()` fetches is one Admin API `resources` request. The adapter's default page is 100 assets, and `limit: 500` is Cloudinary's maximum, so a large backlog still uses up part of the hourly limit.
+
+Instead of relying on the browser to call complete, you can react to Cloudinary's own upload notifications. [Cloudinary events](/docs/events/cloudinary) shows how `files-sdk/events` receives and verifies them.
+
+## Limits and tradeoffs
+
+- **Bodies are buffered.** Server-side `upload()` reads the whole body into memory before handing it to Cloudinary's `upload_stream`, and `download()` reads the whole response. Let browsers upload directly and redirect downloads, as above, for anything large.
+- **Admin API requests are counted.** `head()`, `exists()`, `list()`, `download()`, and `url()` on private or authenticated assets all use the Admin API. Past the limit, Cloudinary answers HTTP 420. The adapter turns that into a `Provider` error, the code Files SDK retries when you configure `retries`, and retrying a rate limit only uses more of it.
+- **`copy()` won't work on protected assets.** Cloudinary has no native copy, so the adapter asks Cloudinary to upload from the source asset's delivery URL. For the authenticated image store, that URL was the unsigned `https://res.cloudinary.com/<cloud_name>/image/authenticated/v1/<key>`, and Cloudinary serves authenticated and private originals only through signed URLs. Use `move()`, which is a native rename.
+- **One account per process** unless you pass `client`. The adapter configures the SDK's shared module.
+- **Size and type are checked after the upload.** The signature can't carry them, so a large or unwanted file is stored, then rejected. Cloudinary's plan limits still cap the maximum file size. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) compares how other providers handle this.
+- **Revocation isn't instant.** See [Delete and what it revokes](#delete-and-what-it-revokes).
+
+## Troubleshooting
+
+**``cloudinary: `maxSize` is not supported for signed upload URLs…``** (or the same for `minSize` or `contentType`). Something passed a limit to `signedUploadUrl()`. Remove it and check the file in the complete step.
+
+**Cloudinary rejects the form with a signature error.** A field was changed or added after signing, or the signature is more than an hour old. Send `fields` exactly as returned, add only `file`, and get a new signature for each upload.
+
+**`NotFound` from complete.** The asset isn't at the staging key under this adapter's resource and delivery types. Check that the browser posted to the `url` the server returned, which includes the resource type, and that the signing and completing routes use the same store.
+
+**`cloudinary: cannot mint signed URL for "…" — resource has no format.…`** A private or authenticated asset with no stored format, typically a raw file. See the warning under [Choose a resource type and a delivery type](#choose-a-resource-type-and-a-delivery-type).
+
+**A delete succeeds, but the asset is still in the Media Library.** The delete went through an adapter whose resource type or delivery type doesn't match the asset. Cloudinary answered `not found`, and the adapter resolved anyway. Delete through the store recorded on the row.
+
+**`Provider` errors from `head()`, `url()`, or `list()` under load.** Cloudinary answers HTTP 420 once the Admin API's hourly limit is used up. Sign download URLs locally as in [Skip the Admin API lookup](#skip-the-admin-api-lookup), and spread out sweeps.
+
+**PDFs upload but won't deliver on a free account.** Cloudinary blocks delivery of PDF and ZIP files on free accounts by default. Turn on **Allow delivery of PDF and ZIP files** in the product environment's Security settings.
+
+**Two adapters seem to use the wrong credentials.** Each `cloudinary()` call reconfigures the SDK's shared module. Use one account per process, or pass separately configured instances through `client`.

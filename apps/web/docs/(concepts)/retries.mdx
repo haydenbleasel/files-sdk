@@ -1,6 +1,8 @@
 ---
 title: Retries
 description: Automatic retries for transient provider failures, with a configurable backoff curve and clear rules for what is and isn't retried.
+related:
+  - /guides/test-s3-code-without-aws
 ---
 
 `retries` retries transient failures automatically. Pass a number as shorthand for `{ max }`, or `{ max, backoff }` to control the wait between attempts. Set it on the constructor as a default and override it per call.

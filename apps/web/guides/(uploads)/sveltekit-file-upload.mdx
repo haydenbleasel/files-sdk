@@ -1,0 +1,373 @@
+---
+title: Upload files in SvelteKit to Google Cloud Storage with progress
+description: A SvelteKit endpoint signs browser uploads straight to a private GCS bucket, a load function lists each user's files, and adapter-node's CSRF, origin, and body-size checks stay out of the way.
+sidebar:
+  label: SvelteKit uploads
+seo:
+  title: SvelteKit file uploads with progress
+related:
+  - /guides/presigned-upload-validation
+  - /guides/tanstack-start-file-upload
+  - /guides/multi-tenant-file-storage
+  - /docs/ui/server/sveltekit
+  - /docs/ui/client/svelte
+  - /docs/adapters/gcs
+---
+
+One `+server.ts` endpoint mounts the Files SDK gateway with `files-sdk/sveltekit`. A signed-in user picks files, and `useFiles` from `files-sdk/svelte` asks the endpoint to presign each one. The gateway mints a key under that user's prefix and signs a Google Cloud Storage `POST` policy whose `content-length-range` caps the size. The browser then posts the file straight to GCS and reports progress. A `load` function lists the user's files for server rendering, and downloads redirect to signed URLs that expire after five minutes.
+
+Three checks sit in front of the gateway and can refuse an upload before your endpoint code runs:
+
+- SvelteKit's CSRF check rejects cross-origin form-like requests.
+- `@sveltejs/adapter-node` caps request bodies at 512 KB.
+- adapter-node assumes `https` when it builds the request URL.
+
+Uploads that go straight to GCS never meet the first two, because their bytes never reach SvelteKit. This guide shows where each check applies and how to set it.
+
+## Before you start
+
+- A Google Cloud project with a bucket (this guide calls it `uploads`) that isn't publicly readable, and a service account for the app to run as.
+- A SvelteKit 3 app on `@sveltejs/adapter-node`, with a `handle` hook that sets `event.locals.user`. The type below assumes `{ id: string } | null`.
+- Written against files-sdk 3.0, `@sveltejs/kit` 3.0, `@sveltejs/adapter-node` 6.0, Svelte 5.57, Vite 8.3, and `@google-cloud/storage` 8.4.
+- The SvelteKit behavior below was observed on a production build (`node build` and `vite preview`), with a local MinIO server standing in for GCS. The GCS `POST` policy was generated through the gateway with a throwaway signing key. Cloud Run and GCS limits come from Google's documentation.
+
+```package-install
+files-sdk @google-cloud/storage
+```
+
+```ts title="src/app.d.ts" lineNumbers
+declare global {
+  namespace App {
+    interface Locals {
+      user: { id: string } | null;
+    }
+  }
+}
+
+export {};
+```
+
+## Create the storage instance
+
+```ts title="src/lib/server/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { gcs } from "files-sdk/gcs";
+
+export const files = createFiles({
+  adapter: gcs({ bucket: "uploads" }),
+});
+
+/** Every key a user can reach lives under this prefix. */
+export const userPrefix = (userId: string) => `users/${userId}/`;
+```
+
+SvelteKit 3 no longer generates the `$lib` alias. Declare `#lib` in `package.json` and import with the `.js` extension, as the [SvelteKit docs](https://svelte.dev/docs/kit/$lib) describe:
+
+```json title="package.json"
+{
+  "imports": {
+    "#lib": "./src/lib/index.js",
+    "#lib/*": "./src/lib/*"
+  }
+}
+```
+
+With no credentials passed, `@google-cloud/storage` uses Application Default Credentials: the attached service account on Cloud Run, or your `gcloud` login locally. Reading and writing objects works with either one. Signing a URL or a `POST` policy needs a service-account identity. Your user credentials can't sign, so locally log in as the app's service account:
+
+```bash
+gcloud auth application-default login \
+  --impersonate-service-account=files-app@your-project.iam.gserviceaccount.com
+```
+
+Your user account needs the Service Account Token Creator role on that service account for the impersonation to work. [Deploy on Cloud Run](#deploy-on-cloud-run) covers the permissions the service account itself needs.
+
+## Mount the gateway
+
+```ts title="src/routes/api/files/+server.ts" lineNumbers
+import { getRequestEvent } from "$app/server";
+import { FilesError } from "files-sdk";
+import { createFilesRouter, type FilesOperation } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/sveltekit";
+
+import { files, userPrefix } from "#lib/server/files.js";
+
+// The page lists files in its load function, so the gateway never needs `list`.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "head",
+  "download",
+  "delete",
+]);
+
+const router = createFilesRouter({
+  files,
+  maxUploadSize: 100 * 1024 * 1024, // 100 MiB
+  authorize: ({ operation, key }) => {
+    // `authorize` gets the Web Request. getRequestEvent() reaches the
+    // SvelteKit event behind it, with the locals your handle hook set.
+    const { locals } = getRequestEvent();
+    if (!locals.user) {
+      throw new FilesError("Unauthorized", "Sign in to manage files");
+    }
+    if (!ALLOWED.has(operation)) {
+      throw new FilesError("ReadOnly", `${operation} is not allowed`);
+    }
+    // The one keyed upload this app makes: a fixed avatar key, streamed
+    // through this route.
+    if (operation === "upload" && key !== undefined && key !== "avatar") {
+      throw new FilesError("ReadOnly", "Upload files with upload(file)");
+    }
+    return { keyPrefix: userPrefix(locals.user.id), maxExpiresIn: 300 };
+  },
+});
+
+export const { GET, POST, PUT } = createRouteHandler(router);
+```
+
+What the endpoint does with each request:
+
+- **One route, three methods.** `createRouteHandler` returns the `GET`, `POST`, and `PUT` exports SvelteKit expects. `GET` serves downloads, `POST` the JSON operations (presign, complete, delete, head), and `PUT` the upload bytes.
+- **`getRequestEvent()` bridges to `locals`.** The handlers pass `event.request` to the gateway, and `authorize` receives that same `Request`, not the SvelteKit event. `getRequestEvent()` from `$app/server` returns the event for the current request, `locals` included. A logged run confirmed that `getRequestEvent().request` is the exact object `authorize` receives. It relies on `AsyncLocalStorage`, because `authorize` runs after the gateway has awaited the request body. adapter-node has it. On other adapters, check that their runtime provides `node:async_hooks`.
+- **`authorize` gates every operation.** `Unauthorized` becomes a `401`, and `ReadOnly` a `403`. An unauthenticated `POST` answered `401` with `Sign in to manage files`. A `list` call answered `403` with `list is not allowed`, because the page never needs the gateway to list.
+- **`maxUploadSize` goes into the policy.** For `upload(file)`, the gateway asks the adapter for a `POST` policy instead of a `PUT` URL. A policy generated through the gateway for a PDF carried `["content-length-range", 0, maxUploadSize]`, an exact match on `Content-Type: application/pdf`, and the minted key `users/42/<uuid>.pdf`. GCS checks each condition when the form arrives ([policy document conditions](https://docs.cloud.google.com/storage/docs/authentication/signatures#policy-document)).
+- **`FILES_API_SECRET` signs the presign → complete token.** Set it to the same long random value on every instance. The router reads it from the environment.
+
+[Authorization](/docs/ui/server/authorization) covers the rest of what `authorize` can return.
+
+## Let the browser POST to GCS
+
+The browser posts each form to `https://storage.googleapis.com/uploads/`, a different origin from your app, so the bucket needs a CORS rule:
+
+```json title="cors.json" lineNumbers
+[
+  {
+    "origin": ["http://localhost:5173", "https://app.example.com"],
+    "method": ["POST"],
+    "responseHeader": ["Content-Type"],
+    "maxAgeSeconds": 3600
+  }
+]
+```
+
+```bash
+gcloud storage buckets update gs://uploads --cors-file=cors.json
+```
+
+The upload uses `XMLHttpRequest` so it can report progress, and an `XMLHttpRequest` with upload listeners always sends a preflight, which this rule answers. On success, GCS answers the form with an [empty `204`](https://docs.cloud.google.com/storage/docs/xml-api/post-object-forms). Downloads are top-level navigations to a signed URL, so they need no rule.
+
+## List files in a load function
+
+The page's list comes from a `load` function that calls `files.list()` directly. It runs during server rendering, it already has `locals`, and it doesn't go through the gateway at all:
+
+```ts title="src/routes/files/+page.server.ts" lineNumbers
+import { redirect } from "@sveltejs/kit";
+
+import { files, userPrefix } from "#lib/server/files.js";
+import type { PageServerLoad } from "./$types";
+
+export const load: PageServerLoad = async ({ locals }) => {
+  if (!locals.user) {
+    redirect(303, "/login");
+  }
+  const prefix = userPrefix(locals.user.id);
+  const { items } = await files.list({ prefix, limit: 100 });
+  return {
+    // Keys relative to the user's prefix: the same keys the gateway takes.
+    files: items.map((item) => ({
+      key: item.key.slice(prefix.length),
+      size: item.size,
+    })),
+  };
+};
+```
+
+`useList` from `files-sdk/svelte` would also work, but it fetches `/api/files` from the browser after the page loads, and during server rendering it would fire a request to a relative URL that can't resolve. A `load` function gives you the list in the server-rendered HTML.
+
+## Build the upload page
+
+```svelte title="src/routes/files/+page.svelte" lineNumbers
+<script lang="ts">
+  import { invalidateAll } from "$app/navigation";
+  import { useFiles } from "files-sdk/svelte";
+  import { onDestroy } from "svelte";
+
+  import type { PageProps } from "./$types";
+
+  let { data }: PageProps = $props();
+
+  const files = useFiles();
+  const { uploads, isUploading, progress } = files;
+  onDestroy(() => files.abort());
+
+  async function onSelect(event: Event & { currentTarget: HTMLInputElement }) {
+    const selected = [...(event.currentTarget.files ?? [])];
+    event.currentTarget.value = "";
+    // Keyless: the gateway mints each key and signs a GCS POST form for it.
+    await Promise.allSettled(selected.map((file) => files.upload(file)));
+    // Re-run the load function so the new files show up.
+    await invalidateAll();
+  }
+
+  async function onAvatar(event: Event & { currentTarget: HTMLInputElement }) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (!file) {
+      return;
+    }
+    // Keyed: one PUT to /api/files, streamed through SvelteKit to GCS.
+    await files.upload("avatar", file).catch(() => {});
+    await invalidateAll();
+  }
+
+  async function remove(key: string) {
+    await files.delete(key).catch(() => {});
+    await invalidateAll();
+  }
+
+  const downloadHref = (key: string) =>
+    `/api/files?op=download&key=${encodeURIComponent(key)}`;
+</script>
+
+<label>
+  Upload files
+  <input type="file" multiple onchange={onSelect} />
+</label>
+<label>
+  Avatar
+  <input type="file" accept="image/*" onchange={onAvatar} />
+</label>
+
+{#if $isUploading}
+  <progress value={$progress.fraction}></progress>
+{/if}
+
+<ul>
+  {#each $uploads as upload, index (index)}
+    <li>
+      {upload.name}: {upload.status}
+      {#if upload.status === "uploading"}
+        {Math.round(upload.progress * 100)}%
+      {/if}
+      {#if upload.error}
+        ({upload.error.message})
+      {/if}
+    </li>
+  {/each}
+</ul>
+
+<ul>
+  {#each data.files as file (file.key)}
+    <li>
+      <a href={downloadHref(file.key)}>{file.key}</a>
+      ({file.size} bytes)
+      <button type="button" onclick={() => remove(file.key)}>Delete</button>
+    </li>
+  {/each}
+</ul>
+```
+
+`useFiles` returns Svelte stores, so `$uploads` and `$progress` work in a Svelte 5 component as they did in Svelte 4. Each `upload(file)` keeps one entry in `uploads` that moves from `"uploading"` to `"success"`, `"error"`, or `"aborted"`. The binding imports no Svelte lifecycle hooks, so `onDestroy` cancels in-flight calls when the page unmounts. Download links answer with a `302` to a V4 signed `GET` URL that expires after at most 300 seconds. [Svelte](/docs/ui/client/svelte) documents the rest of the binding.
+
+## Direct and proxied uploads
+
+The two `upload` calls on the page take different paths, and only one of them meets SvelteKit's limits:
+
+|  | `upload(file)` | `upload("avatar", file)` |
+| --- | --- | --- |
+| Bytes go | Browser → GCS | Browser → SvelteKit → GCS |
+| Size enforced by | GCS, from the policy's `content-length-range` | The gateway, which counts bytes and aborts past `maxUploadSize` |
+| SvelteKit CSRF check | Never sees the bytes. The JSON `POST`s are not form submissions | Applies to the `PUT` |
+| `BODY_SIZE_LIMIT` | Never sees the bytes | Applies to the `PUT` |
+| Cloud Run's 32 MiB HTTP/1 request cap | Doesn't apply | Applies |
+
+Keyed uploads suit a small file at a fixed key that you want overwritten in place, like this avatar. Keep anything large on `upload(file)`.
+
+## Set the body size limit
+
+adapter-node reads request bodies with a limit of `BODY_SIZE_LIMIT`, which [defaults to 512 KB](https://svelte.dev/docs/kit/adapter-node) (`512K`, so 524,288 bytes). The limit applies inside the request stream the gateway reads, so a keyed upload over it fails partway through `files.upload()`. On a `node build` server with the default, a 1 MiB avatar `PUT` answered `500`:
+
+```json
+{
+  "error": {
+    "code": "Provider",
+    "message": "Content-length of 1048576 exceeds limit of 524288 bytes."
+  }
+}
+```
+
+A chunked body without `Content-Length` failed the same way, with `request body size exceeded BODY_SIZE_LIMIT of 524288`. No object was left behind in either case. With `BODY_SIZE_LIMIT=10M` the same 1 MiB upload stored normally.
+
+Set it to the largest keyed upload you accept:
+
+```bash
+BODY_SIZE_LIMIT=5M node build
+```
+
+The `K`, `M`, and `G` suffixes are binary multiples. `Infinity` turns the limit off, but it's server-wide: it also lifts the cap on every form action and other endpoint in the app. Keyless uploads don't need a higher limit at all, so size it for keyed uploads only. Check `file.size` in the browser before a keyed upload, so users get a clear message instead of the `500`.
+
+The table above holds because GCS can sign a size-limited `POST` (`files.capabilities.signedUpload.maxSize` is `true`). On R2, B2, Azure, or Supabase it's `false`, and setting `maxUploadSize` sends `upload(file)` through the gateway's proxy route as well, so `BODY_SIZE_LIMIT` then applies to every upload. [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload#limit-upload-size) covers that tradeoff.
+
+## Origins, CSRF, and the production build
+
+Two origin checks run on requests to `/api/files`, and they look at different things:
+
+- **SvelteKit's CSRF check** runs in production builds only. It rejects a `POST`, `PUT`, `PATCH`, or `DELETE` from another origin when its `Content-Type` is `text/plain`, `multipart/form-data`, or `application/x-www-form-urlencoded`, or, new in SvelteKit 3, when it has no `Content-Type` at all. It compares the `Origin` header to `paths.origin` if you set one, otherwise to the request URL's origin.
+- **The gateway's origin check** runs on every state-changing operation (presign, complete, delete, and both kinds of upload `PUT`) whatever the content type. Reads such as `head` and `download` don't check it. It compares `Origin` to `allowedOrigins` if you set them, otherwise to the request URL's origin.
+
+adapter-node 6 builds that request URL as `https://` plus the `Host` header, unless `paths.origin` is set or `PROTOCOL_HEADER`/`HOST_HEADER` name proxy headers to read instead. That's right for a browser talking to Cloud Run directly. It's wrong for `node build` on plain `http://localhost:3000`: there, a presign from `http://localhost:3000` answered `403` with `origin not allowed`. Test the production build locally with `vite preview`, which serves over `http` and builds an `http` request URL. Presign worked there, and the CSRF check was active, as in production.
+
+If a proxy in front of the app rewrites `Host`, set `paths.origin` in the `sveltekit()` plugin options in `vite.config.ts`, or have adapter-node read the proxy's headers:
+
+```bash
+PROTOCOL_HEADER=x-forwarded-proto HOST_HEADER=x-forwarded-host node build
+```
+
+`paths.origin` sets both adapter-node's request URL and SvelteKit's CSRF origin, so it fixes both checks. Only set the header variables behind a proxy you trust, since a client could otherwise send its own.
+
+### Serving another origin
+
+If a different site calls this endpoint, both checks need its origin. List it in the gateway's `allowedOrigins`, and in `csrf.trustedOrigins` in the `sveltekit()` plugin options (SvelteKit 3 moved its configuration from `svelte.config.js` into `vite.config.ts`). Without the second, cross-origin keyed `PUT`s of `text/plain` files, or of files with no type, get SvelteKit's `403` with the plain-text body `Cross-site PUT form submissions are forbidden`. The client can't parse that, so it reports `upload failed (403)`. A cross-origin `application/pdf` `PUT` passes SvelteKit and then hits the gateway's check instead.
+
+## Deploy on Cloud Run
+
+The app's service account needs object access on the bucket, and permission to sign as itself:
+
+```bash
+SA=files-app@your-project.iam.gserviceaccount.com
+
+# Create, read, list, and delete objects in the bucket
+gcloud storage buckets add-iam-policy-binding gs://uploads \
+  --member="serviceAccount:$SA" --role="roles/storage.objectUser"
+
+# iam.serviceAccounts.signBlob on itself, for signed URLs and POST policies
+gcloud iam service-accounts add-iam-policy-binding "$SA" \
+  --member="serviceAccount:$SA" --role="roles/iam.serviceAccountTokenCreator"
+
+gcloud services enable iamcredentials.googleapis.com
+```
+
+There's no private key on Cloud Run, so `@google-cloud/storage` [signs through the IAM Credentials API](https://docs.cloud.google.com/storage/docs/authentication/creating-signatures) with the attached account. That needs the `signBlob` permission above and the IAM Service Account Credentials API enabled. Google rotates the keys behind `signBlob`, and warns that a signature with an expiry beyond 12 hours can stop working early. The five-minute expiries here are well inside that.
+
+Deploy with `--service-account "$SA"`, and set `FILES_API_SECRET` and `BODY_SIZE_LIMIT` on the service. Cloud Run caps [HTTP/1 request bodies at 32 MiB](https://docs.cloud.google.com/run/quotas), and adapter-node serves HTTP/1, so a keyed upload above 32 MiB is refused before it reaches your container, whatever `BODY_SIZE_LIMIT` says. Direct uploads to GCS don't pass through Cloud Run.
+
+## Limits and tradeoffs
+
+- **The policy checks the claimed type, not the bytes.** GCS stores the `Content-Type` the browser declared, and rejects a form that changes it. It doesn't inspect the file. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) shows how to check the bytes after they land.
+- **A signed form isn't single-use.** It accepts posts to its key until it expires, whether or not the client completed. `maxExpiresIn: 300` keeps that to five minutes.
+- **Closed tabs skip complete.** A browser that uploads and never calls complete leaves an object the gateway never verified. [GCS events](/docs/events/gcs) let you reconcile those.
+- **The avatar overwrites.** A keyed upload replaces whatever was at the key. Here that's the point, but don't allow keyed uploads to keys the user doesn't own.
+- **`getRequestEvent()` ties `authorize` to SvelteKit.** The same router mounted in another framework would throw there. If it has to be portable, read the session from `req` instead.
+
+## Troubleshooting
+
+**`Cannot sign data without client_email.`** `@google-cloud/storage` is running with user credentials, which can't sign. Locally, log in with `--impersonate-service-account`. On Cloud Run, check that the service runs as a service account with the token creator binding above.
+
+**`origin not allowed` (403) on upload or delete.** The request URL adapter-node built doesn't match the page's origin. On `node build` over plain `http` locally, use `vite preview`. Behind a proxy that rewrites `Host`, set `paths.origin` or `PROTOCOL_HEADER`/`HOST_HEADER`.
+
+**`upload failed (403)` on a keyed upload, with no JSON body.** SvelteKit's CSRF check refused a cross-origin `PUT`. Add the origin to `csrf.trustedOrigins`, as well as to `allowedOrigins`.
+
+**`Content-length of … exceeds limit of 524288 bytes.`** A keyed upload hit adapter-node's default `BODY_SIZE_LIMIT`. Raise it, or switch to `upload(file)`.
+
+**`network error during upload` and a CORS error in the console.** The preflight to `storage.googleapis.com` didn't match the bucket's CORS rule. Check that the page's exact origin is listed and `POST` is in `method`.
+
+**`upload failed (403)` on a keyless upload.** GCS refused the form. It expired, the server clock is off, or a field such as `Content-Type` was changed after signing. A file larger than the policy allows normally stops earlier, at presign with `upload exceeds maxUploadSize`, because the client declares each file's size there.

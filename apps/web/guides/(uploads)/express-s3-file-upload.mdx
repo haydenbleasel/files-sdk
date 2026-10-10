@@ -1,0 +1,349 @@
+---
+title: Upload files to S3 from Express without buffering them in memory
+description: An Express server where browsers upload straight to S3 under a size-capped POST policy, and server-side uploads stream into S3 a few parts at a time, with no multer.
+sidebar:
+  label: Express uploads to S3
+seo:
+  title: Express file uploads to S3 without multer
+related:
+  - /guides/test-s3-code-without-aws
+  - /guides/presigned-upload-validation
+  - /guides/tanstack-start-file-upload
+  - /docs/ui/server/express
+  - /docs/adapters/s3
+---
+
+You don't need to parse `multipart/form-data` in Express to put files in S3, and you don't need to hold a file in memory. Mount the `files-sdk/express` gateway at `/api/files`, before any body parser. When the browser calls `upload(file)`, the gateway signs an S3 `POST` form, the browser sends the file straight to the bucket, and S3 enforces your size cap. Express only handles two small JSON requests per file.
+
+When the bytes do have to pass through your server, as with an import endpoint for scripts and other services, pipe the request into `files.upload()` through a byte counter. The S3 adapter streams it into a multipart upload, 5 MiB parts at a time, and aborts the upload if the stream fails. In both cases memory use stays flat whatever the file size, which multer's `memoryStorage()` can't promise.
+
+## Before you start
+
+- An S3 bucket (this guide calls it `uploads`) and credentials whose policy allows `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, and `s3:AbortMultipartUpload` on its objects, plus `s3:ListBucket` on the bucket.
+- An Express 5 app on Node.js 22 or later.
+- Written against files-sdk 3.0, Express 5.2, `@aws-sdk/client-s3` 3.1148, and Node.js 24. The observed results below come from running this code against a local MinIO server (`RELEASE.2025-09-06T17-38-46Z`).
+
+```package-install
+files-sdk express @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner @aws-sdk/lib-storage
+```
+
+`@aws-sdk/s3-presigned-post` builds the `POST` policy for browser uploads, `@aws-sdk/s3-request-presigner` signs download links, and `@aws-sdk/lib-storage` uploads a stream of unknown length as multipart.
+
+## Choose an upload path
+
+|  | Bytes through Express | Memory per upload | Size limit enforced by |
+| --- | --- | --- | --- |
+| Gateway, `upload(file)` | No | None | The gateway at presign, then S3's `POST` policy |
+| Gateway, `upload(key, file)` | Yes, streamed | A few 5 MiB parts | The gateway, counting bytes |
+| Your own route into `files.upload()` | Yes, streamed | A few 5 MiB parts | Your byte counter |
+| multer `memoryStorage()` | Yes | The whole file, as `file.buffer` | multer's `limits.fileSize` |
+| multer-s3 | Yes, streamed | lib-storage's default parts | multer's `limits.fileSize` |
+
+Use the first row for anything a browser uploads. The bytes never touch your server, so your server's bandwidth, request timeouts, and memory don't depend on file size. Use a streamed path when the bytes have to pass through code you run: an import endpoint, a client that can't reach the bucket, or a plugin that reads the body, such as [`encryption()`](/docs/plugins/encryption).
+
+multer's own README warns that with memory storage, "uploading very large files, or relatively small files in large numbers very quickly, can cause your application to run out of memory". multer-s3 doesn't have that problem: its 3.x releases stream each file into S3 through lib-storage's `Upload` class, as the streamed paths here do. What it can't do is take your server out of the byte path, and it ties the route to the AWS SDK. With multer 2.4 and multer-s3 3.0.1, a file over `limits.fileSize` got `LIMIT_FILE_SIZE` and left nothing behind in a MinIO bucket, so if you already run multer-s3, it isn't broken. The reason to move is the direct path.
+
+## Create the storage instance
+
+```ts title="src/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+export const files = createFiles({
+  adapter: s3({ bucket: "uploads", region: "us-east-1" }),
+});
+```
+
+The S3 adapter uses the AWS credential chain: environment variables, a shared config file, or the instance's IAM role. Keep `files` in its own module and pass it into the app. The server uses this instance, and tests can pass one backed by memory instead ([Test S3 storage code without AWS](/guides/test-s3-code-without-aws) does exactly that).
+
+```bash title=".env"
+AWS_ACCESS_KEY_ID=your-access-key-id
+AWS_SECRET_ACCESS_KEY=your-secret-access-key
+# Signs the presign → complete token. Generate with: openssl rand -hex 32
+FILES_API_SECRET=a-long-random-string
+```
+
+Set `FILES_API_SECRET` to the same value on every instance. Without it, each process signs upload tokens with its own random secret and logs a warning, and a `complete` request that reaches a different instance fails with `upload token signature`.
+
+## Load the signed-in user
+
+The gateway's `authorize` hook receives a Web `Request`, rebuilt from the Node request's headers. Whatever your session middleware attached to the Express `req` (Passport's `req.user`, express-session's `req.session`) isn't on it. If your auth can resolve a user from headers alone, such as a JWT or a session library that reads cookies, call it inside `authorize`. If it's Express middleware, run it first and pass the user through:
+
+```ts title="src/auth.ts" lineNumbers
+import type { RequestHandler } from "express";
+
+import { getSession } from "./session.js";
+
+export interface User {
+  id: string;
+}
+
+// Your session middleware. It may read cookies and headers, but not the body,
+// and it doesn't reject: routes decide what a missing user means.
+export const loadUser: RequestHandler = async (req, res, next) => {
+  const session = await getSession(req);
+  res.locals.user = session
+    ? ({ id: session.userId } satisfies User)
+    : undefined;
+  next();
+};
+```
+
+`getSession` stands in for your session lookup. It takes the Express request and returns `{ userId: string }` or `null`.
+
+The middleware attaches the user but never answers `401` itself, and that matters for the gateway. A keyless upload on an adapter that can't presign (or behind a plugin that turns presigning off) sends its bytes to the gateway's own `?op=proxy` URL. That request is authorized by the signed token `presign` minted, not by `authorize`, and `createFilesClient` sends only the target's own headers with it, not the `headers` you configured. A middleware that rejects requests without a session header would refuse it. Cookie sessions don't hit this, because the browser sends cookies to its own origin anyway.
+
+## Mount the gateway before the body parser
+
+```ts title="src/app.ts" lineNumbers
+import { AsyncLocalStorage } from "node:async_hooks";
+
+import express from "express";
+import { FilesError } from "files-sdk";
+import type { Files } from "files-sdk";
+import { createFilesRouter } from "files-sdk/api";
+import type { FilesOperation } from "files-sdk/api";
+import { createRouteHandler } from "files-sdk/express";
+
+import { loadUser } from "./auth.js";
+import type { User } from "./auth.js";
+
+// The verbs the browser may call. Everything else is refused.
+const ALLOWED = new Set<FilesOperation>([
+  "upload",
+  "list",
+  "head",
+  "download",
+  "delete",
+]);
+
+export const createApp = (files: Files) => {
+  const app = express();
+  const currentUser = new AsyncLocalStorage<User | undefined>();
+
+  const filesRouter = createFilesRouter({
+    files,
+    maxUploadSize: 100 * 1024 * 1024, // 100 MiB
+    authorize: ({ operation }) => {
+      const user = currentUser.getStore();
+      if (!user) {
+        throw new FilesError("Unauthorized", "Sign in to manage files");
+      }
+      if (!ALLOWED.has(operation)) {
+        throw new FilesError("ReadOnly", `${operation} is not allowed`);
+      }
+      return { keyPrefix: `users/${user.id}/`, maxExpiresIn: 300 };
+    },
+  });
+  const handleFiles = createRouteHandler(filesRouter);
+
+  // Mount the gateway before any body parser.
+  app.all("/api/files", loadUser, (req, res) =>
+    currentUser.run(res.locals.user, () => handleFiles(req, res))
+  );
+
+  // Body parsers for the rest of the app come after the gateway.
+  app.use(express.json());
+
+  return app;
+};
+```
+
+```ts title="src/server.ts" lineNumbers
+import { createApp } from "./app.js";
+import { files } from "./files.js";
+
+createApp(files).listen(3000, () => {
+  console.log("Listening on http://localhost:3000");
+});
+```
+
+What each piece does:
+
+- **`createRouteHandler`** bridges Express's Node `req`/`res` to the Web `Request`/`Response` the gateway speaks, streaming in both directions. It reads `req.originalUrl`, so the route still works when mounted inside an `express.Router()`.
+- **`AsyncLocalStorage`** carries the user from `loadUser` into `authorize`. `run()` makes the user the store for everything `handleFiles` awaits, so concurrent requests each see their own user.
+- **`authorize`** runs on every gateway request except the proxy `PUT` described above. Throwing `Unauthorized` answers `401` and `ReadOnly` answers `403`. The returned `keyPrefix` is prepended to every key server-side, so a user who asks for `report.pdf` reads `users/<id>/report.pdf` and can't name anyone else's files. [Authorization](/docs/ui/server/authorization) covers the rest of the constraint, and [Isolate each tenant's files](/guides/multi-tenant-file-storage) shows what the gateway returns when one user reaches for another's.
+- **`express.json()` comes after the gateway.** A body parser consumes the request stream, and the gateway reads the raw body itself. With `express.json()` registered first, every JSON gateway call (`list`, `presign`, `complete`, …) answered `500` with an empty body, and nothing reached the server log. Keyed uploads still worked, because `express.json()` skips bodies that aren't `application/json`, until someone uploaded a `.json` file. If a parser has to be global, scope it so it skips `/api/files`.
+
+## Let the browser POST to S3
+
+With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. Its policy pins the key, requires the `Content-Type` the browser claimed, and allows 0 bytes to `maxUploadSize`. A file that already declares a larger size gets `422` (`upload exceeds maxUploadSize`) at presign, before anything is signed. After the browser's `POST`, the client calls `complete`, and the gateway `head`s the object to confirm it landed and is within the limit.
+
+The browser sends that form cross-origin, so the bucket needs a CORS rule. In the S3 console, open the bucket's **Permissions** tab and edit **Cross-origin resource sharing (CORS)**:
+
+```json lineNumbers
+[
+  {
+    "AllowedOrigins": ["http://localhost:3000", "https://app.example.com"],
+    "AllowedMethods": ["POST"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Then upload from the page. `createFilesClient` from `files-sdk/client` runs the presign, the `POST` to S3, and the complete step, and reports progress:
+
+```ts title="client/upload.ts" lineNumbers
+import { createFilesClient } from "files-sdk/client";
+
+const files = createFilesClient(); // talks to /api/files
+const input = document.querySelector<HTMLInputElement>("#file");
+const bar = document.querySelector<HTMLProgressElement>("#progress");
+
+input?.addEventListener("change", async () => {
+  const file = input.files?.[0];
+  if (!file) {
+    return;
+  }
+  const stored = await files.upload(file, {
+    onProgress: ({ fraction }) => {
+      if (bar) {
+        bar.value = fraction;
+      }
+    },
+  });
+  console.log("Stored as", stored.key);
+});
+```
+
+The resolved key is relative to the user's prefix, for example `0afa2d15-….txt`, because the server mints it. To download, link to `/api/files?op=download&key=<key>`. The gateway answers with a `302` to a presigned S3 `GET` that lives at most 300 seconds, so the download doesn't pass through Express either. In a React front end, `useFiles` from `files-sdk/react` wraps the same client ([React](/docs/ui/client/react)).
+
+If the page and the API are served from different origins in development, proxy `/api` through your dev server so the page and the gateway share an origin. The gateway checks the `Origin` header on state-changing requests against its own origin, which it derives from the request's `Host` header. A proxy that rewrites `Host` (Vite's `changeOrigin: true`) makes `presign` fail with `403` `origin not allowed`. Leave the `Host` header alone, or list the page's origin in the router's `allowedOrigins`.
+
+## Stream an upload through the gateway
+
+Give `upload` a key and the client skips presign and sends one `PUT` to `/api/files` with the file as the body:
+
+```ts lineNumbers
+const stored = await files.upload(`videos/${crypto.randomUUID()}.mp4`, file);
+```
+
+The gateway checks `Content-Length` against `maxUploadSize` first, then pipes the body through a byte counter into `files.upload()`. The S3 adapter hands the stream to lib-storage, which cuts it into 5 MiB parts and keeps up to four part uploads in flight. Against MinIO, a 6 MiB keyed upload landed as a two-part multipart object (its ETag ended in `-2`). Check `key` in `authorize` if keyed uploads should only reach certain folders, since a user can `PUT` over a key they already wrote.
+
+## Stream a request body into S3 without the gateway
+
+Some uploads have no browser: a nightly export pushed by `curl`, a webhook delivering a file, another service in your stack. For those, write a plain route that streams the request body into `files.upload()`. Add it inside `createApp`, after the gateway, and give `createApp` an options argument so tests can lower the limit:
+
+```ts title="src/app.ts" lineNumbers
+import { Readable } from "node:stream";
+
+export const createApp = (
+  files: Files,
+  { maxImportSize = 50 * 1024 * 1024 } = {} // 50 MiB
+) => {
+  // …the gateway, as above…
+
+  app.put("/imports/:name", loadUser, async (req, res) => {
+    const user: User | undefined = res.locals.user;
+    if (!user) {
+      res.status(401).json({ error: "Sign in first" });
+      return;
+    }
+
+    // The name becomes part of the key: no slashes, no leading dot.
+    const name = String(req.params.name);
+    if (!/^\w[\w.-]{0,199}$/.test(name)) {
+      res.status(400).json({ error: "Invalid file name" });
+      return;
+    }
+
+    // Refuse a declared oversize body before reading any of it.
+    if (Number(req.get("content-length")) > maxImportSize) {
+      res.status(413).json({ error: "File too large" });
+      return;
+    }
+
+    // Count bytes as they stream and fail the stream once past the cap.
+    let received = 0;
+    const body = (
+      Readable.toWeb(req) as ReadableStream<Uint8Array>
+    ).pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          received += chunk.byteLength;
+          if (received > maxImportSize) {
+            controller.error(new FilesError("Invalid", "File too large"));
+            return;
+          }
+          controller.enqueue(chunk);
+        },
+      })
+    );
+
+    // Stop the upload if the client goes away before we answer.
+    const abort = new AbortController();
+    res.on("close", () => {
+      if (!res.writableFinished) {
+        abort.abort();
+      }
+    });
+
+    try {
+      const stored = await files.upload(`imports/${user.id}/${name}`, body, {
+        contentType: req.get("content-type") ?? "application/octet-stream",
+        signal: abort.signal,
+      });
+      res.status(201).json(stored);
+    } catch (error) {
+      if (received > maxImportSize) {
+        res.status(413).json({ error: "File too large" });
+        return;
+      }
+      console.error("import failed", FilesError.wrap(error));
+      if (!res.headersSent) {
+        res.status(502).json({ error: "Upload failed" });
+      }
+    }
+  });
+
+  app.use(express.json());
+  return app;
+};
+```
+
+```bash
+curl -X PUT --data-binary @report.csv -H "Content-Type: text/csv" \
+  http://localhost:3000/imports/report.csv
+```
+
+`files.upload()` takes Web streams, not Node streams, so `Readable.toWeb(req)` converts the request. The cast is there because Node's stream types and the DOM's don't line up when a project includes both libs. The file name is checked against an allowlist because Files SDK passes keys to the adapter as given: on S3, `imports/u1/../../users/u2/x` is a literal key, and on the [filesystem adapter](/docs/adapters/fs) it would be a path.
+
+Against MinIO, with the 50 MiB limit:
+
+| Request | Response | Left in the bucket |
+| --- | --- | --- |
+| 3 MiB with `Content-Length` | `201` and the stored `FileInfo` | The object |
+| 60 MiB with `Content-Length` | `413` before the route read the body | Nothing |
+| 60 MiB chunked, no `Content-Length` | `413` once the counter passed 50 MiB | Nothing, no pending multipart upload |
+| 40 MiB, client disconnects after 12 MiB | Connection gone; the log shows `Operation aborted` with `aborted: true` | Nothing, no pending multipart upload |
+
+When the counter errors the stream or the signal aborts, lib-storage's upload fails and the adapter aborts the multipart upload (`leavePartsOnError: false`), so no orphaned parts remain. The `catch` tells the cases apart: `received` past the limit means the cap tripped, and a `FilesError` with `aborted: true` means the client left.
+
+Don't swap the counter for [`validation({ maxSize })`](/docs/plugins/validation) on this route. To measure a stream of unknown length, the plugin buffers all of it first, which is the memory spike this route exists to avoid. It's the right tool for buffered bodies.
+
+## Limits and tradeoffs
+
+- **Presigned uploads trust the claimed type.** S3's policy rejects a form whose `Content-Type` differs from the one signed, but an HTML file labelled `image/png` passes. [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation) covers checking the bytes after they land.
+- **Body-reading plugins turn direct uploads into proxied ones.** `contentType()`, and `validation()` with a size or type rule, can't inspect bytes they never see, so they turn off `files.capabilities.signedUpload`. The gateway then routes `upload(file)` through its proxy `PUT`, and the bytes pass through Express.
+- **Leave `maxUploadSize` set.** Without it the S3 adapter signs a presigned `PUT` instead of a `POST`. That binds the type but not the size, and needs `PUT` and the `Content-Type` header in the bucket's CORS rule.
+- **Streamed uploads aren't retried.** `files.upload()` retries `Provider` failures for buffered bodies when you set `retries`, but a consumed stream can't be replayed. A failed import has to be sent again by the caller.
+- **The gateway sends no CORS headers.** A front end on another origin needs the `cors` middleware on `/api/files` and its origin in `allowedOrigins`. Serving both from one origin avoids both.
+- **A crashed process leaves parts.** If Node dies mid-stream, the abort never runs. Add a bucket lifecycle rule that aborts incomplete multipart uploads after a day or two.
+
+## Troubleshooting
+
+**Every gateway call fails with `gateway responded 500`, the response body is empty, and nothing is logged.** A body parser ran before the gateway and consumed the request. Move `app.use(express.json())` (and `urlencoded`, `raw`, `text`) below the `app.all("/api/files", …)` line.
+
+**`origin not allowed` (`403`) on presign or delete, but `list` works.** Only state-changing requests check `Origin`. The page's origin doesn't match the origin the gateway derived from `Host` and `X-Forwarded-Proto`. Check what your proxy forwards, or add the page's origin to `allowedOrigins`.
+
+**`Sign in to manage files` (`401`) for a signed-in user.** `authorize` ran outside `currentUser.run()`, or `loadUser` didn't find the session. Make sure the route calls `handleFiles` inside `run()`, not before it.
+
+**A keyless upload fails with `upload failed (401)`, or with an empty error message.** Middleware in front of the gateway rejected the proxy `PUT`. (The message is empty when that middleware answers with a JSON body whose `error` is a string.) Use a middleware that attaches the user without rejecting, as `loadUser` does, and let `authorize` decide.
+
+**`upload failed (403)` on the direct path.** S3 refused the form's signature or a policy condition: the form expired, the server clock is off, or a field such as `Content-Type` was changed after signing.
+
+**`Multipart, progress, and unknown-length stream uploads on S3 require the optional peer dependency '@aws-sdk/lib-storage'`.** Both streamed paths need it. Install `@aws-sdk/lib-storage`.
+
+## NestJS
+
+On NestJS with the Express platform, use `FilesModule.forRoot()` from `files-sdk/nestjs` instead of mounting the route yourself. It mounts the same gateway through Nest's middleware layer and exposes the `Files` instance through dependency injection. Nest registers its body parser globally before any middleware, so create the app with `bodyParser: false` and scope parsers to your own routes. [NestJS](/docs/ui/server/nestjs) has the setup.

@@ -3,6 +3,7 @@ title: transfer
 description: Stream every object under a prefix from one Files instance to another - the cross-provider migration built entirely on listAll, download, and upload.
 related:
   - /guides/migrate-s3-to-r2
+  - /guides/sftp-to-s3-import-pipeline
 ---
 
 `copy` and `move` live inside a single adapter. A migration spans two — and that's the one thing a unified surface uniquely enables. `transfer(source, dest, options?)` walks every object the `source` exposes and streams each one straight to the `dest`, whatever the backends are.

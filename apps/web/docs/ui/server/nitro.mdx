@@ -1,6 +1,8 @@
 ---
 title: Nitro
 description: Mount the Files gateway in a Nitro (or Nuxt server) route, on Nitro 2 (h3 1) or Nitro 3 (h3 2). Hands the gateway a Web Request and returns the Response for Nitro to flush.
+related:
+  - /guides/nuxt-file-upload
 ---
 
 `files-sdk/nitro` mounts a [`createFilesRouter`](/docs/ui/server/gateway) in a Nitro route (and therefore Nuxt server routes). It works with both h3 majors: on Nitro 3 (h3 2) the event already carries a Web `Request`, which goes to the gateway as-is; on Nitro 2 (h3 1) the binding marshals the Node request on `event.node.req` into one. Either way it returns the Web `Response` for Nitro to flush, and a client disconnect aborts the upstream read on a proxied download.

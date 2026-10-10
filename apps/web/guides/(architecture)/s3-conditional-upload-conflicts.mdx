@@ -1,0 +1,285 @@
+---
+title: Prevent concurrent S3 uploads from overwriting each other
+description: Use S3's native If-None-Match and If-Match writes to create an object only once and update it only from the version you read, then recover from conflicts and lost responses.
+sidebar:
+  label: Conditional S3 writes
+seo:
+  title: Prevent S3 overwrites with conditional writes
+related:
+  - /docs/conditional-operations
+  - /docs/adapters/s3
+  - /docs/api/errors
+  - /docs/capabilities
+  - /guides/client-side-encryption-s3-r2
+  - /guides/resume-s3-multipart-upload
+---
+
+S3 keeps whichever write finishes last. When two requests read the same JSON document, change it, and write it back, both succeed and the first change disappears. Checking `exists()` before an upload doesn't help, because both callers can pass the check before either one writes. The fix is to put the check inside the write. Pass `condition: { type: "create" }` to `files.upload()` and S3 stores the object only if the key is absent (`If-None-Match: *`). Pass `condition: { type: "replace", etag }` and S3 stores it only if the object still has the ETag you read (`If-Match`). S3 evaluates the predicate atomically. The losing request rejects with a `FilesError` whose code is `Conflict`, and nothing is overwritten.
+
+Two things make this harder than it sounds. The SDK only exposes these predicates where it knows the provider enforces them, which today means canonical AWS S3 through the `s3()` adapter, for single-key, buffered, non-multipart uploads. And `Conflict` doesn't always mean someone else won: the AWS SDK retries a request whose response was lost, and that retry can collide with your own write that already committed. This guide covers both.
+
+## Before you start
+
+- An AWS S3 general purpose bucket (this guide calls it `reports`). Conditional writes need `s3:PutObject`, plus `s3:GetObject` for `If-Match`. Conditional deletes need `s3:DeleteObject` and `s3:GetObject` ([AWS conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html), [conditional deletes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-deletes.html)).
+- `@aws-sdk/client-s3` 3.919.0 or newer. Older clients don't serialize the conditional headers, and the adapter refuses to send the request without them.
+- Written against files-sdk 3.0, `@aws-sdk/client-s3` 3.1148, and Bun 1.4. The outputs below come from a local MinIO server (RELEASE.2025-09-06T17-38-46Z) with the adapter's `conditional: true` override, plus a TCP proxy for the lost-response case. They weren't run against AWS. AWS's own behavior is quoted from its documentation and linked where it's described.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+## Check that the adapter can do it
+
+Each conditional primitive has its own flag under [`files.capabilities.conditional`](/docs/capabilities). Check it at startup so a misconfigured endpoint fails there, not on the first write:
+
+```ts title="lib/files.ts" lineNumbers
+import { createFiles } from "files-sdk";
+import { s3 } from "files-sdk/s3";
+
+export const files = createFiles({
+  adapter: s3({ bucket: "reports", region: "us-east-1" }),
+});
+
+const c = files.capabilities.conditional;
+if (!(c.create && c.replace && c.exactRead)) {
+  throw new Error("This bucket can't do native compare-and-set writes");
+}
+```
+
+With no `endpoint`, the adapter treats the bucket as AWS and every flag is `true` except `multipart.create` and `multipart.replace`. Pointed at MinIO without the override, every flag read `false`. A conditional upload then failed before sending anything, with an `Unsupported` error: `s3: conditional creates are not supported by this adapter`. The `r2()` adapter reports `false` throughout as well. Cloudflare R2 isn't supported, and neither are the local filesystem adapter or other S3-compatible services by default (see [opting an endpoint in](#opt-an-s3-compatible-endpoint-in) below).
+
+## Reproduce the lost update
+
+A counter makes the problem easy to see. Each call reads the document, waits a moment as real request handlers do, then writes back:
+
+```ts title="increment-unsafe.ts" lineNumbers
+import { files } from "./lib/files";
+
+async function incrementUnsafe() {
+  const doc = JSON.parse(await (await files.download("counter.json")).text());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  doc.count += 1;
+  await files.upload("counter.json", JSON.stringify(doc), {
+    contentType: "application/json",
+  });
+}
+
+await files.upload("counter.json", JSON.stringify({ count: 0 }));
+await Promise.all([incrementUnsafe(), incrementUnsafe()]);
+console.log(await (await files.download("counter.json")).text());
+```
+
+Against MinIO this printed `{"count":1}` after two increments. Both writers read `0`, and the second write replaced the first.
+
+## Create an object only if it's absent
+
+Use `create` when a key must be written exactly once: an invoice number, an idempotency record, a lock file, a report for a closed period.
+
+```ts title="create-invoice.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { files } from "./lib/files";
+
+export async function createInvoice(id: string, invoice: object) {
+  try {
+    const created = await files.upload(
+      `invoices/${id}.json`,
+      JSON.stringify(invoice),
+      { condition: { type: "create" }, contentType: "application/json" }
+    );
+    return { created: true, etag: created.etag };
+  } catch (error) {
+    if (error instanceof FilesError && error.code === "Conflict") {
+      return { created: false };
+    }
+    throw error;
+  }
+}
+```
+
+A conditional upload always resolves with the new object's `etag`. That is the version token for the next step.
+
+What S3 does with the predicate, from [AWS's conditional-writes documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html#conditional-error-response):
+
+- No object at the key: the write succeeds with `200`.
+- An object exists: `412 Precondition Failed`. The adapter maps S3's `PreconditionFailed` code to `Conflict`, which the SDK never retries.
+- Several conditional writes to the same key at once: "the first write operation to finish succeeds", and the rest get `412`.
+- A concurrent delete that succeeds before the conditional write completes can return `409 Conflict` instead. AWS says a `PutObject` may be retried after that `409`. The adapter maps S3's `ConditionalRequestConflict` to `Provider` rather than `Conflict` for this reason, so a client [`retries`](/docs/retries) policy reissues the same conditional request.
+
+On a versioned bucket, `If-None-Match` checks the current version only, and a delete marker counts as absent.
+
+Against MinIO, a `create` on a key that already existed rejected with `Conflict` and S3's message, `At least one of the pre-conditions you specified did not hold`. A `create` on a missing key did not work there; [opting an endpoint in](#opt-an-s3-compatible-endpoint-in) explains why that matters.
+
+## Update only the version you read
+
+For read-modify-write, take the ETag from the read and require it on the write. If someone else wrote in between, the ETag no longer matches and S3 refuses. Re-read and try again:
+
+```ts title="increment.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { files } from "./lib/files";
+
+export async function increment(key: string, maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // One GET returns both the body and the ETag of that exact version.
+    const file = await files.download(key);
+    const doc = JSON.parse(await file.text());
+    doc.count += 1;
+    try {
+      return await files.upload(key, JSON.stringify(doc), {
+        condition: { type: "replace", etag: file.etag! },
+        contentType: "application/json",
+      });
+    } catch (error) {
+      if (!(error instanceof FilesError && error.code === "Conflict")) {
+        throw error;
+      }
+      // Someone else committed first. Back off a little, then re-read.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.random() * 50 * attempt)
+      );
+    }
+  }
+  throw new Error(`Gave up on ${key} after ${maxAttempts} conflicts`);
+}
+```
+
+Running two of these concurrently against MinIO, with the same 50 ms pause inserted between the read and the write, logged:
+
+```text
+a committed on attempt 1
+b conflict on attempt 1 At least one of the pre-conditions you specified did not hold
+b committed on attempt 2
+{"count":2}
+```
+
+A few rules keep the loop correct:
+
+- **Take the ETag from the same `download()` that returned the body.** A separate `head()` before or after the read can describe a different version. If you put [`cache()`](/docs/plugins/cache) in front of the instance, a cached `head()` can return a stale ETag. The cache invalidates the key when a conditional write fails, so the next attempt reads fresh.
+- **Pass the ETag exactly as the SDK returned it.** The SDK returns bare values (`a1b2c3`, no quotes). A quoted value, a weak `W/` validator, or `*` rejects before any request with `Invalid`: `etag must be a canonical bare strong ETag`.
+- **Treat the ETag as an opaque version token.** It is not always an MD5 of the content. Multipart uploads and SSE-KMS change how S3 computes it.
+- **`replace` needs the object to exist.** On a missing key, AWS returns `404` and the SDK rejects with `NotFound` (MinIO behaved the same). Decide in your code whether that should become a `create`.
+- **Bound the loop.** Under heavy contention every writer keeps losing. A key written dozens of times per second belongs in a database, not in an object.
+
+The same ETag works for reads and deletes. `files.download(key, { condition: { etag } })` returns the body only if the object is still that version, and rejected with `Conflict` against MinIO when it wasn't. `files.delete(key, { condition: { etag } })` deletes only that version. AWS returns `412` on a mismatch ([conditional deletes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-deletes.html)). To publish a staged object without clobbering a newer one, [conditional copy](/docs/conditional-operations#conditional-copy) checks the source and destination in one `CopyObject`.
+
+## When `Conflict` means your own write landed
+
+The `s3()` adapter uses the AWS SDK's default retry strategy (up to three attempts), which reissues a request when the connection fails. If the first attempt reached S3 and committed, and only the response was lost, the retry carries the same predicate and fails against your own write.
+
+To see it, a small TCP proxy sat between the adapter and MinIO. It forwarded one conditional `PUT`, let MinIO answer, then dropped the connection instead of passing the answer back:
+
+```text
+seed etag a191475ae2bf7db9c7e320f7da455bbb
+[proxy] will drop the response to: PUT /docs/report.json?x-id=PutObject HTTP/1.1
+[proxy] upstream answered: HTTP/1.1 200 OK -> dropping connection
+replace rejected: Conflict "At least one of the pre-conditions you specified did not hold" applied: false attempts: 2
+head after conflict: 554a7f6757030bc85dc45e129076ef94 { "write-id": "207a8882-…" }
+our write landed? true
+```
+
+The caller got `Conflict` for a write that succeeded. The AWS SDK's `$metadata.attempts` on the error's `cause` was `2`. The same uncertainty follows a `timedOut` or `aborted` error, or any `Provider` error after the request left your process: the write may or may not have committed.
+
+The fix is to make each write recognizable. Put a unique ID in its metadata and, after an ambiguous failure, look at what's actually stored:
+
+```ts title="replace-once.ts" lineNumbers
+import { FilesError } from "files-sdk";
+
+import { files } from "./lib/files";
+
+export async function replaceOnce(key: string, body: string, etag: string) {
+  const writeId = crypto.randomUUID();
+  try {
+    const result = await files.upload(key, body, {
+      condition: { type: "replace", etag },
+      contentType: "application/json",
+      metadata: { "write-id": writeId },
+    });
+    return result.etag;
+  } catch (error) {
+    if (!(error instanceof FilesError)) {
+      throw error;
+    }
+    if (error.applied && error.appliedEtag) {
+      return error.appliedEtag;
+    }
+    const ambiguous =
+      error.code === "Conflict" ||
+      error.code === "Provider" ||
+      error.timedOut ||
+      error.aborted;
+    if (ambiguous) {
+      const current = await files.head(key).catch(() => undefined);
+      if (current?.metadata?.["write-id"] === writeId) {
+        return current.etag;
+      }
+    }
+    throw error;
+  }
+}
+```
+
+If `head()` shows your `write-id`, your version is current and the call succeeded. If it shows someone else's, either they won or they overwrote you after you committed. Both mean the same thing for a compare-and-set loop: re-read and decide again. Never "fix" an ambiguous failure by retrying without the condition.
+
+`error.applied` covers a different case. The SDK sets it when the provider committed but a plugin threw afterwards, and `appliedEtag` names the generation it wrote. The [conditional operations reference](/docs/conditional-operations#hooks-receipts-and-terminal-outcomes) describes when that happens. It is never set for a lost network response, because the SDK can't know the write landed.
+
+## What can't be conditional
+
+Every one of these rejects before any request reaches S3:
+
+| Call | Result |
+| --- | --- |
+| `upload(key, body, { condition, multipart: true })` | `Invalid`: `conditional uploads do not support multipart or resumable controls` |
+| `upload(key, body, { condition, control })` | The same `Invalid` error |
+| `upload(key, stream, { condition })` | `Invalid`: `s3 adapter: conditional uploads do not accept stream bodies; buffer to a Blob or Uint8Array first` |
+| `upload([...items], { condition })` | `Invalid`: `bulk upload does not support conditional predicates` |
+
+A conditional upload is one `PutObject`, so the body must be buffered and is limited to what a single `PutObject` accepts. For large files, upload to a unique key unconditionally (a resumable upload works, see [Resume an S3 multipart upload](/guides/resume-s3-multipart-upload)), then publish it with a conditional copy or a small conditional pointer object.
+
+`signedUploadUrl()` and `move()` don't accept a condition, and their TypeScript types leave the option out. Plain JavaScript callers should know the runtime doesn't check for it: in the MinIO run, `move()` with a stale `condition` moved the object anyway, and `signedUploadUrl()` with one returned an ordinary presigned `PUT`. The [upload gateway](/docs/ui/server/gateway) and `useFiles` don't take conditions either. Run conditional writes in server code.
+
+Plugins can veto modes they can't keep atomic. [`versioning()`](/docs/plugins/versioning) rejects conditional writes and copies, because its snapshot is a second write. [`softDelete()`](/docs/plugins/soft-delete) rejects a conditional delete outside the trash, because the delete becomes a move. [`dedup()`](/docs/plugins/dedup), [`failover()`](/docs/plugins/failover), and [`tiering()`](/docs/plugins/tiering) reject every conditional mode. Each veto is an `Unsupported` error raised before any provider request, and each of these plugins clears the matching `files.capabilities.conditional` flags, so the startup check above catches it. [`encryption()`](/docs/plugins/encryption), compression, validation, and content-type sniffing keep create, replace, and exact reads. [Encrypt files before they reach S3 or R2](/guides/client-side-encryption-s3-r2) uses a conditional replace to rotate keys safely.
+
+## Make the bucket refuse unconditional writes
+
+The SDK makes conditional writes possible. A bucket policy can make them mandatory, so a script or another service that forgets the predicate fails instead of overwriting. S3 exposes `s3:if-none-match` and `s3:if-match` as policy condition keys, and AWS's [enforcement examples](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes-enforce.html) show policies that allow `PutObject` only when one of them is present. Two side effects to plan for, from the same page: multipart uploads need an `s3:ObjectCreationOperation` exemption, and `CopyObject` into the covered prefix fails with `403` or `501`, which breaks `files.copy()` there. Scope the policy to the prefix that holds your contended objects, not the whole bucket.
+
+## Opt an S3-compatible endpoint in
+
+The adapter grants conditional support only when the client talks to AWS: no `endpoint`, or one under `amazonaws.com` or `amazonaws.com.cn`. A request-time check also stops a conditional request whose resolved hostname isn't AWS, which catches an `endpoint_url` set in a shared AWS config file. Passing `conditional: true` to `s3()` skips both checks for a service you have verified.
+
+Verify it first. The MinIO release used for this guide behaved like this:
+
+| Request | AWS (documented) | MinIO RELEASE.2025-09-06 (observed) |
+| --- | --- | --- |
+| `PUT` with `If-Match`, current ETag | `200` | `200` |
+| `PUT` with `If-Match`, stale ETag | `412` | `412` |
+| `PUT` with `If-None-Match: *`, key exists | `412` | `412` |
+| `PUT` with `If-None-Match: *`, key absent | `200`, object created | `404 NoSuchKey`, nothing created |
+| `DELETE` with `If-Match`, stale ETag | `412` | Succeeded, object deleted |
+
+Two of the five predicates were wrong in that release. A create-only write could never succeed, and a guarded delete removed whatever version was current. The compare-and-set loop above happened to work, and that is the trap: testing only the predicate you care about passes, and the guard fails somewhere else. Run all five against the exact service and version you deploy, and test again when you upgrade it.
+
+## Limits and tradeoffs
+
+- **One key at a time.** There's no transaction across keys, and a conditional copy followed by a conditional delete is two separate commits, not an atomic move.
+- **The predicate is on the whole object.** Two writers changing different fields of one JSON document still conflict. Split independently updated data into separate keys.
+- **Retries cost requests.** Every conflict is a full `GET` and `PUT`. Measure contention before putting a hot path on it.
+- **Hooks and receipts carry a label, not the ETag.** `onAction` and `onError` events include a redacted `condition` value. Successful conditional writes still return the new ETag in the result.
+- **The CLI and MCP server have the same predicates** as `--if-none-match` and `--if-match` flags and a `condition` input. See [CLI conditional predicates](/docs/cli/commands#conditional-predicates).
+
+## Troubleshooting
+
+**`s3: conditional creates are not supported by this adapter`.** The adapter has no native primitive here: an `endpoint` that isn't AWS, `conditional: false`, or an adapter other than `s3()`. Check `files.capabilities.conditional`.
+
+**`s3 adapter: conditional requests are only sent to AWS S3, but this client resolves to <host>`.** The constructor saw no endpoint, but the request resolved to a non-AWS host, usually through `AWS_ENDPOINT_URL` or an `endpoint_url` in `~/.aws/config`. Remove the redirect, or pass `conditional: true` once you've verified the service.
+
+**`s3 adapter: the installed @aws-sdk/client-s3 did not serialize if-none-match; conditional requests need 3.919.0 or newer`.** Upgrade `@aws-sdk/client-s3`. A lockfile can pin an older copy under another package, so check what actually resolves.
+
+**`etag must be a canonical bare strong ETag`.** The ETag came from somewhere that kept S3's quotes, such as a raw `HeadObject` or an HTTP header. Strip the quotes, or use the value from a `files` call.
+
+**`Conflict` on a create that should have succeeded.** Another writer got there first, or your own first attempt committed and its response was lost. Reconcile with `head()` as shown above.
+
+**`NotFound` on a `replace`.** The object was deleted after you read it. AWS says to re-upload in that case. Use `create` if a missing object is acceptable.
+
+**`S3 returned no ETag after a conditional upload; the object may already have been committed`.** Something between you and S3, usually a proxy, stripped the `ETag` response header. The write probably landed. The error is `permanent`, so reconcile instead of retrying.
