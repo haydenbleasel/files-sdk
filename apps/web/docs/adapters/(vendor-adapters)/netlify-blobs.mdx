@@ -59,3 +59,9 @@ Netlify Blobs has no native size, content-type, or last-modified fields, so the 
 | `copy` | ⚠️ | Read-then-write - Netlify Blobs has no server-side copy primitive, so the source is fetched and re-uploaded. Not server-side atomic; concurrent writes to the source between the get and put are not detected. |
 | `url` | ❌ | No URL primitive - Netlify Blobs has no public URL or signing endpoint; reads always go through the SDK with the token. Use `download()` instead, or proxy the body through your application. |
 | `signedUploadUrl` | ❌ | No presigned upload primitive - Netlify Blobs writes go through the SDK with the token. Upload server-side via the SDK or proxy uploads through your application. |
+
+## Keys
+
+`@netlify/blobs` puts each key into the request URL without encoding it, and URL parsing would rewrite some keys before they reach Netlify: a `#` or `?` would cut the key short (`Invoice #42.pdf` would be stored as `Invoice `), `\` would become `/`, tabs and newlines would be dropped, trailing spaces and control characters would be trimmed, and `.` / `..` segments would be resolved (`../x` even escapes the store). Netlify doesn't document whether it decodes `%` escapes, so a `%` can't be sent safely either. The adapter rejects keys like these with an `Invalid` error before sending any request. Spaces elsewhere in a key, non-ASCII characters, and `/` separators work as usual.
+
+Netlify's SDK takes no `AbortSignal`, so a `signal` or `timeout` rejects the call but can't cancel a request already in flight.

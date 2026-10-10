@@ -485,6 +485,65 @@ describe("vercel-blob adapter", () => {
     expect(toArg).toBe("b.txt");
   });
 
+  test("copy carries the source's content type and cache max-age over", async () => {
+    headMock.mockImplementationOnce((pathname: string) =>
+      Promise.resolve({
+        cacheControl: "public, max-age=3600",
+        contentDisposition: "",
+        contentType: "application/pdf",
+        downloadUrl: `https://blob.test/${pathname}?download=1`,
+        etag: '"src"',
+        pathname,
+        size: 5,
+        uploadedAt: new Date(),
+        url: `https://blob.test/${pathname}`,
+      })
+    );
+    const files = new Files({ adapter: vercelBlob() });
+    await files.copy("report.pdf", "copy.bin");
+    expect(headMock.mock.calls[0]?.[0]).toBe("report.pdf");
+    expect(copyMock.mock.calls[0]?.[2]).toMatchObject({
+      cacheControlMaxAge: 3600,
+      contentType: "application/pdf",
+    });
+  });
+
+  test("copy omits the cache max-age when the source reports none", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    await files.copy("a.txt", "b.txt");
+    const opts = copyMock.mock.calls[0]?.[2] as Record<string, unknown>;
+    expect(opts.contentType).toBe("text/plain");
+    expect("cacheControlMaxAge" in opts).toBe(false);
+  });
+
+  test("copy of a missing source is NotFound without calling blob.copy", async () => {
+    headMock.mockImplementationOnce(() =>
+      Promise.reject(new BlobNotFoundError())
+    );
+    const files = new Files({ adapter: vercelBlob() });
+    await expect(files.copy("gone.txt", "b.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(copyMock).not.toHaveBeenCalled();
+  });
+
+  test("a public download fetches the blob URL keyed to the head()'s ETag", async () => {
+    const seen: string[] = [];
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      seen.push(String(url));
+      const ranged = new Headers(init?.headers).has("range");
+      return Promise.resolve(
+        new Response("hello", { status: ranged ? 206 : 200 })
+      );
+    }) as typeof fetch;
+    const files = new Files({ adapter: vercelBlob() });
+    await files.download("a.txt");
+    await files.download("a.txt", { as: "stream", range: { start: 1 } });
+    const expected = new URL("https://blob.test/a.txt");
+    expected.searchParams.set("v", '"etag-a.txt"');
+    expect(seen).toEqual([expected.toString(), expected.toString()]);
+  });
+
   test("list maps blobs into FileInfo items", async () => {
     const files = new Files({ adapter: vercelBlob() });
     const out = await files.list({ prefix: "a/" });
@@ -1311,8 +1370,10 @@ describe("vercel-blob adapter", () => {
       }
       const [pathArg, getOpts] = firstGet;
       expect(pathArg).toBe("a.txt");
-      const o = getOpts as { access: string; token: string };
+      const o = getOpts as { access: string; token: string; useCache: boolean };
       expect(o.access).toBe("private");
+      // Origin read, so the body matches the fresh head() metadata.
+      expect(o.useCache).toBe(false);
       expect(o.token).toBe("test-token");
       expect(fetchCalls).toEqual([]);
     });

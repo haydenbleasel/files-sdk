@@ -389,6 +389,8 @@ describe("cloudinary adapter", () => {
     expect(uploadMock).toHaveBeenCalledWith(
       expect.stringContaining("source"),
       expect.objectContaining({
+        // Overwriting a destination purges its stale CDN copy.
+        invalidate: true,
         overwrite: true,
         public_id: "destination",
         resource_type: "raw",
@@ -1281,6 +1283,22 @@ describe("cloudinary resumable uploads (chunked)", () => {
     expect(forms[0]?.get("type")).toBe("private");
     expect(apiSignRequestMock).toHaveBeenCalledWith(
       expect.objectContaining({ public_id: "doc", type: "private" }),
+      API_SECRET
+    );
+  });
+
+  test("each chunk signs and sends invalidate, so an overwrite purges the CDN copy", async () => {
+    const forms: FormData[] = [];
+    installFetch((_url, init) => {
+      forms.push(init.body as FormData);
+      return finalJson(5);
+    });
+    apiSignRequestMock.mockClear();
+    const files = new Files({ adapter: withCreds() });
+    await files.upload("doc", "hello", { control: new UploadControl() });
+    expect(forms[0]?.get("invalidate")).toBe("true");
+    expect(apiSignRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({ invalidate: "true", public_id: "doc" }),
       API_SECRET
     );
   });

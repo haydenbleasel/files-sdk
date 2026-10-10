@@ -652,6 +652,27 @@ describe("supabase adapter", () => {
       }
     });
 
+    test("deleteMany sends at most 1000 keys per remove() and scopes a batch error to that batch", async () => {
+      const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+      removeMock
+        .mockImplementationOnce(() => Promise.resolve(ok([])))
+        .mockImplementationOnce(() =>
+          Promise.resolve(fail(400, "500", "bulk limit", "InvalidRequest"))
+        )
+        .mockImplementationOnce(() => Promise.resolve(ok([])));
+      const result = await makeAdapter().deleteMany?.(keys);
+      expect(removeMock.mock.calls.map(([batch]) => batch.length)).toEqual([
+        1000, 1000, 500,
+      ]);
+      expect(removeMock.mock.calls[1]?.[0][0]).toBe("k1000");
+      expect(result?.results).toEqual([
+        ...keys.slice(0, 1000),
+        ...keys.slice(2000),
+      ]);
+      expect(result?.errors?.map((e) => e.key)).toEqual(keys.slice(1000, 2000));
+      expect(result?.errors?.[0]?.error.code).toBe("Provider");
+    });
+
     test("a bulk delete with stopOnError runs per key through delete() and stops at the first failure", async () => {
       // Files never hands stopOnError to the native batch: each key goes
       // through `delete()` (one remove() per key).
@@ -2119,5 +2140,568 @@ describe("supabase object info (real storage-js client)", () => {
     });
     await adapter.head("a.txt");
     expect(infoMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+interface DelimStored {
+  bytes: Uint8Array<ArrayBuffer>;
+  metadata?: Record<string, unknown>;
+  type: string;
+}
+
+interface DelimRequest {
+  body: RequestInit["body"];
+  headers: Headers;
+  method: string;
+  /** Path segments after `/storage/v1/`, each decoded as storage-api does. */
+  segments: string[];
+  url: URL;
+}
+
+const delimToken = (url: string) => `tok.${btoa(encodeURIComponent(url))}`;
+const delimTokenUrl = (token: string | null) =>
+  token?.startsWith("tok.") ? decodeURIComponent(atob(token.slice(4))) : "";
+const delimNotFound = () =>
+  Response.json(
+    { error: "not_found", message: "Object not found", statusCode: "404" },
+    { status: 400 }
+  );
+const delimServe = (found: DelimStored | undefined) =>
+  found
+    ? new Response(found.bytes, { headers: { "content-type": found.type } })
+    : delimNotFound();
+const delimBytes = async (body: RequestInit["body"]) =>
+  new Uint8Array(await new Response(body).arrayBuffer());
+const delimFetchText = async (
+  fetchMock: (input: string, init?: RequestInit) => Promise<Response>,
+  url: string
+) => {
+  const res = await fetchMock(url);
+  return res.ok ? await res.text() : `HTTP ${res.status}`;
+};
+const delimText = (stored: DelimStored | undefined) =>
+  new TextDecoder().decode(stored?.bytes);
+const delimDuplex = (init: RequestInit | undefined): string | undefined =>
+  init && "duplex" in init && typeof init.duplex === "string"
+    ? init.duplex
+    : undefined;
+const delimForm = (init: RequestInit | undefined): FormData => {
+  if (!(init?.body instanceof FormData)) {
+    throw new TypeError("expected a multipart body");
+  }
+  return init.body;
+};
+
+/**
+ * A Storage server that routes and decodes paths the way storage-api does
+ * (fastify decodes each `/`-separated segment of the wildcard), so a key that
+ * reached it intact is stored and looked up under its real name. Signed
+ * tokens bind `${bucket}/${decodedKey}`, as storage-api's do.
+ */
+class DelimServer {
+  readonly objects = new Map<string, DelimStored>();
+  private readonly legacySignedUpload: boolean;
+
+  constructor(legacySignedUpload: boolean) {
+    this.legacySignedUpload = legacySignedUpload;
+  }
+
+  copy(req: DelimRequest): Response {
+    const body = JSON.parse(String(req.body));
+    const source = this.objects.get(body.sourceKey);
+    if (!source) {
+      return delimNotFound();
+    }
+    if (
+      this.objects.has(body.destinationKey) &&
+      req.headers.get("x-upsert") !== "true"
+    ) {
+      return Response.json(
+        {
+          code: "KeyAlreadyExists",
+          error: "Duplicate",
+          message: "The resource already exists",
+          statusCode: "409",
+        },
+        { status: 400 }
+      );
+    }
+    this.objects.set(body.destinationKey, source);
+    return Response.json({ Key: `${BUCKET}/${body.destinationKey}` });
+  }
+
+  sign(req: DelimRequest): Response {
+    if (req.method === "POST") {
+      const { paths } = JSON.parse(String(req.body));
+      return Response.json(
+        paths.map((path: string) =>
+          this.objects.has(path)
+            ? {
+                error: null,
+                path,
+                signedURL: `/object/sign/${BUCKET}/${path}?token=${delimToken(`${BUCKET}/${path}`)}`,
+              }
+            : {
+                error:
+                  "Either the object does not exist or you do not have access to it",
+                path,
+                signedURL: null,
+              }
+        )
+      );
+    }
+    const key = req.segments.slice(3).join("/");
+    if (
+      delimTokenUrl(req.url.searchParams.get("token")) !== `${BUCKET}/${key}`
+    ) {
+      return Response.json(
+        { error: "InvalidSignature", message: "bad", statusCode: "400" },
+        { status: 400 }
+      );
+    }
+    return delimServe(this.objects.get(key));
+  }
+
+  async uploadSign(req: DelimRequest): Promise<Response> {
+    const key = req.segments.slice(4).join("/");
+    if (req.method === "POST") {
+      const token = delimToken(`${BUCKET}/${key}`);
+      const url = `/object/upload/sign/${BUCKET}/${key}?token=${token}`;
+      return Response.json(this.legacySignedUpload ? { url } : { token, url });
+    }
+    if (
+      delimTokenUrl(req.url.searchParams.get("token")) !== `${BUCKET}/${key}`
+    ) {
+      return Response.json({ message: "bad" }, { status: 400 });
+    }
+    this.objects.set(key, {
+      bytes: await delimBytes(req.body),
+      type: req.headers.get("content-type") ?? "",
+    });
+    return Response.json({ Key: `${BUCKET}/${key}` });
+  }
+
+  remove(req: DelimRequest): Response {
+    const { prefixes } = JSON.parse(String(req.body));
+    for (const prefix of prefixes) {
+      this.objects.delete(prefix);
+    }
+    return Response.json([]);
+  }
+
+  info(req: DelimRequest): Response {
+    const found = this.objects.get(req.segments.slice(3).join("/"));
+    if (!found) {
+      return delimNotFound();
+    }
+    return Response.json({
+      content_type: found.type,
+      metadata: found.metadata ?? null,
+      size: found.bytes.byteLength,
+    });
+  }
+
+  async upload(req: DelimRequest): Promise<Response> {
+    const key = req.segments.slice(2).join("/");
+    if (req.body instanceof FormData) {
+      const file = req.body.get("");
+      const formMeta = req.body.get("metadata");
+      if (!(file instanceof Blob)) {
+        throw new TypeError("expected a file part");
+      }
+      this.objects.set(key, {
+        bytes: await delimBytes(file),
+        type: file.type,
+        ...(typeof formMeta === "string" && { metadata: JSON.parse(formMeta) }),
+      });
+    } else {
+      const meta = req.headers.get("x-metadata");
+      this.objects.set(key, {
+        bytes: await delimBytes(req.body),
+        type: req.headers.get("content-type") ?? "",
+        ...(meta && { metadata: JSON.parse(atob(meta)) }),
+      });
+    }
+    return Response.json({ Id: "1", Key: `${BUCKET}/${key}` });
+  }
+
+  handle(req: DelimRequest): Response | Promise<Response> {
+    const [, area] = req.segments;
+    if (area === "copy") {
+      return this.copy(req);
+    }
+    if (area === "sign") {
+      return this.sign(req);
+    }
+    if (area === "upload") {
+      return this.uploadSign(req);
+    }
+    if (req.method === "DELETE") {
+      return this.remove(req);
+    }
+    if (area === "info") {
+      return this.info(req);
+    }
+    if (area === "public") {
+      return delimServe(this.objects.get(req.segments.slice(3).join("/")));
+    }
+    if (req.method === "POST") {
+      return this.upload(req);
+    }
+    return delimServe(this.objects.get(req.segments.slice(2).join("/")));
+  }
+}
+
+describe("supabase keys with URL delimiters (real storage-js client)", () => {
+  const SPECIAL_KEYS = [
+    "uploads/Invoice #42.pdf",
+    "q?x=1.txt",
+    "100%.txt",
+    "a%41.txt",
+    "my file.txt",
+    "日本語/ファイル.txt",
+    "a+b&c=d,e;f:g@h$.txt",
+    "x?token=y.txt",
+  ];
+
+  const fakeServer = (opts: { legacySignedUpload?: boolean } = {}) => {
+    const server = new DelimServer(opts.legacySignedUpload ?? false);
+    const requests: { init: RequestInit; url: string }[] = [];
+    const fetchMock = mock((input: string, init: RequestInit = {}) => {
+      requests.push({ init, url: input });
+      const url = new URL(input);
+      return Promise.resolve(
+        server.handle({
+          body: init.body,
+          headers: new Headers(init.headers),
+          method: (init.method ?? "GET").toUpperCase(),
+          segments: url.pathname
+            .replace("/storage/v1/", "")
+            .split("/")
+            .map(decodeURIComponent),
+          url,
+        })
+      );
+    });
+    const client = new RealStorageClient(
+      STORAGE_URL,
+      { Authorization: `Bearer ${KEY}`, apikey: KEY },
+      fetchMock as unknown as typeof fetch
+    );
+    const adapter = supabase({ bucket: BUCKET, client });
+    const publicAdapter = supabase({ bucket: BUCKET, client, public: true });
+    return {
+      adapter,
+      fetchMock,
+      objects: server.objects,
+      publicAdapter,
+      requests,
+    };
+  };
+
+  test.each(SPECIAL_KEYS)(
+    "%s round-trips through upload, head, exists, and both download modes",
+    async (key) => {
+      const { adapter, objects } = fakeServer();
+      const files = new Files({ adapter });
+      await files.upload(key, `body of ${key}`, { metadata: { k: "v" } });
+      expect([...objects.keys()]).toEqual([key]);
+      expect(await files.exists(key)).toBe(true);
+      const head = await files.head(key);
+      expect(head.metadata).toEqual({ k: "v" });
+      expect(head.size).toBe(new TextEncoder().encode(`body of ${key}`).length);
+      const buffered = await files.download(key);
+      expect(await buffered.text()).toBe(`body of ${key}`);
+      const streamed = await files.download(key, { as: "stream" });
+      expect(await new Response(streamed.stream()).text()).toBe(
+        `body of ${key}`
+      );
+    }
+  );
+
+  test("keys that differ only after a # or ? are distinct objects", async () => {
+    const { adapter, objects } = fakeServer();
+    await adapter.upload("uploads/Invoice #42.pdf", "42");
+    await adapter.upload("uploads/Invoice #43.pdf", "43");
+    await adapter.upload("q?a=1", "a");
+    await adapter.upload("q?a=2", "b");
+    expect([...objects.keys()].toSorted()).toEqual([
+      "q?a=1",
+      "q?a=2",
+      "uploads/Invoice #42.pdf",
+      "uploads/Invoice #43.pdf",
+    ]);
+    expect(await adapter.exists("uploads/Invoice ")).toBe(false);
+    expect(await adapter.exists("q")).toBe(false);
+  });
+
+  test("the key is percent-encoded per segment in the request path", async () => {
+    const { adapter, requests } = fakeServer();
+    await adapter.upload("dir/a #?%.txt", "x");
+    expect(requests[0]?.url).toBe(
+      `${STORAGE_URL}/object/${BUCKET}/dir/a%20%23%3F%25.txt`
+    );
+  });
+
+  test.each(SPECIAL_KEYS)(
+    "a signed URL for %s fetches that object",
+    async (key) => {
+      const { adapter, fetchMock } = fakeServer();
+      await adapter.upload(key, "signed body");
+      await adapter.upload(key.slice(0, 1), "decoy");
+      const url = await adapter.url(key, { expiresIn: 60 });
+      expect(await delimFetchText(fetchMock, url)).toBe("signed body");
+    }
+  );
+
+  test("a signed URL signs the raw key through the batch endpoint and binds the expiry and download name", async () => {
+    const { adapter, requests } = fakeServer();
+    await adapter.upload("a b.txt", "x");
+    const url = await adapter.url("a b.txt", {
+      expiresIn: 90,
+      responseContentDisposition: 'attachment; filename="r.pdf"',
+    });
+    const sign = requests.at(-1);
+    expect(sign?.url).toBe(`${STORAGE_URL}/object/sign/${BUCKET}`);
+    expect(JSON.parse(String(sign?.init.body))).toEqual({
+      expiresIn: 90,
+      paths: ["a b.txt"],
+    });
+    const parsed = new URL(url);
+    expect(parsed.pathname).toBe(`/storage/v1/object/sign/${BUCKET}/a%20b.txt`);
+    expect(parsed.searchParams.get("download")).toBe("r.pdf");
+    const bare = new URL(
+      await adapter.url("a b.txt", { responseContentDisposition: "attachment" })
+    );
+    expect(bare.searchParams.get("download")).toBe("");
+  });
+
+  test("signing a missing object is NotFound", async () => {
+    const { adapter } = fakeServer();
+    await expect(adapter.url("nope?.txt")).rejects.toMatchObject({
+      code: "NotFound",
+      message: expect.stringMatching(/does not exist/u),
+    });
+  });
+
+  test("a sign answer with no usable entry is NotFound, and one without a token is a Provider error", async () => {
+    let body: unknown = {};
+    const fetchMock = mock(() => Promise.resolve(Response.json(body)));
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    await expect(adapter.url("a.txt")).rejects.toMatchObject({
+      code: "NotFound",
+      message: "Object not found",
+    });
+    body = [{ error: null, path: "a.txt", signedURL: "/object/sign/x/a.txt" }];
+    await expect(adapter.url("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/no token/u),
+    });
+  });
+
+  test.each(SPECIAL_KEYS)(
+    "a public URL for %s fetches that object",
+    async (key) => {
+      const { publicAdapter, fetchMock } = fakeServer();
+      await publicAdapter.upload(key, "public body");
+      await publicAdapter.upload(key.slice(0, 1), "decoy");
+      const url = await publicAdapter.url(key);
+      expect(url.startsWith(`${STORAGE_URL}/object/public/${BUCKET}/`)).toBe(
+        true
+      );
+      expect(await delimFetchText(fetchMock, url)).toBe("public body");
+    }
+  );
+
+  test.each(SPECIAL_KEYS)(
+    "a signed upload URL for %s stores that key",
+    async (key) => {
+      const { adapter, fetchMock, objects } = fakeServer();
+      const signed = await adapter.signedUploadUrl(key, { expiresIn: 60 });
+      if (signed.method !== "PUT") {
+        throw new Error("expected a PUT signed upload");
+      }
+      expect(signed.headers).toEqual({ "x-upsert": "true" });
+      const res = await fetchMock(signed.url, {
+        body: "via signed upload",
+        headers: signed.headers,
+        method: "PUT",
+      });
+      expect(res.ok).toBe(true);
+      expect(delimText(objects.get(key))).toBe("via signed upload");
+    }
+  );
+
+  test("a signed upload request asks for upsert, and a server answering only `url` still yields its token", async () => {
+    const { adapter, fetchMock, objects, requests } = fakeServer({
+      legacySignedUpload: true,
+    });
+    const signed = await adapter.signedUploadUrl("x?token=y", {
+      expiresIn: 60,
+    });
+    expect(new Headers(requests[0]?.init.headers).get("x-upsert")).toBe("true");
+    await fetchMock(signed.url, { body: "z", method: "PUT" });
+    expect(objects.has("x?token=y")).toBe(true);
+  });
+
+  test("a signed upload answer without a token is a Provider error", async () => {
+    let body: unknown = { url: "/object/upload/sign/x/a.txt" };
+    const fetchMock = mock(() => Promise.resolve(Response.json(body)));
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    await expect(
+      adapter.signedUploadUrl("a.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({ code: "Provider" });
+    body = [];
+    await expect(
+      adapter.signedUploadUrl("a.txt", { expiresIn: 60 })
+    ).rejects.toMatchObject({ code: "Provider" });
+  });
+
+  test("copy and move replace an existing destination (x-upsert)", async () => {
+    const { adapter, objects, requests } = fakeServer();
+    const files = new Files({ adapter });
+    await files.upload("a #1.txt", "new");
+    await files.upload("b?.txt", "old");
+    await files.copy("a #1.txt", "b?.txt");
+    expect(delimText(objects.get("b?.txt"))).toBe("new");
+    const copyRequest = requests.find((r) => r.url.endsWith("/object/copy"));
+    expect(new Headers(copyRequest?.init.headers).get("x-upsert")).toBe("true");
+    expect(JSON.parse(String(copyRequest?.init.body))).toEqual({
+      bucketId: BUCKET,
+      destinationKey: "b?.txt",
+      sourceKey: "a #1.txt",
+    });
+    await files.upload("c.txt", "c");
+    await files.move("c.txt", "b?.txt");
+    expect(delimText(objects.get("b?.txt"))).toBe("c");
+    expect(objects.has("c.txt")).toBe(false);
+  });
+
+  test("copy forwards the signal and maps a missing source to NotFound", async () => {
+    const { adapter, requests } = fakeServer();
+    const { signal } = new AbortController();
+    await expect(adapter.copy("nope", "b", { signal })).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(requests[0]?.init.signal).toBe(signal);
+  });
+
+  test("Blob bodies go multipart with the cache seconds and metadata as form fields", async () => {
+    const { adapter, objects, requests } = fakeServer();
+    await adapter.upload("b #.bin", new Blob(["blob"], { type: "x/blob" }), {
+      cacheControl: "max-age=60",
+      metadata: { m: "1" },
+    });
+    const form = delimForm(requests[0]?.init);
+    expect(form.get("cacheControl")).toBe("60");
+    expect(new Headers(requests[0]?.init.headers).get("x-upsert")).toBe("true");
+    expect(objects.get("b #.bin")).toMatchObject({
+      metadata: { m: "1" },
+      type: "x/blob",
+    });
+    await adapter.upload("plain.bin", new Blob(["p"]));
+    expect(delimForm(requests.at(-1)?.init).get("cacheControl")).toBe("3600");
+    expect(delimForm(requests.at(-1)?.init).has("metadata")).toBe(false);
+  });
+
+  test("raw bodies carry cache-control, content-type and x-upsert headers; streams are half-duplex", async () => {
+    const { adapter, objects, requests } = fakeServer();
+    const { signal } = new AbortController();
+    await adapter.upload("s?.txt", new Blob(["streamed"]).stream(), {
+      cacheControl: "120",
+      contentType: "text/x",
+      signal,
+    });
+    const [request] = requests;
+    const headers = new Headers(request?.init.headers);
+    expect(headers.get("cache-control")).toBe("max-age=120");
+    expect(headers.get("content-type")).toBe("text/x");
+    expect(headers.get("x-upsert")).toBe("true");
+    expect(headers.get("x-metadata")).toBeNull();
+    expect(headers.get("apikey")).toBe(KEY);
+    expect(delimDuplex(request?.init)).toBe("half");
+    expect(request?.init.signal).toBe(signal);
+    expect(delimText(objects.get("s?.txt"))).toBe("streamed");
+    await adapter.upload("bytes.bin", new Uint8Array([1, 2]));
+    const last = new Headers(requests.at(-1)?.init.headers);
+    expect(last.get("cache-control")).toBe("max-age=3600");
+    expect(delimDuplex(requests.at(-1)?.init)).toBeUndefined();
+  });
+
+  test("an upload key is normalised the way storage-js normalises it", async () => {
+    const { adapter, objects } = fakeServer();
+    await adapter.upload("/a//b/", "x");
+    expect([...objects.keys()]).toEqual(["a/b"]);
+  });
+
+  test("upload maps a refused write", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve(
+        Response.json(
+          {
+            error: "InvalidKey",
+            message: "Invalid key: a#b",
+            statusCode: "400",
+          },
+          { status: 400 }
+        )
+      )
+    );
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    await expect(adapter.upload("a#b", "x")).rejects.toMatchObject({
+      message: "Invalid key: a#b",
+    });
+  });
+
+  test("a download answer without a body streams as empty", async () => {
+    const fetchMock = mock((input: string) =>
+      Promise.resolve(
+        input.includes("/object/info/")
+          ? Response.json({ size: 0 })
+          : new Response(null, { status: 200 })
+      )
+    );
+    const adapter = supabase({
+      bucket: BUCKET,
+      client: new RealStorageClient(
+        STORAGE_URL,
+        { apikey: KEY },
+        fetchMock as unknown as typeof fetch
+      ),
+    });
+    const file = await adapter.download("e", { as: "stream" });
+    expect(await new Response(file.stream()).text()).toBe("");
+  });
+
+  test("download and exists forward the signal and map a missing object", async () => {
+    const { adapter, requests } = fakeServer();
+    const { signal } = new AbortController();
+    await expect(adapter.download("gone?", { signal })).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(requests.every((r) => r.init.signal === signal)).toBe(true);
+    expect(await adapter.exists("gone?", { signal })).toBe(false);
+    expect(requests.at(-1)?.init.signal).toBe(signal);
   });
 });

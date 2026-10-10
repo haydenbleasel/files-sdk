@@ -1216,6 +1216,72 @@ describe("netlify-blobs adapter", () => {
     }
   });
 
+  test.each([
+    ["a fragment", "uploads/Invoice #42.pdf"],
+    ["a query", "what?.txt"],
+    ["a percent sign", "100%.txt"],
+    ["an escape sequence", "a%41.txt"],
+    ["a backslash", "dir\\file.txt"],
+    ["a tab", "a\tb.txt"],
+    ["a newline", "a\nb.txt"],
+    ["a trailing space", "a.txt "],
+    ["a trailing control character", "a.txt\u0001"],
+    ["a dot segment", "a/./b.txt"],
+    ["a parent segment that leaves the store", "../other-store/x"],
+    ["a parent segment that names the store root", "a/.."],
+  ])(
+    "a key with %s is refused as Invalid before any request",
+    async (_label, key) => {
+      const adapter = netlifyBlobs({ name: "s" });
+      const calls = [
+        adapter.upload(key, "x"),
+        adapter.download(key),
+        adapter.download(key, { as: "stream" }),
+        adapter.head(key),
+        adapter.exists(key),
+        adapter.delete(key),
+        adapter.copy(key, "ok.txt"),
+        adapter.copy("ok.txt", key),
+      ];
+      for (const call of calls) {
+        // eslint-disable-next-line no-await-in-loop -- each call is asserted in turn
+        await expect(call).rejects.toMatchObject({
+          code: "Invalid",
+          message: expect.stringMatching(/can't be addressed/u),
+        });
+      }
+      expect(setMock).not.toHaveBeenCalled();
+      expect(getWithMetadataMock).not.toHaveBeenCalled();
+      expect(getMetadataMock).not.toHaveBeenCalled();
+      expect(deleteMock).not.toHaveBeenCalled();
+    }
+  );
+
+  test("keys URL parsing leaves intact (spaces, non-ASCII, a leading space, nested slashes) still work", async () => {
+    const files = new Files({ adapter: netlifyBlobs({ name: "s" }) });
+    for (const key of [
+      "my file.txt",
+      "日本語/ファイル.txt",
+      " lead",
+      "a//b/",
+      "a+b&c=d.txt",
+    ]) {
+      // eslint-disable-next-line no-await-in-loop -- sequential round-trips
+      await files.upload(key, key);
+      // eslint-disable-next-line no-await-in-loop -- sequential round-trips
+      const file = await files.download(key);
+      // eslint-disable-next-line no-await-in-loop -- sequential round-trips
+      expect(await file.text()).toBe(key);
+    }
+    expect([...backing.keys()]).toEqual([
+      "my file.txt",
+      "日本語/ファイル.txt",
+      " lead",
+      "a//b/",
+      "a+b&c=d.txt",
+    ]);
+  });
+
   test("head returns no userMetadata when raw metadata is undefined", async () => {
     // Real Netlify always returns `{ etag, metadata: {...} }`, but the
     // unpackUserMetadata guard handles the defensive `undefined` case.

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
-import { PassThrough, Readable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 
@@ -17,7 +17,6 @@ const baseMetadata = (name: string) => ({
   updated: STABLE_UPDATED,
 });
 
-const saveMock = mock(async (_data: unknown, _opts: unknown) => {});
 const downloadMock = mock(() =>
   Promise.resolve([Buffer.from("hello")] as [Buffer])
 );
@@ -41,28 +40,50 @@ const generateSignedPostPolicyV4Mock = mock((_opts: unknown) =>
   ])
 );
 const createReadStreamMock = mock(() => Readable.from([Buffer.from("hello")]));
-const createWriteStreamMock = mock(() => new PassThrough());
+// The adapter writes every upload through `createWriteStream`; the default
+// stream drains what it receives.
+const drainingStream = () => {
+  const pt = new PassThrough();
+  pt.resume();
+  return pt;
+};
+const createWriteStreamMock = mock((_opts?: unknown) => drainingStream());
+// The object resource the "server" answers an upload with. The real SDK stores
+// it on `file.metadata` before the write stream finishes.
+let uploadResponse = (name: string): Record<string, unknown> =>
+  baseMetadata(name);
 const createResumableUploadMock = mock(() =>
   Promise.resolve([
     "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=fb-uri",
   ] as [string])
 );
 
-const makeFile = (name: string, populateMetadata = false) => ({
-  copy: copyMock,
-  createReadStream: createReadStreamMock,
-  createResumableUpload: createResumableUploadMock,
-  createWriteStream: createWriteStreamMock,
-  delete: deleteMock,
-  download: downloadMock,
-  exists: existsMock,
-  generateSignedPostPolicyV4: generateSignedPostPolicyV4Mock,
-  getMetadata: getMetadataMock,
-  getSignedUrl: getSignedUrlMock,
-  metadata: populateMetadata ? baseMetadata(name) : {},
-  name,
-  save: saveMock,
-});
+const makeFile = (name: string, populateMetadata = false) => {
+  const file = {
+    copy: copyMock,
+    createReadStream: createReadStreamMock,
+    createResumableUpload: createResumableUploadMock,
+    createWriteStream: (opts?: unknown) => {
+      const stream = createWriteStreamMock(opts);
+      stream.once("finish", () => {
+        file.metadata = uploadResponse(name);
+      });
+      return stream;
+    },
+    delete: deleteMock,
+    download: downloadMock,
+    exists: existsMock,
+    generateSignedPostPolicyV4: generateSignedPostPolicyV4Mock,
+    getMetadata: getMetadataMock,
+    getSignedUrl: getSignedUrlMock,
+    metadata: (populateMetadata ? baseMetadata(name) : {}) as Record<
+      string,
+      unknown
+    >,
+    name,
+  };
+  return file;
+};
 
 const bucketFileMock = mock((name: string) => makeFile(name));
 const getFilesMock = mock((_opts?: unknown) =>
@@ -117,8 +138,10 @@ const loadFirebaseAdminAppMock = mock(() => ({
   initializeApp: initializeAppMock,
 }));
 
+// `getStorage(app).bucket(name)` — records the bucket name the adapter picked.
+const storageBucketMock = mock((_name?: string) => fakeBucket);
 const getStorageMock = mock((_app?: FakeApp) => ({
-  bucket: (_name?: string) => fakeBucket,
+  bucket: storageBucketMock,
 }));
 
 const loadFirebaseAdminStorageMock = mock(() => ({
@@ -134,7 +157,8 @@ const { firebaseStorage, mapFirebaseStorageError } =
   await import("../src/firebase-storage/index.js");
 
 beforeEach(() => {
-  saveMock.mockClear();
+  uploadResponse = baseMetadata;
+  storageBucketMock.mockClear();
   downloadMock.mockClear();
   existsMock.mockClear();
   getMetadataMock.mockClear();
@@ -162,7 +186,6 @@ beforeEach(() => {
   loadFirebaseAdminStorageMock.mockClear();
   initializedApps.length = 0;
 
-  saveMock.mockImplementation(async () => {});
   downloadMock.mockImplementation(() =>
     Promise.resolve([Buffer.from("hello")] as [Buffer])
   );
@@ -189,7 +212,7 @@ beforeEach(() => {
   createReadStreamMock.mockImplementation(() =>
     Readable.from([Buffer.from("hello")])
   );
-  createWriteStreamMock.mockImplementation(() => new PassThrough());
+  createWriteStreamMock.mockImplementation(() => drainingStream());
   getFilesMock.mockImplementation(() =>
     Promise.resolve([
       [makeFile("a/1.txt", true), makeFile("a/2.txt", true)],
@@ -198,7 +221,7 @@ beforeEach(() => {
     ])
   );
   getStorageMock.mockImplementation(() => ({
-    bucket: (_name?: string) => fakeBucket,
+    bucket: storageBucketMock,
   }));
 
   delete process.env.FIREBASE_PROJECT_ID;
@@ -417,7 +440,7 @@ describe("firebase-storage adapter", () => {
     expect(getStorageMock).not.toHaveBeenCalled();
   });
 
-  test("upload writes metadata from the post-save getMetadata round trip", async () => {
+  test("upload returns the object the upload response describes", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),
     });
@@ -431,12 +454,10 @@ describe("firebase-storage adapter", () => {
     expect(result.contentType).toBe("text/plain");
     expect(result.etag).toBe("etag-a.txt");
     expect(result.lastModified).toBe(STABLE_UPDATED_MS);
-    const [saveCall] = saveMock.mock.calls;
-    if (!saveCall) {
-      throw new Error("expected save to have been called");
-    }
-    const [, saveOpts] = saveCall;
-    const o = saveOpts as {
+    // From the upload response — no second read of the object.
+    expect(getMetadataMock).not.toHaveBeenCalled();
+    expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
+    const o = createWriteStreamMock.mock.calls[0]?.[0] as {
       contentType: string;
       resumable: boolean;
       metadata: { cacheControl?: string; metadata?: Record<string, string> };
@@ -457,9 +478,8 @@ describe("firebase-storage adapter", () => {
     });
     const result = await adapter.upload("s.txt", stream);
     expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).not.toHaveBeenCalled();
     expect(result.size).toBe(5);
-    expect(result.etag).toBe("etag-a.txt");
+    expect(result.etag).toBe("etag-s.txt");
   });
 
   test("forwards resumable-upload progress to onProgress", async () => {
@@ -478,7 +498,6 @@ describe("firebase-storage adapter", () => {
       onProgress: (p) => events.push(p),
     });
     expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).not.toHaveBeenCalled();
     expect(events).toEqual([{ loaded: 5, total: 5 }]);
   });
 
@@ -486,7 +505,6 @@ describe("firebase-storage adapter", () => {
     const adapter = firebaseStorage({ projectId: "p" });
     const result = await adapter.upload("a.txt", "hello", { multipart: true });
     expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).not.toHaveBeenCalled();
     const opts = (createWriteStreamMock.mock.calls as unknown[][])[0]?.[0] as
       | { resumable: boolean; chunkSize?: number }
       | undefined;
@@ -504,6 +522,63 @@ describe("firebase-storage adapter", () => {
       | undefined;
     // 700 KiB rounds down to the nearest 256 KiB multiple → 512 KiB.
     expect(opts?.chunkSize).toBe(512 * 1024);
+  });
+
+  test("a create-only service account's upload succeeds without reading the object back", async () => {
+    getMetadataMock.mockImplementation(() =>
+      Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
+    );
+    const result = await firebaseStorage({ projectId: "p" }).upload(
+      "a.txt",
+      "hello"
+    );
+    expect(result).toEqual({
+      contentType: "text/plain; charset=utf-8",
+      etag: "etag-a.txt",
+      key: "a.txt",
+      lastModified: STABLE_UPDATED_MS,
+      size: 5,
+    });
+    expect(getMetadataMock).not.toHaveBeenCalled();
+  });
+
+  test("an upload response without an etag falls back to a best-effort read", async () => {
+    uploadResponse = () => ({});
+    const adapter = firebaseStorage({ projectId: "p" });
+    const first = await adapter.upload("a.txt", "hello");
+    expect(first.etag).toBe("etag-a.txt");
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
+    );
+    expect(await adapter.upload("a.txt", "hello")).toEqual({
+      contentType: "text/plain; charset=utf-8",
+      key: "a.txt",
+      size: 5,
+    });
+  });
+
+  test("aborting an upload destroys the write stream and rejects as aborted", async () => {
+    const stalled = new Writable({
+      write() {
+        // an upload request still in flight: never completes
+      },
+    });
+    createWriteStreamMock.mockImplementationOnce(
+      () => stalled as unknown as PassThrough
+    );
+    const controller = new AbortController();
+    const pending = firebaseStorage({ projectId: "p" }).upload(
+      "a.txt",
+      "hello",
+      { signal: controller.signal }
+    );
+    await Bun.sleep(5);
+    controller.abort(new Error("stop"));
+    await expect(pending).rejects.toMatchObject({
+      aborted: true,
+      code: "Provider",
+    });
+    expect(stalled.destroyed).toBe(true);
   });
 
   test("download returns a buffered StoredFile whose text matches the body", async () => {
@@ -942,9 +1017,13 @@ describe("firebase-storage adapter", () => {
     });
 
     test("upload wraps underlying errors", async () => {
-      saveMock.mockImplementationOnce(() =>
-        Promise.reject(Object.assign(new Error("boom"), { code: 500 }))
-      );
+      createWriteStreamMock.mockImplementationOnce(() => {
+        const stream = new PassThrough();
+        queueMicrotask(() =>
+          stream.destroy(Object.assign(new Error("boom"), { code: 500 }))
+        );
+        return stream;
+      });
       const adapter = firebaseStorage({ projectId: "p" });
       await expect(adapter.upload("a.txt", "hello")).rejects.toMatchObject({
         code: "Provider",
@@ -998,6 +1077,51 @@ describe("firebase-storage adapter", () => {
       // called.
       expect(initializeAppMock).not.toHaveBeenCalled();
       expect(getStorageMock).toHaveBeenCalledWith(app);
+    });
+
+    test("a pre-built App's own storageBucket beats FIREBASE_STORAGE_BUCKET", () => {
+      process.env.FIREBASE_STORAGE_BUCKET = "env-bucket.firebasestorage.app";
+      const app: FakeApp = {
+        name: "other-project",
+        options: { storageBucket: "other.firebasestorage.app" },
+      };
+      firebaseStorage({
+        app: app as unknown as NonNullable<
+          Parameters<typeof firebaseStorage>[0]
+        >["app"],
+      });
+      expect(storageBucketMock).toHaveBeenCalledWith(
+        "other.firebasestorage.app"
+      );
+    });
+
+    test("a pre-built App without a storageBucket falls back to FIREBASE_STORAGE_BUCKET", () => {
+      process.env.FIREBASE_STORAGE_BUCKET = "env-bucket.firebasestorage.app";
+      const app: FakeApp = { name: "external", options: {} };
+      firebaseStorage({
+        app: app as unknown as NonNullable<
+          Parameters<typeof firebaseStorage>[0]
+        >["app"],
+      });
+      expect(storageBucketMock).toHaveBeenCalledWith(
+        "env-bucket.firebasestorage.app"
+      );
+    });
+
+    test("an explicit bucket beats a pre-built App's storageBucket", () => {
+      const app: FakeApp = {
+        name: "external",
+        options: { storageBucket: "from-app.firebasestorage.app" },
+      };
+      firebaseStorage({
+        app: app as unknown as NonNullable<
+          Parameters<typeof firebaseStorage>[0]
+        >["app"],
+        bucket: "explicit.firebasestorage.app",
+      });
+      expect(storageBucketMock).toHaveBeenCalledWith(
+        "explicit.firebasestorage.app"
+      );
     });
 
     test("pre-built App falls back to app.options.storageBucket when bucket is unset", () => {

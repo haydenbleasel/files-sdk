@@ -389,7 +389,15 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       } catch (error) {
         throw mapConvexError(error);
       }
-      const meta = await readMeta(id);
+      // The file is stored and Convex assigned its id: a failed metadata read
+      // must not fail the upload, or the caller never learns the id and the
+      // file is orphaned. Fall back to what was uploaded.
+      let meta: Awaited<ReturnType<typeof readMeta>>;
+      try {
+        meta = await readMeta(id);
+      } catch {
+        meta = undefined;
+      }
       return {
         contentType: meta?.contentType ?? normalized.contentType,
         ...(meta?.sha256 && { etag: meta.sha256 }),

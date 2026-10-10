@@ -193,6 +193,24 @@ describe("convex adapter", () => {
       );
     });
 
+    test("a failed metadata read after store still returns the new id", async () => {
+      const { actionCtx } = makeBackend();
+      const adapter = convex({
+        ctx: {
+          storage: {
+            ...actionCtx.storage,
+            getMetadata: () => Promise.reject(new Error("metadata exploded")),
+          },
+        },
+      });
+      const result = await adapter.upload("k", "hello");
+      expect(result).toEqual({
+        contentType: "text/plain; charset=utf-8",
+        key: expect.stringMatching(/^kg\d+$/u),
+        size: 5,
+      });
+    });
+
     test("round-trips text, bytes, Blob, and stream bodies", async () => {
       const { actionCtx } = makeBackend();
       const adapter = convex({ ctx: actionCtx });

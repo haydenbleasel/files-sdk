@@ -33,6 +33,7 @@ import { createGcsResumableDriver } from "../internal/gcs-resumable.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonArray, isJsonObject } from "../internal/json.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
+import { abortError } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import {
   loadFirebaseAdminApp,
@@ -41,8 +42,10 @@ import {
 
 export interface FirebaseStorageAdapterOptions {
   /**
-   * Storage bucket name. Falls back to `FIREBASE_STORAGE_BUCKET`, then
-   * `<projectId>.firebasestorage.app` if `projectId` is known. The Firebase
+   * Storage bucket name. With an `app`, falls back to the app's own
+   * `options.storageBucket`, then `FIREBASE_STORAGE_BUCKET`. Otherwise falls
+   * back to `FIREBASE_STORAGE_BUCKET`, then `<projectId>.firebasestorage.app`
+   * if `projectId` is known. The Firebase
    * console shows the bucket as `<project>.appspot.com` on older projects
    * and `<project>.firebasestorage.app` on newer ones — pass the literal
    * name from the console rather than relying on the default.
@@ -168,24 +171,21 @@ const uint8ToBuffer = (u8: Uint8Array): Buffer =>
 const bufferToUint8 = (buf: Buffer): Uint8Array =>
   new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 
-const pipeWebToNode = async (
-  web: ReadableStream<Uint8Array>,
-  node: NodeJS.WritableStream
-): Promise<void> => {
-  await pipeline(toNodeReadable(web), node);
-};
-
 /**
- * Write a body through a resumable `createWriteStream` — the path used for
- * streams, progress reporting, and multipart. Wires `progress` events to
- * `report` and pipes either the web stream or the buffered body in.
+ * Write a body through `createWriteStream` (what `file.save()` does
+ * internally), piping either the web stream or the buffered body in and wiring
+ * `progress` events to `report`. `signal` aborts the pipeline, which destroys
+ * the source and the write stream — cancelling the in-flight upload request —
+ * so an aborted or timed-out upload can't land later over a newer write. The
+ * pipeline detaches its abort listener once it settles.
  */
-const writeViaResumableStream = async (
+const writeObject = async (
   file: File,
   data: Uint8Array | ReadableStream<Uint8Array>,
   writeOpts: Parameters<File["createWriteStream"]>[0],
   report: ((progress: UploadProgress) => void) | undefined,
-  contentLength: number | undefined
+  contentLength: number | undefined,
+  signal: AbortSignal | undefined
 ): Promise<void> => {
   const writeStream = file.createWriteStream(writeOpts);
   if (report) {
@@ -197,9 +197,34 @@ const writeViaResumableStream = async (
       )
     );
   }
-  await (data instanceof ReadableStream
-    ? pipeWebToNode(data, writeStream)
-    : pipeline(Readable.from(uint8ToBuffer(data)), writeStream));
+  const source =
+    data instanceof ReadableStream
+      ? toNodeReadable(data)
+      : Readable.from(uint8ToBuffer(data));
+  await pipeline(source, writeStream, signal ? { signal } : {});
+};
+
+/**
+ * The stored object a finished write produced. The write stream settles only
+ * after the upload response, whose object resource the SDK keeps on
+ * `file.metadata` — authoritative for this write, unlike a follow-up read that
+ * could see a concurrent writer's object, and available to a create-only
+ * ("Storage Object Creator") account that may not read objects back. Only a
+ * response without an etag falls back to a read, and that read is
+ * best-effort: the object has already landed.
+ */
+const uploadedMetadata = async (
+  file: File
+): Promise<FileMetadata | undefined> => {
+  if (file.metadata?.etag) {
+    return file.metadata;
+  }
+  try {
+    const [meta] = await file.getMetadata();
+    return meta;
+  } catch {
+    return file.metadata;
+  }
 };
 
 interface StoredObjectMeta {
@@ -276,10 +301,13 @@ const buildBucket = (opts: FirebaseStorageAdapterOptions): Bucket => {
     if (isBucket(opts.app)) {
       return opts.app;
     }
+    // The app's own `storageBucket` beats the env var: in a process serving
+    // several Firebase projects, `FIREBASE_STORAGE_BUCKET` belongs to one of
+    // them and must not pair another project's credentials with its bucket.
     const bucketName =
       opts.bucket ??
-      readEnv("FIREBASE_STORAGE_BUCKET") ??
       opts.app.options.storageBucket ??
+      readEnv("FIREBASE_STORAGE_BUCKET") ??
       "";
     return adminBucket(opts.app, bucketName || undefined);
   }
@@ -555,7 +583,8 @@ export const firebaseStorage = (
       }
     },
     async upload(key, body, options) {
-      const { cacheControl, metadata, multipart, onProgress } = options ?? {};
+      const { cacheControl, metadata, multipart, onProgress, signal } =
+        options ?? {};
       const { data, contentType, contentLength } = await normalizeBody(
         body,
         options?.contentType
@@ -576,31 +605,28 @@ export const firebaseStorage = (
         ...(chunkSize !== undefined && { chunkSize }),
       };
       try {
-        const viaStream =
-          data instanceof ReadableStream ||
-          Boolean(onProgress) ||
-          wantsMultipart;
-        await (viaStream
-          ? writeViaResumableStream(
-              file,
-              data,
-              writeOpts,
-              onProgress,
-              contentLength
-            )
-          : file.save(uint8ToBuffer(data), writeOpts));
-        const [meta] = await file.getMetadata();
-        const updated = meta?.updated;
-        return {
-          contentType,
-          ...(meta?.etag && { etag: meta.etag }),
-          key,
-          ...(updated && { lastModified: new Date(updated).getTime() }),
-          size: contentLength ?? Number(meta?.size ?? 0),
-        } satisfies UploadResult;
+        await writeObject(
+          file,
+          data,
+          writeOpts,
+          onProgress,
+          contentLength,
+          signal
+        );
       } catch (error) {
-        throw mapFirebaseStorageError(error);
+        throw signal?.aborted
+          ? abortError(signal.reason)
+          : mapFirebaseStorageError(error);
       }
+      const meta = await uploadedMetadata(file);
+      const updated = meta?.updated;
+      return {
+        contentType,
+        ...(meta?.etag && { etag: meta.etag }),
+        key,
+        ...(updated && { lastModified: new Date(updated).getTime() }),
+        size: contentLength ?? Number(meta?.size ?? 0),
+      } satisfies UploadResult;
     },
     async url(key, urlOpts) {
       const strategy = resolveUrlStrategy({

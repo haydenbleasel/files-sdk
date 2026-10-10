@@ -586,10 +586,17 @@ export const uploadthing = (
       // for one — note that this filters within a page, not across the
       // whole bucket, so a too-narrow prefix on a non-prefix-clustered
       // store will under-return. Document this limitation in the README.
+      //
+      // listFiles also returns files that aren't readable objects: ones
+      // still uploading, failed, or pending deletion. Only `Uploaded` files
+      // are listed. Both filters apply after paging, so the cursor still
+      // counts every row the server returned.
       const prefix = options?.prefix;
-      const filtered = prefix
-        ? result.files.filter((f) => (f.customId ?? f.key).startsWith(prefix))
-        : result.files;
+      const filtered = result.files.filter(
+        (f) =>
+          f.status === "Uploaded" &&
+          (!prefix || (f.customId ?? f.key).startsWith(prefix))
+      );
       const items: FileInfo[] = filtered.map((f) => ({
         contentType: DEFAULT_CONTENT_TYPE,
         // We always uploaded with customId = user key, so customId is the

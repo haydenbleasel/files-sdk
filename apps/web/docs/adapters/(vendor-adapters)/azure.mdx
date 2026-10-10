@@ -27,7 +27,9 @@ const files = new Files({
     // Auto-loads from AZURE_STORAGE_CONNECTION_STRING, or
     // AZURE_STORAGE_ACCOUNT_NAME + AZURE_STORAGE_ACCOUNT_KEY
     // (or AZURE_STORAGE_SAS_TOKEN). Passing any of connectionString /
-    // accountKey / credential / sasToken turns the auth env vars off.
+    // accountKey / credential / sasToken turns the auth env vars off, and
+    // env credentials for another account never apply to an explicit
+    // accountName.
   }),
 });
 ```
@@ -59,7 +61,7 @@ const files = new Files({
 
 Azure AD / Managed Identity is supported via the `credential` option (install `@azure/identity`); it authenticates SDK calls and mints User Delegation SAS URLs for `url()`, `signedUploadUrl()`, and `copy()`. The principal needs blob data access plus permission to call `generateUserDelegationKey`. A User Delegation SAS can't outlive the 7-day delegation key that signs it, so an `expiresIn` above 7 days throws in this mode, and `files.capabilities.signedUrl.maxExpiresIn` reports the cap. With `useUserDelegationSas: false`, `url()` and `signedUploadUrl()` throw, and `copy()` authorizes its source with the credential's bearer token instead.
 
-Explicit auth options always win over environment variables: the `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_KEY`, and `AZURE_STORAGE_SAS_TOKEN` fallbacks are read only when you pass none of `connectionString`, `accountKey`, `credential`, or `sasToken`. An explicit `endpoint` also wins over the endpoint in a connection string that carries an account key or SAS.
+Explicit auth options always win over environment variables: the `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_ACCOUNT_KEY`, and `AZURE_STORAGE_SAS_TOKEN` fallbacks are read only when you pass none of `connectionString`, `accountKey`, `credential`, or `sasToken`. Env credentials also stay with their own account: with an explicit `accountName`, an `AZURE_STORAGE_CONNECTION_STRING` whose `AccountName` differs is ignored, and so are `AZURE_STORAGE_ACCOUNT_KEY` and `AZURE_STORAGE_SAS_TOKEN` when `AZURE_STORAGE_ACCOUNT_NAME` (or `AZURE_STORAGE_ACCOUNT`) names a different account. An explicit `endpoint` also wins over the endpoint in a connection string that carries an account key or SAS.
 
 To develop against [Azurite](https://github.com/Azure/Azurite), point `endpoint` at it (`http://127.0.0.1:10000/devstoreaccount1`). `@azure/storage-blob` 12.34 and later send storage service version `2026-10-06`, which is newer than the latest Azurite release (3.37.0) accepts, so start Azurite with `--skipApiVersionCheck` until it catches up.
 
@@ -74,6 +76,6 @@ To develop against [Azurite](https://github.com/Azure/Azurite), point `endpoint`
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ⚠️ | Server-side copy via `syncCopyFromURL` - capped at 256 MB source size. Larger blobs need `beginCopyFromURL` (poller); drop down to `adapter.raw` for that. SAS-only adapter mode reuses the configured token; shared-key and User Delegation modes mint a 5-min read SAS; a `credential` with `useUserDelegationSas: false` sends its bearer token as the source authorization. |
+| `copy` | ✅ | Server-side copy via `syncCopyFromURL`. SAS-only adapter mode reuses the configured token; shared-key and User Delegation modes mint a 5-min read SAS; a `credential` with `useUserDelegationSas: false` sends its bearer token as the source authorization. A source over that API's 256 MiB cap falls back to the asynchronous Copy Blob (`beginCopyFromURL`), authorized by the adapter's own credentials, and `copy()` resolves once the copy finishes. An aborted `signal` stops the wait but not the copy, which still completes server-side. |
 | `url` | ⚠️ | Signs a SAS read URL. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS, capped at 7 days (a longer `expiresIn` throws). Throws in SAS-only or anonymous mode (no signer available), where `signedUrl.supported` is `false`. Pass `accountKey` + `accountName`, a connection string with an account key, `credential` + `accountName`, or set `publicBaseUrl` for a public container. |
 | `signedUploadUrl` | ⚠️ | PUT URL only - Azure has no POST policy equivalent. `maxSize` throws because Azure SAS has no `content-length-range` policy, a positive `minSize` throws because SAS has no minimum-size constraint either (`minSize: 0` is accepted), and `contentType` throws because Azure SAS does not bind Content-Type into the signature; enforce those checks at your application gateway instead. Shared-key mode uses the account key; TokenCredential mode uses User Delegation SAS. Throws in SAS-only or anonymous mode (no signer available). The returned headers include the required `x-ms-blob-type: BlockBlob`. |

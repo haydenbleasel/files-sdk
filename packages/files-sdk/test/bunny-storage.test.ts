@@ -293,6 +293,115 @@ describe("bunnyStorage adapter", () => {
     expect(getMock.mock.calls[0]?.[1]).toBe("/docs/a.txt");
   });
 
+  describe("abort signal", () => {
+    const adapter = () =>
+      bunnyStorage({ accessKey: "key", region: "de", zone: "uploads" });
+
+    test("a buffered body is sent in slices and arrives intact", async () => {
+      const body = new Uint8Array(200 * 1024).map((_, i) => i % 251);
+      await adapter().upload("big.bin", body);
+      expect(backing.get("big.bin")?.bytes).toEqual(body);
+    });
+
+    test("aborting an upload mid-body errors the request body so nothing lands", async () => {
+      let cancelled: unknown;
+      const body = new ReadableStream<Uint8Array>({
+        cancel(reason) {
+          cancelled = reason;
+        },
+        pull(controller) {
+          controller.enqueue(new Uint8Array([1]));
+          // then stall, like a slow client body
+          return Promise.withResolvers<undefined>().promise;
+        },
+      });
+      const controller = new AbortController();
+      const pending = adapter().upload("a.bin", body, {
+        signal: controller.signal,
+      });
+      await Bun.sleep(5);
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toMatchObject({
+        aborted: true,
+        code: "Provider",
+        message: "Operation aborted: stop",
+      });
+      expect(cancelled).toBeDefined();
+      expect(backing.has("a.bin")).toBe(false);
+      expect(getMock).not.toHaveBeenCalled();
+    });
+
+    test("an aborted download rejects as aborted", async () => {
+      backing.set("a.txt", {
+        bytes: new TextEncoder().encode("hello"),
+        checksum: "c",
+        contentType: "text/plain",
+        lastChanged: new Date(),
+      });
+      const controller = new AbortController();
+      controller.abort(new Error("stop"));
+      await expect(
+        adapter().download("a.txt", { signal: controller.signal })
+      ).rejects.toMatchObject({ aborted: true });
+    });
+
+    test("a streamed download errors once its signal aborts", async () => {
+      backing.set("a.txt", {
+        bytes: new TextEncoder().encode("hello"),
+        checksum: "c",
+        contentType: "text/plain",
+        lastChanged: new Date(),
+      });
+      // A response body still arriving: one chunk, then nothing yet.
+      downloadMock.mockImplementationOnce(() =>
+        Promise.resolve({
+          length: 5,
+          response: new Response(),
+          stream: new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.enqueue(new TextEncoder().encode("he"));
+              return Promise.withResolvers<undefined>().promise;
+            },
+          }),
+        })
+      );
+      const controller = new AbortController();
+      const file = await adapter().download("a.txt", {
+        as: "stream",
+        signal: controller.signal,
+      });
+      controller.abort(new Error("stop"));
+      await expect(new Response(file.stream()).text()).rejects.toThrow("stop");
+    });
+
+    test("a download with an unaborted signal reads the whole body", async () => {
+      backing.set("a.txt", {
+        bytes: new TextEncoder().encode("hello"),
+        checksum: "c",
+        contentType: "text/plain",
+        lastChanged: new Date(),
+      });
+      const { signal } = new AbortController();
+      const file = await adapter().download("a.txt", { signal });
+      expect(await file.text()).toBe("hello");
+    });
+
+    test("an aborted copy rejects as aborted and writes nothing", async () => {
+      backing.set("a.txt", {
+        bytes: new TextEncoder().encode("hello"),
+        checksum: "c",
+        contentType: "text/plain",
+        lastChanged: new Date(),
+      });
+      const controller = new AbortController();
+      controller.abort(new Error("stop"));
+      await expect(
+        adapter().copy("a.txt", "b.txt", { signal: controller.signal })
+      ).rejects.toMatchObject({ aborted: true });
+      expect(backing.has("b.txt")).toBe(false);
+    });
+  });
+
   test("upload falls back to local metadata when the head round-trip fails", async () => {
     const files = new Files({
       adapter: bunnyStorage({

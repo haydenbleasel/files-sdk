@@ -20,6 +20,7 @@ import {
 import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
+import { abortError } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 export type BunnyStorageRegion = `${BunnyStorageSDK.regions.StorageRegion}`;
@@ -93,22 +94,64 @@ const toBunnyPath = (key: string): string => {
 
 const fromBunnyPath = (path: string): string => path.replace(/^\/+/u, "");
 
+// Buffered upload bodies go out in slices rather than one chunk, so an abort
+// mid-upload still finds most of the body unsent.
+const UPLOAD_SLICE_BYTES = 64 * 1024;
+
+const sliceStream = (bytes: Uint8Array): ReadableStream<Uint8Array> => {
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset >= bytes.byteLength) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(bytes.subarray(offset, offset + UPLOAD_SLICE_BYTES));
+      offset += UPLOAD_SLICE_BYTES;
+    },
+  });
+};
+
+/**
+ * Bind `signal` to a request or response body. The Bunny SDK calls `fetch`
+ * without a signal, so the body is the only handle on the request: aborting
+ * cancels the source and errors the piped stream, which makes `fetch` drop an
+ * upload mid-body (so it can't land later over a newer write) or stop reading
+ * a download. The pipe lets go of the signal once it finishes.
+ */
+const abortable = (
+  stream: ReadableStream<Uint8Array>,
+  signal: AbortSignal | undefined
+): ReadableStream<Uint8Array> =>
+  signal
+    ? stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>(), {
+        signal,
+      })
+    : stream;
+
 // The Bunny SDK declares its streams against `node:stream/web`. At runtime
 // that module re-exports the global `ReadableStream` class, so the two
 // declarations describe the same object; the casts below only bridge the
 // twin type definitions.
+const fromSdkStream = (
+  stream: BunnyDownloadStream
+): ReadableStream<Uint8Array> => {
+  // TS won't relate the twin declarations directly, so go through the
+  // async-iterable contract both declare.
+  const iterable: AsyncIterable<Uint8Array> = stream;
+  // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class as
+  // the global one; only the declarations differ (see above).
+  return iterable as ReadableStream<Uint8Array>;
+};
+
 const streamFromBytes = (
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  signal: AbortSignal | undefined
 ): BunnyUploadStream => {
-  const stream =
-    bytes instanceof ReadableStream
-      ? bytes
-      : new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(bytes);
-            controller.close();
-          },
-        });
+  const stream = abortable(
+    bytes instanceof ReadableStream ? bytes : sliceStream(bytes),
+    signal
+  );
   // TS won't relate the twin declarations directly, so go through the
   // async-iterable contract both declare.
   const iterable: AsyncIterable<Uint8Array> = stream;
@@ -118,13 +161,9 @@ const streamFromBytes = (
 };
 
 const bytesFromStream = async (
-  stream: ReadableStream<Uint8Array> | BunnyDownloadStream
-): Promise<Uint8Array> => {
-  // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class as
-  // the global one `Response` consumes; only the declarations differ.
-  const body = stream as ReadableStream<Uint8Array>;
-  return new Uint8Array(await new Response(body).arrayBuffer());
-};
+  stream: ReadableStream<Uint8Array>
+): Promise<Uint8Array> =>
+  new Uint8Array(await new Response(stream).arrayBuffer());
 
 const keyFromStorageFile = (
   entry: BunnyStorageSDK.file.StorageFile
@@ -182,10 +221,7 @@ const toStoredFile = (
   entry: BunnyStorageSDK.file.StorageFile,
   body:
     | { kind: "buffer"; data: Uint8Array }
-    | {
-        kind: "stream";
-        stream: ReadableStream<Uint8Array> | BunnyDownloadStream;
-      }
+    | { kind: "stream"; stream: ReadableStream<Uint8Array> }
 ): StoredFile => {
   const meta = toFileInfo(entry);
   if (body.kind === "buffer") {
@@ -194,9 +230,7 @@ const toStoredFile = (
       { data: body.data, kind: "buffer" }
     );
   }
-  // SAFETY: `node:stream/web`'s `ReadableStream` is the same runtime class
-  // as the global one; only the declarations differ (see `streamFromBytes`).
-  const stream = body.stream as ReadableStream<Uint8Array>;
+  const { stream } = body;
   return createStoredFile(meta, {
     factory: () => stream,
     kind: "stream",
@@ -348,7 +382,8 @@ export const bunnyStorage = (
       // out, so no signing — an explicit `expiresIn` is refused by the core
       // gate. No `signedUpload` either, for the same reason.
     },
-    async copy(from, to) {
+    async copy(from, to, copyOpts) {
+      const signal = copyOpts?.signal;
       try {
         const sourceEntry = await BunnyStorageSDK.file.get(
           client,
@@ -358,11 +393,13 @@ export const bunnyStorage = (
         await BunnyStorageSDK.file.upload(
           client,
           toBunnyPath(to),
-          source.stream,
+          streamFromBytes(fromSdkStream(source.stream), signal),
           { contentType: sourceEntry.contentType || "application/octet-stream" }
         );
       } catch (error) {
-        throw mapBunnyStorageError(error);
+        throw signal?.aborted
+          ? abortError(signal.reason)
+          : mapBunnyStorageError(error);
       }
     },
     async delete(key) {
@@ -407,21 +444,22 @@ export const bunnyStorage = (
       );
     },
     async download(key, downloadOpts) {
+      const signal = downloadOpts?.signal;
       try {
         const entry = await BunnyStorageSDK.file.get(client, toBunnyPath(key));
         const result = await entry.data();
+        const stream = abortable(fromSdkStream(result.stream), signal);
         if (downloadOpts?.as === "stream") {
-          return toStoredFile(entry, {
-            kind: "stream",
-            stream: result.stream,
-          });
+          return toStoredFile(entry, { kind: "stream", stream });
         }
         return toStoredFile(entry, {
-          data: await bytesFromStream(result.stream),
+          data: await bytesFromStream(stream),
           kind: "buffer",
         });
       } catch (error) {
-        throw mapBunnyStorageError(error);
+        throw signal?.aborted
+          ? abortError(signal.reason)
+          : mapBunnyStorageError(error);
       }
     },
     exists(key) {
@@ -487,15 +525,20 @@ export const bunnyStorage = (
       // `metadata` / `cacheControl` are rejected centrally by the Files wrapper
       // (this adapter advertises neither) — the Bunny Storage SDK has no
       // arbitrary-metadata or cache-header field.
+      const signal = options?.signal;
       try {
         const normalized = await normalizeBody(body, options?.contentType);
         const path = toBunnyPath(key);
-        await BunnyStorageSDK.file.upload(
-          client,
-          path,
-          streamFromBytes(normalized.data),
-          { contentType: normalized.contentType }
-        );
+        try {
+          await BunnyStorageSDK.file.upload(
+            client,
+            path,
+            streamFromBytes(normalized.data, signal),
+            { contentType: normalized.contentType }
+          );
+        } catch (error) {
+          throw signal?.aborted ? abortError(signal.reason) : error;
+        }
         // Bunny's PUT response carries no body or metadata. Round-trip via
         // `file.get` so `etag`, `lastModified`, and the authoritative size
         // (important for streamed uploads where `contentLength` is unknown

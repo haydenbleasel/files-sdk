@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { Buffer } from "node:buffer";
-import { PassThrough, Readable } from "node:stream";
+import { PassThrough, Readable, Writable } from "node:stream";
 
 import { Files, FilesError, UploadControl } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
@@ -18,7 +18,6 @@ const baseMetadata = (name: string) => ({
   updated: STABLE_UPDATED,
 });
 
-const saveMock = mock(async (_data: unknown, _opts: unknown) => {});
 const downloadMock = mock(() =>
   Promise.resolve([Buffer.from("hello")] as [Buffer])
 );
@@ -42,28 +41,57 @@ const generateSignedPostPolicyV4Mock = mock((_opts: unknown) =>
   ])
 );
 const createReadStreamMock = mock(() => Readable.from([Buffer.from("hello")]));
-const createWriteStreamMock = mock(() => new PassThrough());
+// Bytes the default write stream received, so tests can inspect the upload
+// body (the adapter writes every upload through `createWriteStream`).
+let writtenChunks: Buffer[] = [];
+const recordingStream = () => {
+  const pt = new PassThrough();
+  pt.on("data", (chunk: Buffer) => writtenChunks.push(chunk));
+  return pt;
+};
+const createWriteStreamMock = mock((_opts?: unknown) => recordingStream());
+// The object resource the "server" answers an upload with. The real SDK stores
+// it on `file.metadata` before the write stream finishes.
+let uploadResponse = (name: string): Record<string, unknown> =>
+  baseMetadata(name);
+const lastWriteOpts = () =>
+  createWriteStreamMock.mock.calls.at(-1)?.[0] as {
+    contentType: string;
+    resumable: boolean;
+    metadata: { cacheControl?: string; metadata?: Record<string, string> };
+  };
 const createResumableUploadMock = mock(() =>
   Promise.resolve([
     "https://storage.googleapis.com/upload/storage/v1/b/uploads/o?upload_id=uri1",
   ] as [string])
 );
 
-const makeFile = (name: string, populateMetadata = false) => ({
-  copy: copyMock,
-  createReadStream: createReadStreamMock,
-  createResumableUpload: createResumableUploadMock,
-  createWriteStream: createWriteStreamMock,
-  delete: deleteMock,
-  download: downloadMock,
-  exists: existsMock,
-  generateSignedPostPolicyV4: generateSignedPostPolicyV4Mock,
-  getMetadata: getMetadataMock,
-  getSignedUrl: getSignedUrlMock,
-  metadata: populateMetadata ? baseMetadata(name) : {},
-  name,
-  save: saveMock,
-});
+const makeFile = (name: string, populateMetadata = false) => {
+  const file = {
+    copy: copyMock,
+    createReadStream: createReadStreamMock,
+    createResumableUpload: createResumableUploadMock,
+    createWriteStream: (opts?: unknown) => {
+      const stream = createWriteStreamMock(opts);
+      stream.once("finish", () => {
+        file.metadata = uploadResponse(name);
+      });
+      return stream;
+    },
+    delete: deleteMock,
+    download: downloadMock,
+    exists: existsMock,
+    generateSignedPostPolicyV4: generateSignedPostPolicyV4Mock,
+    getMetadata: getMetadataMock,
+    getSignedUrl: getSignedUrlMock,
+    metadata: (populateMetadata ? baseMetadata(name) : {}) as Record<
+      string,
+      unknown
+    >,
+    name,
+  };
+  return file;
+};
 
 const bucketFileMock = mock((name: string) => makeFile(name));
 const getFilesMock = mock((_opts?: unknown) =>
@@ -99,7 +127,8 @@ mock.module("@google-cloud/storage", () => ({
 const { gcs, mapGCSError } = await import("../src/gcs/index.js");
 
 beforeEach(() => {
-  saveMock.mockClear();
+  writtenChunks = [];
+  uploadResponse = baseMetadata;
   downloadMock.mockClear();
   existsMock.mockClear();
   getMetadataMock.mockClear();
@@ -119,7 +148,6 @@ beforeEach(() => {
   getFilesMock.mockClear();
   // Restore default implementations so `mockImplementationOnce` from a
   // previous test doesn't bleed over.
-  saveMock.mockImplementation(async () => {});
   downloadMock.mockImplementation(() =>
     Promise.resolve([Buffer.from("hello")] as [Buffer])
   );
@@ -146,7 +174,7 @@ beforeEach(() => {
   createReadStreamMock.mockImplementation(() =>
     Readable.from([Buffer.from("hello")])
   );
-  createWriteStreamMock.mockImplementation(() => new PassThrough());
+  createWriteStreamMock.mockImplementation(() => recordingStream());
   getFilesMock.mockImplementation(() =>
     Promise.resolve([
       [makeFile("a/1.txt", true), makeFile("a/2.txt", true)],
@@ -214,33 +242,22 @@ describe("gcs adapter", () => {
     expect(result.etag).toBe("etag-a.txt");
     expect(result.lastModified).toBe(STABLE_UPDATED_MS);
 
-    expect(saveMock).toHaveBeenCalledTimes(1);
-    const [saveCall] = saveMock.mock.calls;
-    if (!saveCall) {
-      throw new Error("expected save to have been called");
-    }
-    const [, saveOpts] = saveCall;
-    const o = saveOpts as {
-      contentType: string;
-      resumable: boolean;
-      metadata: { cacheControl?: string; metadata?: Record<string, string> };
-    };
+    expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
+    // etag/lastModified come from the upload response, not a second read.
+    expect(getMetadataMock).not.toHaveBeenCalled();
+    const o = lastWriteOpts();
     expect(o.contentType).toBe("text/plain");
     expect(o.resumable).toBe(false);
     expect(o.metadata.cacheControl).toBe("public, max-age=60");
     expect(o.metadata.metadata).toEqual({ author: "me" });
   });
 
-  test("upload of a Uint8Array passes a Buffer view to file.save", async () => {
+  test("upload of a Uint8Array writes the bytes in one chunk", async () => {
     const adapter = gcs({ bucket: "uploads" });
     await adapter.upload("a.bin", new Uint8Array([1, 2, 3, 4]));
-    const [saveCall] = saveMock.mock.calls;
-    if (!saveCall) {
-      throw new Error("expected save to have been called");
-    }
-    const [data] = saveCall;
-    expect(Buffer.isBuffer(data)).toBe(true);
-    expect((data as Buffer).byteLength).toBe(4);
+    expect(writtenChunks).toHaveLength(1);
+    expect(Buffer.concat(writtenChunks)).toEqual(Buffer.from([1, 2, 3, 4]));
+    expect(lastWriteOpts().resumable).toBe(false);
   });
 
   test("upload of a ReadableStream pipes through createWriteStream and reports authoritative size", async () => {
@@ -253,11 +270,11 @@ describe("gcs adapter", () => {
     });
     const result = await adapter.upload("s.txt", stream);
     expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).not.toHaveBeenCalled();
     // For streams we have no local content-length; the value comes from
-    // the post-upload getMetadata.
+    // the upload response's object resource.
     expect(result.size).toBe(5);
-    expect(result.etag).toBe("etag-a.txt");
+    expect(result.etag).toBe("etag-s.txt");
+    expect(getMetadataMock).not.toHaveBeenCalled();
   });
 
   test("forwards resumable-upload progress to onProgress", async () => {
@@ -277,7 +294,6 @@ describe("gcs adapter", () => {
       onProgress: (p) => events.push(p),
     });
     expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).not.toHaveBeenCalled();
     expect(events).toEqual([{ loaded: 5, total: 5 }]);
   });
 
@@ -285,7 +301,6 @@ describe("gcs adapter", () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const result = await files.upload("a.txt", "hello", { multipart: true });
     expect(createWriteStreamMock).toHaveBeenCalledTimes(1);
-    expect(saveMock).not.toHaveBeenCalled();
     const opts = (createWriteStreamMock.mock.calls as unknown[][])[0]?.[0] as
       | { resumable: boolean; chunkSize?: number }
       | undefined;
@@ -304,6 +319,116 @@ describe("gcs adapter", () => {
       | undefined;
     expect(opts?.resumable).toBe(true);
     expect(opts?.chunkSize).toBe(1024 * 1024);
+  });
+
+  test("a create-only service account's upload succeeds without reading the object back", async () => {
+    // "Storage Object Creator" can write but not read objects: a follow-up
+    // getMetadata would answer 403 although the object landed.
+    getMetadataMock.mockImplementation(() =>
+      Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
+    );
+    const result = await gcs({ bucket: "uploads" }).upload("a.txt", "hello");
+    expect(result).toEqual({
+      contentType: "text/plain; charset=utf-8",
+      etag: "etag-a.txt",
+      key: "a.txt",
+      lastModified: STABLE_UPDATED_MS,
+      size: 5,
+    });
+    expect(getMetadataMock).not.toHaveBeenCalled();
+  });
+
+  test("an upload response without an etag falls back to a best-effort read", async () => {
+    uploadResponse = () => ({});
+    const result = await gcs({ bucket: "uploads" }).upload("a.txt", "hello");
+    expect(getMetadataMock).toHaveBeenCalledTimes(1);
+    expect(result.etag).toBe("etag-a.txt");
+  });
+
+  test("a failed fallback read still reports the landed upload", async () => {
+    uploadResponse = () => ({});
+    getMetadataMock.mockImplementationOnce(() =>
+      Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
+    );
+    const result = await gcs({ bucket: "uploads" }).upload("a.txt", "hello");
+    expect(result).toEqual({
+      contentType: "text/plain; charset=utf-8",
+      key: "a.txt",
+      size: 5,
+    });
+  });
+
+  describe("upload abort", () => {
+    // A write stream that accepts nothing until destroyed, like an upload
+    // request still in flight.
+    const stalledStream = () => {
+      const stream = new Writable({
+        write() {
+          // never completes
+        },
+      });
+      createWriteStreamMock.mockImplementationOnce(
+        () => stream as unknown as PassThrough
+      );
+      return stream;
+    };
+
+    test("aborting a buffered upload destroys the write stream and rejects as aborted", async () => {
+      const stalled = stalledStream();
+      const controller = new AbortController();
+      const pending = gcs({ bucket: "uploads" }).upload("a.txt", "hello", {
+        signal: controller.signal,
+      });
+      await Bun.sleep(5);
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toMatchObject({
+        aborted: true,
+        code: "Provider",
+        message: "Operation aborted: stop",
+      });
+      expect(stalled.destroyed).toBe(true);
+      expect(getMetadataMock).not.toHaveBeenCalled();
+    });
+
+    test("aborting a streamed upload cancels the source body", async () => {
+      const stalled = stalledStream();
+      let cancelled: unknown;
+      const body = new ReadableStream<Uint8Array>({
+        cancel(reason) {
+          cancelled = reason;
+        },
+        pull(controller) {
+          controller.enqueue(new Uint8Array([1]));
+        },
+      });
+      const controller = new AbortController();
+      const pending = gcs({ bucket: "uploads" }).upload("s.bin", body, {
+        signal: controller.signal,
+      });
+      await Bun.sleep(5);
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toMatchObject({ aborted: true });
+      expect(stalled.destroyed).toBe(true);
+      expect(cancelled).toBeDefined();
+    });
+
+    test("the abort listener is detached once the upload settles", async () => {
+      const { signal } = new AbortController();
+      const counts = { added: 0, removed: 0 };
+      const add = signal.addEventListener.bind(signal);
+      const remove = signal.removeEventListener.bind(signal);
+      signal.addEventListener = ((...args: Parameters<typeof add>) => {
+        counts.added += 1;
+        add(...args);
+      }) as typeof signal.addEventListener;
+      signal.removeEventListener = ((...args: Parameters<typeof remove>) => {
+        counts.removed += 1;
+        remove(...args);
+      }) as typeof signal.removeEventListener;
+      await gcs({ bucket: "uploads" }).upload("a.txt", "hello", { signal });
+      expect(counts.added).toBeGreaterThan(0);
+      expect(counts.removed).toBe(counts.added);
+    });
   });
 
   test("download returns a buffered StoredFile whose text matches the body", async () => {
@@ -791,9 +916,13 @@ describe("gcs adapter", () => {
     });
 
     test("upload error is wrapped as FilesError", async () => {
-      saveMock.mockImplementationOnce(() =>
-        Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
-      );
+      createWriteStreamMock.mockImplementationOnce(() => {
+        const stream = new PassThrough();
+        queueMicrotask(() =>
+          stream.destroy(Object.assign(new Error("denied"), { code: 403 }))
+        );
+        return stream;
+      });
       const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
       try {
         await files.upload("a.txt", "x");
@@ -911,13 +1040,7 @@ describe("gcs adapter", () => {
       const result = await adapter.upload("a.bin", ab);
       expect(result.size).toBe(8);
       expect(result.contentType).toBe("application/octet-stream");
-      const [saveCall] = saveMock.mock.calls;
-      if (!saveCall) {
-        throw new Error("expected save to have been called");
-      }
-      const [data] = saveCall;
-      expect(Buffer.isBuffer(data)).toBe(true);
-      expect((data as Buffer).byteLength).toBe(8);
+      expect(Buffer.concat(writtenChunks).byteLength).toBe(8);
     });
 
     test("upload of an ArrayBufferView (DataView) surfaces the view's byteLength", async () => {
@@ -928,13 +1051,7 @@ describe("gcs adapter", () => {
       const view = new DataView(new ArrayBuffer(16), 4, 10);
       const result = await adapter.upload("v.bin", view);
       expect(result.size).toBe(10);
-      const [saveCall] = saveMock.mock.calls;
-      if (!saveCall) {
-        throw new Error("expected save to have been called");
-      }
-      const [data] = saveCall;
-      expect(Buffer.isBuffer(data)).toBe(true);
-      expect((data as Buffer).byteLength).toBe(10);
+      expect(Buffer.concat(writtenChunks).byteLength).toBe(10);
     });
 
     test("upload of a Blob preserves the blob's contentType when the caller doesn't override it", async () => {
@@ -945,12 +1062,7 @@ describe("gcs adapter", () => {
       const result = await adapter.upload("photo.jpg", blob);
       expect(result.size).toBe(3);
       expect(result.contentType).toBe("image/jpeg");
-      const [saveCall] = saveMock.mock.calls;
-      if (!saveCall) {
-        throw new Error("expected save to have been called");
-      }
-      const [, opts] = saveCall;
-      expect((opts as { contentType: string }).contentType).toBe("image/jpeg");
+      expect(lastWriteOpts().contentType).toBe("image/jpeg");
     });
 
     test("upload of a Blob lets the explicit contentType override the blob's type", async () => {

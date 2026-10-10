@@ -143,13 +143,13 @@ With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ✅ |  |
-| `download` | ✅ | A 401/403 on the body fetch is `Unauthorized`, and a 409/412 `Conflict`. |
+| `download` | ✅ | The body is fetched from the blob URL with a `v=<etag>` query parameter taken from a fresh `head()`, so a read right after an overwrite gets the new bytes rather than the CDN's cached copy (the CDN caches each version once). A 401/403 on the body fetch is `Unauthorized`, and a 409/412 `Conflict`. |
 | `delete` | ✅ |  |
 | `list` | ⚠️ | Listed items' `contentType` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ✅ |  |
+| `copy` | ✅ | Server-side `blob.copy`. The source's content type and cache max-age are read with `head()` and passed on, since `blob.copy` would otherwise give the copy a type guessed from its extension and the default one-month cache. |
 | `url` | ⚠️ | Returns the permanent CDN URL. `expiresIn` throws `Unsupported` (the URL can't expire); `responseContentDisposition` throws (no Content-Disposition override available). Use a different provider for buckets with untrusted user-uploaded content. |
 | `signedUploadUrl` | ✅ | Presigned `PUT` via Vercel Signed URLs. `contentType` and `maxSize` are enforced at the CDN; a positive `minSize` throws. |
 
@@ -158,12 +158,12 @@ With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ✅ |  |
-| `download` | ⚠️ | Reads go through `blob.get()`, which has no range primitive, so `range` throws. A 401/403 on the read is `Unauthorized`, and a 409/412 `Conflict`. |
+| `download` | ⚠️ | Reads go through `blob.get()` with `useCache: false`, straight from origin storage, so a read right after an overwrite gets the new bytes. `blob.get()` has no range primitive, so `range` throws. A 401/403 on the read is `Unauthorized`, and a 409/412 `Conflict`. |
 | `delete` | ✅ |  |
 | `list` | ⚠️ | Listed items' `contentType` is always `application/octet-stream` (the list API returns no content type); use `head()` for the real type. |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
-| `copy` | ✅ |  |
+| `copy` | ✅ | Server-side `blob.copy`. The source's content type and cache max-age are read with `head()` and passed on, since `blob.copy` would otherwise give the copy a type guessed from its extension and the default one-month cache. |
 | `url` | ⚠️ | Presigned `GET` via Vercel Signed URLs, honoring `expiresIn` (1 hour default, 7-day server-side cap). `responseContentDisposition` throws (no Content-Disposition override available). |
 | `signedUploadUrl` | ✅ | Presigned `PUT` via Vercel Signed URLs. `contentType` and `maxSize` are enforced at the CDN; a positive `minSize` throws. |

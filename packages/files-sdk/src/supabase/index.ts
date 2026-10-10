@@ -19,13 +19,14 @@ import {
   assertSlashDelimiter,
   DEFAULT_URL_EXPIRES_IN,
   deleteManyWithFallback,
+  existsByProbe,
   joinPublicUrl,
   makeErrorMapper,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import { isFunction, isNumber, isObject, isString } from "../internal/is.js";
-import { isJsonObject } from "../internal/json.js";
+import { isJsonArray, isJsonObject } from "../internal/json.js";
 import type { JsonObject, JsonValue } from "../internal/json.js";
 import {
   assertSessionDiscarded,
@@ -99,6 +100,10 @@ export type SupabaseAdapter = Adapter<StorageClient> & {
 const DEFAULT_LIST_LIMIT = 100;
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
 const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
+// storage-js's default `cacheControl` (seconds) when an upload names none.
+const DEFAULT_CACHE_SECONDS = "3600";
+// Supabase Storage refuses a bulk delete of more than 1000 objects.
+const DELETE_BATCH_SIZE = 1000;
 
 const SUPABASE_NOT_FOUND_CODES: ReadonlySet<string> = new Set([
   "NotFound",
@@ -204,7 +209,8 @@ const stripEtag = (etag: string | undefined): string | undefined => {
 // `@supabase/storage-js` accepts a trailing `FetchParameters` (which carries
 // `signal`) on `download` and `list` — and only those. Forward the
 // operation's AbortSignal there; return `undefined` when there's no signal so
-// the call is unchanged.
+// the call is unchanged. (Requests the adapter sends itself take the signal
+// directly.)
 const fetchParams = (
   signal: AbortSignal | undefined
 ): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
@@ -496,11 +502,22 @@ const blobToUint8 = async (blob: Blob): Promise<Uint8Array> =>
 
 type StorageFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
+/** Request options for {@link StorageFetch}, plus `duplex` for stream bodies. */
+type StorageRequestInit = RequestInit & {
+  duplex?: "half";
+  headers?: Record<string, string>;
+};
+
 /**
- * The parts of a storage-js `StorageFileApi` needed to call the object-info
- * endpoint directly: its storage base URL, default headers, and fetch. The
- * fetch matters — supabase-js passes a wrapper that injects the signed-in
- * user's JWT, so going around it would drop the caller's auth.
+ * The parts of a storage-js `StorageFileApi` needed to call Storage endpoints
+ * directly: its storage base URL, default headers, and fetch. The fetch
+ * matters — supabase-js passes a wrapper that injects the signed-in user's
+ * JWT, so going around it would drop the caller's auth.
+ *
+ * Every request that puts an object key in its URL goes through this rather
+ * than storage-js, which interpolates the key into the path unencoded: a `#`
+ * started a fragment and a `?` a query, so `report #1.pdf` addressed (and
+ * overwrote) `report `.
  */
 interface StorageRequestContext {
   fetch: StorageFetch;
@@ -572,9 +589,126 @@ const fromRawInfo = (body: JsonValue | undefined): SupabaseInfoLike => {
   };
 };
 
-/** Percent-encode each path segment, as storage-js does for signed URLs. */
+/**
+ * Percent-encode each path segment of a key (keeping `/` literal, and
+ * dropping leading slashes as storage-js does). The Storage server decodes
+ * each segment back, so `?`, `#`, `%`, spaces and non-ASCII reach it as part
+ * of the key instead of ending the path or being decoded twice.
+ */
 const encodeObjectPath = (key: string): string =>
   key.replace(/^\/+/u, "").split("/").map(encodeURIComponent).join("/");
+
+/**
+ * storage-js's upload-path normalisation (`_removeEmptyFolders`): one leading
+ * and one trailing slash dropped, runs of slashes collapsed. Mirrored so an
+ * upload stores the same key it did when storage-js built the request.
+ */
+const normalizeUploadKey = (key: string): string =>
+  key.replaceAll(/^\/|\/$/gu, "").replaceAll(/\/+/gu, "/");
+
+const TOKEN_PARAM = "?token=";
+
+/**
+ * The token from a server-built signed path (`/object/…/<key>?token=<jwt>`).
+ * The key itself may contain `?token=`, so the last occurrence is the token.
+ */
+const tokenFrom = (signedPath: string): string | undefined => {
+  const at = signedPath.lastIndexOf(TOKEN_PARAM);
+  return at === -1 ? undefined : signedPath.slice(at + TOKEN_PARAM.length);
+};
+
+/** The token in a signed-upload response: `token`, or parsed from `url`. */
+const uploadTokenOf = (body: JsonValue | undefined): string | undefined => {
+  if (!isJsonObject(body)) {
+    return;
+  }
+  if (isString(body.token)) {
+    return body.token;
+  }
+  return isString(body.url) ? tokenFrom(body.url) : undefined;
+};
+
+/**
+ * Send a request through the client's own URL, headers and fetch. A non-2xx
+ * answer is mapped like storage-js's `StorageApiError`: the HTTP status plus
+ * the body's `statusCode` / `code` / `error` / `message`.
+ */
+const send = async (
+  ctx: StorageRequestContext,
+  path: string,
+  init: StorageRequestInit
+): Promise<Response> => {
+  try {
+    const res = await ctx.fetch(`${ctx.url}${path}`, {
+      ...init,
+      headers: { ...ctx.headers, ...init.headers },
+    });
+    if (!res.ok) {
+      const body = await readJson(res);
+      throw mapSupabaseError({
+        ...(isJsonObject(body) && body),
+        status: res.status,
+      });
+    }
+    return res;
+  } catch (error) {
+    throw mapSupabaseError(error);
+  }
+};
+
+/** Release a response body the caller has no use for. */
+const discard = async (res: Response): Promise<void> => {
+  await res.body?.cancel();
+};
+
+interface DirectUploadOptions {
+  cacheSeconds: string | undefined;
+  contentType: string;
+  metadata: Record<string, string> | undefined;
+  signal: AbortSignal | undefined;
+}
+
+/**
+ * The request storage-js's `upload()` sends (`POST /object/{bucket}/{key}`
+ * with `x-upsert: true`), built with an encoded key. A Blob goes multipart
+ * with the cache seconds and metadata as form fields; any other body is sent
+ * raw with them as headers.
+ */
+const directUploadInit = (
+  data: Uint8Array | ReadableStream<Uint8Array> | Blob,
+  opts: DirectUploadOptions
+): StorageRequestInit => {
+  const cacheSeconds = opts.cacheSeconds ?? DEFAULT_CACHE_SECONDS;
+  const base = {
+    method: "POST",
+    ...(opts.signal && { signal: opts.signal }),
+  };
+  if (data instanceof Blob) {
+    const form = new FormData();
+    form.append("cacheControl", cacheSeconds);
+    if (opts.metadata) {
+      form.append("metadata", JSON.stringify(opts.metadata));
+    }
+    form.append("", data);
+    return { ...base, body: form, headers: { "x-upsert": "true" } };
+  }
+  return {
+    ...base,
+    // SAFETY: `BodyInit` pins a view to `ArrayBuffer` backing (TS 5.7
+    // widened typed arrays to `ArrayBufferLike`); `normalizeBody` only
+    // produces views over the caller's ordinary buffers or fresh encodes.
+    body: data as BodyInit,
+    ...(data instanceof ReadableStream && { duplex: "half" as const }),
+    headers: {
+      "cache-control": `max-age=${cacheSeconds}`,
+      "content-type": opts.contentType,
+      "x-upsert": "true",
+      ...(opts.metadata && {
+        "x-metadata": b64(JSON.stringify(opts.metadata)),
+      }),
+    },
+  };
+};
 
 /**
  * Supabase's TUS endpoint as an offset-mode resumable driver. Only attached
@@ -756,6 +890,10 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
   const tus = resolveTusConfig(opts);
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
+  const bucketPath = encodeURIComponent(bucket);
+  /** `{bucket}/{key}` for a Storage URL, each segment percent-encoded. */
+  const objectPath = (key: string): string =>
+    `${bucketPath}/${encodeObjectPath(key)}`;
 
   /**
    * Fetch an object's info (size, type, etag, last-modified, user metadata).
@@ -779,28 +917,75 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       }
       return data;
     }
-    try {
-      const res = await requestContext.fetch(
-        `${requestContext.url}/object/info/${encodeURIComponent(bucket)}/${encodeObjectPath(key)}`,
-        {
-          headers: requestContext.headers,
-          method: "GET",
-          ...(signal && { signal }),
-        }
-      );
-      const body = await readJson(res);
-      if (!res.ok) {
-        // Same shape storage-js turns into a `StorageApiError`: the HTTP
-        // status plus the body's `statusCode` / `code` / `error` / `message`.
-        throw mapSupabaseError({
-          ...(isJsonObject(body) && body),
-          status: res.status,
-        });
-      }
-      return fromRawInfo(body);
-    } catch (error) {
-      throw mapSupabaseError(error);
+    const res = await send(requestContext, `/object/info/${objectPath(key)}`, {
+      method: "GET",
+      ...(signal && { signal }),
+    });
+    return fromRawInfo(await readJson(res));
+  };
+
+  /**
+   * An object's bytes (`GET /object/{bucket}/{key}`, what storage-js's
+   * `download()` requests), with the key encoded.
+   */
+  const fetchObject = (
+    ctx: StorageRequestContext,
+    key: string,
+    signal: AbortSignal | undefined
+  ): Promise<Response> =>
+    send(ctx, `/object/${objectPath(key)}`, {
+      method: "GET",
+      ...(signal && { signal }),
+    });
+
+  /**
+   * A signed read URL. The single-object sign endpoint signs the request
+   * path after only `decodeURI`, so an encoded `?`, `+`, `&`, `=`, … stays
+   * encoded in the token and never matches the decoded key when the URL is
+   * fetched. The batch endpoint takes the key in its JSON body and signs it
+   * verbatim; the URL is then built here with the key encoded, which the
+   * server decodes back to that same key when verifying.
+   */
+  const signedReadUrl = async (
+    ctx: StorageRequestContext,
+    key: string,
+    expiresIn: number,
+    download: true | string | undefined
+  ): Promise<string> => {
+    const res = await send(ctx, `/object/sign/${bucketPath}`, {
+      body: JSON.stringify({ expiresIn, paths: [key] }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    const body = await readJson(res);
+    const entry = isJsonArray(body) ? body[0] : undefined;
+    const signed =
+      isJsonObject(entry) && isString(entry.signedURL)
+        ? entry.signedURL
+        : undefined;
+    if (!signed) {
+      // A missing (or unreadable) object comes back as a per-path error.
+      throw mapSupabaseError({
+        error: "not_found",
+        message:
+          isJsonObject(entry) && isString(entry.error)
+            ? entry.error
+            : "Object not found",
+        statusCode: "404",
+      });
     }
+    const token = tokenFrom(signed);
+    if (!token) {
+      throw new FilesError(
+        "Provider",
+        "supabase: the signed URL response carried no token"
+      );
+    }
+    const query = new URLSearchParams({ token });
+    if (download !== undefined) {
+      query.set("download", download === true ? "" : download);
+    }
+    return `${ctx.url}/object/sign/${objectPath(key)}?${query.toString()}`;
   };
 
   /**
@@ -853,6 +1038,10 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     // Supabase's download response carries no user metadata, so the info
     // endpoint supplies size/type/etag/metadata alongside the body.
     const { body: stream, meta } = await withInfo(key, signal, async () => {
+      if (requestContext) {
+        const res = await fetchObject(requestContext, key, signal);
+        return res.body ?? new Blob().stream();
+      }
       const { data, error } = await bucketRef
         .download(key, undefined, fetchParams(signal))
         .asStream();
@@ -889,6 +1078,10 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     // The download response carries no user metadata (nor, reliably, an
     // etag), so the info endpoint is always consulted alongside it.
     const { body: blob, meta } = await withInfo(key, signal, async () => {
+      if (requestContext) {
+        const res = await fetchObject(requestContext, key, signal);
+        return await res.blob();
+      }
       const { data, error } = await bucketRef.download(
         key,
         undefined,
@@ -954,7 +1147,26 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       // option; `inline` and other types throw.
       signedUrl: { disposition: true, expiry: "exact", supported: true },
     },
-    async copy(from, to) {
+    async copy(from, to, copyOpts) {
+      if (requestContext) {
+        // storage-js's `copy()` sends no `x-upsert`, and without it the
+        // server refuses an existing destination (KeyAlreadyExists) — so a
+        // copy or move onto a key that exists failed instead of replacing
+        // it, as every other adapter's copy does.
+        await discard(
+          await send(requestContext, "/object/copy", {
+            body: JSON.stringify({
+              bucketId: bucket,
+              destinationKey: to,
+              sourceKey: from,
+            }),
+            headers: { "content-type": "application/json", "x-upsert": "true" },
+            method: "POST",
+            ...(copyOpts?.signal && { signal: copyOpts.signal }),
+          })
+        );
+        return;
+      }
       const { error } = await bucketRef.copy(from, to);
       if (error) {
         throw mapSupabaseError(error);
@@ -973,20 +1185,28 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
           mapSupabaseError
         );
       }
-      // Supabase has no documented per-request key cap, so the whole list is
-      // sent in one `remove()`. On success it doesn't report which keys
-      // actually existed; like `delete()`, a missing key counts as deleted.
-      const { error } = await bucketRef.remove(keys);
-      if (!error) {
-        return { results: [...keys] };
+      // Supabase Storage caps a bulk delete at 1000 objects, so the keys go
+      // out in batches of that size. On success `remove()` doesn't report
+      // which keys actually existed; like `delete()`, a missing key counts as
+      // deleted.
+      const results: string[] = [];
+      const errors: { error: FilesError; key: string }[] = [];
+      for (let start = 0; start < keys.length; start += DELETE_BATCH_SIZE) {
+        const batch = keys.slice(start, start + DELETE_BATCH_SIZE);
+        // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- batches go one at a time so a large delete doesn't fan out into many concurrent requests
+        const { error } = await bucketRef.remove(batch);
+        if (error) {
+          // `remove()` surfaces a single batch-level error rather than
+          // per-key failures, so map it onto every key in the batch.
+          const mapped = mapSupabaseError(error);
+          for (const key of batch) {
+            errors.push({ error: mapped, key });
+          }
+        } else {
+          results.push(...batch);
+        }
       }
-      // `remove()` surfaces a single batch-level error rather than per-key
-      // failures, so map it onto every key.
-      const mapped = mapSupabaseError(error);
-      return {
-        errors: keys.map((key) => ({ error: mapped, key })),
-        results: [],
-      };
+      return { ...(errors.length > 0 && { errors }), results };
     },
     download(key, downloadOpts) {
       if (downloadOpts?.as === "stream") {
@@ -994,16 +1214,11 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       }
       return downloadAsBufferFile(key, downloadOpts?.signal);
     },
-    async exists(key) {
-      const { error } = await bucketRef.info(key);
-      if (!error) {
-        return true;
-      }
-      const mapped = mapSupabaseError(error);
-      if (mapped.code === "NotFound") {
-        return false;
-      }
-      throw mapped;
+    exists(key, existsOpts) {
+      return existsByProbe(
+        () => objectInfo(key, existsOpts?.signal),
+        mapSupabaseError
+      );
     },
     async head(key, headOpts) {
       const info = await objectInfo(key, headOpts?.signal);
@@ -1141,6 +1356,32 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       }
       // `expiresIn` is intentionally ignored — Supabase fixes the TTL at
       // 2 hours server-side and offers no per-URL override.
+      if (requestContext) {
+        // The server signs the decoded key and answers with it raw in the
+        // URL (storage-js then re-parses that URL), so the token is taken
+        // from the answer and the URL rebuilt with the key encoded.
+        const res = await send(
+          requestContext,
+          `/object/upload/sign/${objectPath(key)}`,
+          {
+            body: "{}",
+            headers: { "content-type": "application/json", "x-upsert": "true" },
+            method: "POST",
+          }
+        );
+        const token = uploadTokenOf(await readJson(res));
+        if (!token) {
+          throw new FilesError(
+            "Provider",
+            "supabase: the signed upload URL response carried no token"
+          );
+        }
+        return {
+          headers: { "x-upsert": "true" },
+          method: "PUT",
+          url: `${requestContext.url}/object/upload/sign/${objectPath(key)}?${new URLSearchParams({ token }).toString()}`,
+        };
+      }
       const { data, error } = await bucketRef.createSignedUploadUrl(key, {
         upsert: true,
       });
@@ -1161,23 +1402,39 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         body,
         options?.contentType
       );
-      const fileOptions = {
-        contentType,
-        upsert: true,
-        ...(options?.cacheControl && {
-          cacheControl: cacheControlSeconds(options.cacheControl),
-        }),
-        ...(options?.metadata && { metadata: options.metadata }),
-      };
-      // Supabase requires `duplex: 'half'` when uploading a ReadableStream.
-      // The SDK threads this through `FileOptions.duplex`.
-      const optsWithDuplex =
-        data instanceof ReadableStream
-          ? { ...fileOptions, duplex: "half" }
-          : fileOptions;
-      const { error } = await bucketRef.upload(key, data, optsWithDuplex);
-      if (error) {
-        throw mapSupabaseError(error);
+      const cacheSeconds = options?.cacheControl
+        ? cacheControlSeconds(options.cacheControl)
+        : undefined;
+      if (requestContext) {
+        await discard(
+          await send(
+            requestContext,
+            `/object/${objectPath(normalizeUploadKey(key))}`,
+            directUploadInit(data, {
+              cacheSeconds,
+              contentType,
+              metadata: options?.metadata,
+              signal: options?.signal,
+            })
+          )
+        );
+      } else {
+        const fileOptions = {
+          contentType,
+          upsert: true,
+          ...(cacheSeconds !== undefined && { cacheControl: cacheSeconds }),
+          ...(options?.metadata && { metadata: options.metadata }),
+        };
+        // Supabase requires `duplex: 'half'` when uploading a ReadableStream.
+        // The SDK threads this through `FileOptions.duplex`.
+        const optsWithDuplex =
+          data instanceof ReadableStream
+            ? { ...fileOptions, duplex: "half" }
+            : fileOptions;
+        const { error } = await bucketRef.upload(key, data, optsWithDuplex);
+        if (error) {
+          throw mapSupabaseError(error);
+        }
       }
       // For stream bodies we don't know the size locally; ask `info()`
       // for the authoritative value. For buffer bodies we already have it.
@@ -1218,20 +1475,26 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         return joinPublicUrl(publicBaseUrl, key);
       }
       if (isPublic && !mustSign) {
+        if (requestContext) {
+          // storage-js's `getPublicUrl()` runs the URL through `encodeURI`,
+          // which leaves a `#` or `?` in the key unescaped.
+          return `${requestContext.url}/object/public/${objectPath(key)}`;
+        }
         const { data } = bucketRef.getPublicUrl(key);
         return data.publicUrl;
       }
       // Public modes asked to sign and the default private path all mint a
       // signed URL, so the expiry and disposition can be bound in.
-      const { data, error } = await bucketRef.createSignedUrl(
-        key,
-        urlOpts?.expiresIn ?? defaultUrlExpiresIn,
-        {
-          ...(urlOpts?.responseContentDisposition && {
-            download: downloadOptionFor(urlOpts.responseContentDisposition),
-          }),
-        }
-      );
+      const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
+      const download = urlOpts?.responseContentDisposition
+        ? downloadOptionFor(urlOpts.responseContentDisposition)
+        : undefined;
+      if (requestContext) {
+        return await signedReadUrl(requestContext, key, expiresIn, download);
+      }
+      const { data, error } = await bucketRef.createSignedUrl(key, expiresIn, {
+        ...(download !== undefined && { download }),
+      });
       if (error) {
         throw mapSupabaseError(error);
       }

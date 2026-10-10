@@ -189,6 +189,17 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+// One listFiles row with the given customId and upload status.
+const listRow = (customId: string, status: string) => ({
+  customId,
+  id: `id-${customId}`,
+  key: `ut-${customId}`,
+  name: customId,
+  size: 1,
+  status,
+  uploadedAt: 0,
+});
+
 describe("uploadthing adapter", () => {
   test("missing token throws at construction", () => {
     delete process.env.UPLOADTHING_TOKEN;
@@ -549,6 +560,25 @@ describe("uploadthing adapter", () => {
     const out = await files.list({ cursor: "5" });
     expect(out.cursor).toBe("6");
     expect(listFilesMock.mock.calls[0]?.[0]).toEqual({ offset: 5 });
+  });
+
+  test("list keeps only Uploaded files, and the cursor still counts every returned row", async () => {
+    listFilesMock.mockImplementationOnce(() =>
+      Promise.resolve({
+        files: [
+          listRow("a/done", "Uploaded"),
+          listRow("a/pending", "Uploading"),
+          listRow("a/failed", "Failed"),
+          listRow("a/gone", "Deletion Pending"),
+          listRow("b/done", "Uploaded"),
+        ],
+        hasMore: true,
+      })
+    );
+    const files = new Files({ adapter: uploadthing() });
+    const out = await files.list({ cursor: "10", prefix: "a/" });
+    expect(out.items.map((i) => i.key)).toEqual(["a/done"]);
+    expect(out.cursor).toBe("15");
   });
 
   test("list applies prefix client-side over the returned page", async () => {

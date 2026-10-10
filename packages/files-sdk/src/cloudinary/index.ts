@@ -497,8 +497,11 @@ export const cloudinaryAdapter = (
         // resource_type / cloud_name, so a non-default delivery `type` must
         // be both signed and sent — otherwise the asset lands as a public
         // `upload` one that this adapter's type-scoped reads can't see.
+        // `invalidate` purges the CDN's copy of an overwritten asset, as a
+        // single-shot `upload()` does; it's signed and sent the same way.
         const signature = sdk.utils.api_sign_request(
           {
+            invalidate: "true",
             public_id: key,
             timestamp,
             ...(type !== "upload" && { type }),
@@ -514,6 +517,7 @@ export const cloudinaryAdapter = (
         form.append("api_key", signingKey);
         form.append("timestamp", String(timestamp));
         form.append("signature", signature);
+        form.append("invalidate", "true");
         form.append("public_id", key);
         if (type !== "upload") {
           form.append("type", type);
@@ -605,9 +609,11 @@ export const cloudinaryAdapter = (
         // Cloudinary has no native copy — `rename` is move-only. Re-upload
         // by URL: Cloudinary fetches `secure_url` and ingests it as a new
         // asset under `to`. Document: copies produce a new asset_id and a
-        // new etag, not a byte-identical reference.
+        // new etag, not a byte-identical reference. `invalidate` purges the
+        // CDN's copy of a destination it overwrites, as `upload()` does.
         const sourceUrl = buildDeliveryUrl(from);
         await sdk.uploader.upload(sourceUrl, {
+          invalidate: true,
           overwrite: true,
           public_id: to,
           resource_type: resourceType,

@@ -889,6 +889,53 @@ describe("pocketbase adapter", () => {
     expect(authWithPasswordMock).not.toHaveBeenCalled();
   });
 
+  test("admin credentials passed as options win over POCKETBASE_AUTH_TOKEN", async () => {
+    process.env.POCKETBASE_AUTH_TOKEN = "stale-env-token";
+    const adapter = pocketbase({
+      adminEmail: "admin@test",
+      adminPassword: "pw",
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "hello");
+    expect(authWithPasswordMock).toHaveBeenCalledWith("admin@test", "pw");
+    expect(adapter.raw.authStore.token).not.toBe("stale-env-token");
+  });
+
+  test("one admin credential as an option, completed from the env, still beats the env token", async () => {
+    process.env.POCKETBASE_AUTH_TOKEN = "stale-env-token";
+    process.env.POCKETBASE_ADMIN_PASSWORD = "env-pw";
+    const adapter = pocketbase({
+      adminEmail: "admin@test",
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "hello");
+    expect(authWithPasswordMock).toHaveBeenCalledWith("admin@test", "env-pw");
+  });
+
+  test("POCKETBASE_AUTH_TOKEN still wins over admin credentials from the env", async () => {
+    process.env.POCKETBASE_AUTH_TOKEN = "env-token";
+    process.env.POCKETBASE_ADMIN_EMAIL = "admin@test";
+    process.env.POCKETBASE_ADMIN_PASSWORD = "pw";
+    const adapter = pocketbase({ collection: "files", url: "http://pb.test" });
+    await adapter.upload("a.txt", "hello");
+    expect(authWithPasswordMock).not.toHaveBeenCalled();
+    expect(adapter.raw.authStore.token).toBe("env-token");
+  });
+
+  test("POCKETBASE_AUTH_TOKEN is used when an option names only half an admin pair", async () => {
+    process.env.POCKETBASE_AUTH_TOKEN = "env-token";
+    const adapter = pocketbase({
+      adminEmail: "admin@test",
+      collection: "files",
+      url: "http://pb.test",
+    });
+    await adapter.upload("a.txt", "hello");
+    expect(authWithPasswordMock).not.toHaveBeenCalled();
+    expect(adapter.raw.authStore.token).toBe("env-token");
+  });
+
   test("custom keyField is honored for filters, formdata, and storage", async () => {
     const adapter = pocketbase({
       collection: "files",

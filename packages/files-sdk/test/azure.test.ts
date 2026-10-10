@@ -92,6 +92,11 @@ const deleteIfExistsMock = mock(() => Promise.resolve({ succeeded: true }));
 const syncCopyFromURLMock = mock((_source: string) =>
   Promise.resolve({ copyStatus: "success" })
 );
+// `beginCopyFromURL` starts the copy and resolves a poller; `isDone()` is true
+// when the service finished it synchronously.
+const beginCopyFromURLMock = mock((_source: string, _opts?: unknown) =>
+  Promise.resolve({ isDone: (): boolean => true })
+);
 
 // The real SDK builds blob URLs by appending to the service URL's path, so a
 // SAS query given to the BlobServiceClient constructor is carried through to
@@ -125,6 +130,7 @@ const getUserDelegationKeyMock = mock((_startsOn: Date, expiresOn: Date) =>
 );
 
 const makeBlobClient = (key: string) => ({
+  beginCopyFromURL: beginCopyFromURLMock,
   delete: deleteIfExistsMock,
   deleteIfExists: deleteIfExistsMock,
   download: downloadMock,
@@ -412,6 +418,15 @@ const fakeCredential = (token: string | null = "t") => ({
 
 const SEVEN_DAYS_S = 7 * 24 * 60 * 60;
 
+// Copy Blob From URL's answer for a source over its 256 MiB cap.
+const oversizedSyncCopy = () =>
+  Object.assign(
+    new Error(
+      "The source request body is too large and exceeds the maximum permissible limit (256MB)."
+    ),
+    { details: { errorCode: "CannotVerifyCopySource" }, statusCode: 409 }
+  );
+
 beforeEach(() => {
   uploadDataMock.mockClear();
   uploadStreamMock.mockClear();
@@ -474,6 +489,10 @@ beforeEach(() => {
   );
   syncCopyFromURLMock.mockImplementation(() =>
     Promise.resolve({ copyStatus: "success" })
+  );
+  beginCopyFromURLMock.mockClear();
+  beginCopyFromURLMock.mockImplementation(() =>
+    Promise.resolve({ isDone: () => true })
   );
 
   sharedKeyInstances.length = 0;
@@ -612,6 +631,107 @@ describe("azure adapter", () => {
             );
           }
         );
+      });
+    });
+
+    describe("env credentials for another account never apply to an explicit accountName", () => {
+      const OTHER_CONNECTION_STRING =
+        "DefaultEndpointsProtocol=https;AccountName=acctb;AccountKey=a2V5Qg==;EndpointSuffix=core.windows.net";
+
+      test("an env connection string naming another account is ignored", async () => {
+        await withAzureEnv(
+          { AZURE_STORAGE_CONNECTION_STRING: OTHER_CONNECTION_STRING },
+          async () => {
+            const adapter = azure({
+              accountName: ACCOUNT,
+              container: CONTAINER,
+            });
+            // Built for the named account (anonymously: no secret of its own
+            // in the environment), never from acctb's connection string.
+            expect(BlobServiceClientStub.lastInit).toEqual({
+              arg: `https://${ACCOUNT}.blob.core.windows.net`,
+              credential: undefined,
+              kind: "ctor",
+            });
+            expect(sharedKeyInstances).toHaveLength(0);
+            expect(adapter.capabilities?.signedUrl?.supported).toBe(false);
+            await expect(adapter.url("k.txt")).rejects.toMatchObject({
+              code: "Unsupported",
+            });
+          }
+        );
+      });
+
+      test("an env connection string for the same account (any case) still applies", () => {
+        withAzureEnv(
+          {
+            AZURE_STORAGE_CONNECTION_STRING: CONNECTION_STRING.replace(
+              `AccountName=${ACCOUNT}`,
+              `AccountName=${ACCOUNT.toUpperCase()}`
+            ),
+          },
+          () => {
+            azure({ accountName: ACCOUNT, container: CONTAINER });
+            expect(BlobServiceClientStub.lastInit?.kind).toBe(
+              "fromConnectionString"
+            );
+            expect(sharedKeyInstances).toEqual([
+              { accountKey: "a2V5", accountName: ACCOUNT },
+            ]);
+          }
+        );
+      });
+
+      test("an env connection string that names no account still applies", () => {
+        withAzureEnv(
+          { AZURE_STORAGE_CONNECTION_STRING: "UseDevelopmentStorage=true" },
+          () => {
+            azure({ accountName: "devstoreaccount1", container: CONTAINER });
+            expect(BlobServiceClientStub.lastInit?.kind).toBe(
+              "fromConnectionString"
+            );
+          }
+        );
+      });
+
+      test("an env account key paired with another env account name is ignored", () => {
+        withAzureEnv(
+          {
+            AZURE_STORAGE_ACCOUNT_KEY: "env-key",
+            AZURE_STORAGE_ACCOUNT_NAME: "acctb",
+          },
+          () => {
+            azure({ accountName: ACCOUNT, container: CONTAINER });
+            expect(sharedKeyInstances).toHaveLength(0);
+            expect(BlobServiceClientStub.lastInit?.arg).toBe(
+              `https://${ACCOUNT}.blob.core.windows.net`
+            );
+          }
+        );
+      });
+
+      test("an env SAS token paired with another env account name is ignored", () => {
+        withAzureEnv(
+          {
+            AZURE_STORAGE_ACCOUNT: "acctb",
+            AZURE_STORAGE_SAS_TOKEN: "?sig=env",
+          },
+          () => {
+            azure({ accountName: ACCOUNT, container: CONTAINER });
+            expect(BlobServiceClientStub.lastInit?.arg).toBe(
+              `https://${ACCOUNT}.blob.core.windows.net`
+            );
+          }
+        );
+      });
+
+      test("an env account key with no env account name pairs with the explicit accountName", () => {
+        withAzureEnv({ AZURE_STORAGE_ACCOUNT_KEY: "env-key" }, () => {
+          azure({ accountName: ACCOUNT, container: CONTAINER });
+          expect(sharedKeyInstances).toEqual([
+            { accountKey: "env-key", accountName: ACCOUNT },
+          ]);
+        });
       });
     });
 
@@ -1308,6 +1428,134 @@ describe("azure adapter", () => {
   });
 
   describe("copy", () => {
+    const sharedKeyAdapter = () =>
+      azure({ accountKey: "k", accountName: ACCOUNT, container: CONTAINER });
+    const props = (extra: Record<string, unknown>) =>
+      Promise.resolve({ ...baseProps(), ...extra } as DownloadResult);
+
+    test("a source over the 256 MiB sync-copy cap falls back to the asynchronous copy", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      getPropertiesMock.mockImplementationOnce(() =>
+        props({ contentLength: 300 * 1024 * 1024 })
+      );
+      const { signal } = new AbortController();
+      await sharedKeyAdapter().copy("big.bin", "copy.bin", { signal });
+      expect(beginCopyFromURLMock).toHaveBeenCalledTimes(1);
+      const [source, opts] = beginCopyFromURLMock.mock.calls[0] ?? [];
+      // Same-account source: the destination request's shared key authorizes
+      // the read, so no SAS is minted for it.
+      expect(source).toBe(`${BLOB_BASE}/big.bin`);
+      expect((opts as { abortSignal?: AbortSignal }).abortSignal).toBe(signal);
+    });
+
+    test("a pending asynchronous copy is polled until it succeeds", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      beginCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.resolve({ isDone: () => false })
+      );
+      getPropertiesMock
+        .mockImplementationOnce(() => props({ contentLength: 2 ** 30 }))
+        .mockImplementationOnce(() => props({ copyStatus: "pending" }))
+        .mockImplementationOnce(() => props({ copyStatus: "success" }));
+      await sharedKeyAdapter().copy("big.bin", "copy.bin");
+      // One size probe on the source, then two status polls.
+      expect(getPropertiesMock).toHaveBeenCalledTimes(3);
+    });
+
+    test("a failed asynchronous copy throws Provider with the service's reason", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      beginCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.resolve({ isDone: () => false })
+      );
+      getPropertiesMock
+        .mockImplementationOnce(() => props({ contentLength: 2 ** 30 }))
+        .mockImplementationOnce(() =>
+          props({ copyStatus: "failed", copyStatusDescription: "500 boom" })
+        );
+      await expect(
+        sharedKeyAdapter().copy("big.bin", "copy.bin")
+      ).rejects.toMatchObject({
+        code: "Provider",
+        message: expect.stringContaining("failed: 500 boom"),
+      });
+    });
+
+    test("an aborted asynchronous copy throws instead of polling forever", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      beginCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.resolve({ isDone: () => false })
+      );
+      getPropertiesMock
+        .mockImplementationOnce(() => props({ contentLength: 2 ** 30 }))
+        .mockImplementationOnce(() => props({ copyStatus: "aborted" }));
+      await expect(
+        sharedKeyAdapter().copy("big.bin", "copy.bin")
+      ).rejects.toMatchObject({
+        code: "Provider",
+        message: expect.stringMatching(/aborted$/u),
+      });
+    });
+
+    test("the signal stops waiting on a pending asynchronous copy", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      beginCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.resolve({ isDone: () => false })
+      );
+      getPropertiesMock.mockImplementationOnce(() =>
+        props({ contentLength: 2 ** 30 })
+      );
+      const controller = new AbortController();
+      const pending = sharedKeyAdapter().copy("big.bin", "copy.bin", {
+        signal: controller.signal,
+      });
+      controller.abort(new Error("stop"));
+      await expect(pending).rejects.toMatchObject({
+        aborted: true,
+        code: "Provider",
+      });
+      // Aborted during the first back-off: never polled the destination.
+      expect(getPropertiesMock).toHaveBeenCalledTimes(1);
+    });
+
+    test("a 409 CannotVerifyCopySource for a small source keeps the original error", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      getPropertiesMock.mockImplementationOnce(() =>
+        props({ contentLength: 1024 })
+      );
+      await expect(
+        sharedKeyAdapter().copy("a.txt", "b.txt")
+      ).rejects.toMatchObject({ code: "Conflict" });
+      expect(beginCopyFromURLMock).not.toHaveBeenCalled();
+    });
+
+    test("a failed size probe keeps the original sync-copy error", async () => {
+      syncCopyFromURLMock.mockImplementationOnce(() =>
+        Promise.reject(oversizedSyncCopy())
+      );
+      getPropertiesMock.mockImplementationOnce(() =>
+        Promise.reject(Object.assign(new Error("gone"), { statusCode: 404 }))
+      );
+      await expect(
+        sharedKeyAdapter().copy("a.txt", "b.txt")
+      ).rejects.toMatchObject({
+        code: "Conflict",
+        message: expect.stringContaining("256MB"),
+      });
+      expect(beginCopyFromURLMock).not.toHaveBeenCalled();
+    });
+
     test("same-container copy: source URL has a SAS appended in shared-key mode", async () => {
       const files = new Files({
         adapter: azure({

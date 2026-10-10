@@ -162,6 +162,20 @@ const fetchWithTimeout = (
   return fetch(url, init);
 };
 
+/**
+ * A public blob's URL keyed to the version `head()` just reported. The CDN
+ * caches a public blob for at least a minute and keeps serving the old bytes
+ * after an overwrite, so a plain fetch could pair the previous body with the
+ * new ETag and size. Vercel's documented fix is a unique query parameter on
+ * the blob URL; deriving it from the ETag misses the cache exactly once per
+ * version instead of on every read.
+ */
+const versionedUrl = (url: string, etag: string): string => {
+  const versioned = new URL(url);
+  versioned.searchParams.set("v", etag);
+  return versioned.toString();
+};
+
 export type VercelBlobClient = typeof blob;
 
 export type VercelBlobAdapter = Adapter<VercelBlobClient>;
@@ -514,6 +528,10 @@ export const vercelBlob = (
     const abortSignal = withTimeoutSignal(signal, downloadTimeoutMs);
     const got = await blob.get(key, {
       access: "private",
+      // Read from origin, not the CDN cache: the metadata comes from a fresh
+      // head(), and a cached body can lag an overwrite by up to a minute,
+      // labelling the old bytes with the new ETag and size.
+      useCache: false,
       ...resolveAuth(),
       ...(abortSignal && { abortSignal }),
     });
@@ -596,11 +614,21 @@ export const vercelBlob = (
       uploadProgress: true,
     },
     async copy(from, to, operationOpts) {
+      // `blob.copy` doesn't carry the source's content type or cache max-age
+      // over: the copy gets a type guessed from the destination's extension
+      // and the default one-month cache. Read both from the source and pass
+      // them on, so a copy (and every move) keeps what the source had.
+      const source = await headRaw(from, operationOpts?.signal);
+      const maxAge = source.cacheControl
+        ? parseCacheControlMaxAge(source.cacheControl)
+        : undefined;
       try {
         await blob.copy(from, to, {
           access,
           addRandomSuffix,
           allowOverwrite,
+          ...(source.contentType && { contentType: source.contentType }),
+          ...(maxAge !== undefined && { cacheControlMaxAge: maxAge }),
           ...(operationOpts?.signal && {
             abortSignal: operationOpts.signal,
           }),
@@ -649,7 +677,7 @@ export const vercelBlob = (
         }
         const range = downloadOpts?.range;
         const res = await fetchWithTimeout(
-          result.url,
+          versionedUrl(result.url, result.etag),
           downloadTimeoutMs,
           downloadOpts?.signal,
           rangeRequestHeaders(range)

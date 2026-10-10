@@ -112,9 +112,9 @@ Each `Files` method becomes one or two Storage requests, and each request needs 
 | `download()` | `download`, plus an object-info read | `select` |
 | `head()`, `exists()` | object info | `select` |
 | `list()` | `listV2` | `select` |
-| `url()` | `createSignedUrl` | `select` |
+| `url()` | sign (the `createSignedUrls` endpoint) | `select` |
 | `delete()` | `remove` | `delete`, `select` |
-| `copy()` | `copy` | `insert`, `select` |
+| `copy()` | `copy` with `x-upsert: true` | `insert`, `select`, `update` |
 | `signedUploadUrl()` | `createSignedUploadUrl` with `upsert` | the same check as `upload()`, made when the URL is signed |
 
 The first row is the one that catches people. The adapter sets `upsert` on every upload so that `files.upload()` replaces an existing key, as it does on every other adapter. Supabase's guide says that to overwrite with `upsert` "you will need to additionally grant `SELECT` and `UPDATE` permissions". With an `INSERT` policy alone, replacing a key fails with the RLS error even though the key is in the user's own folder.

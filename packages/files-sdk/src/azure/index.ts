@@ -44,6 +44,7 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { isObject, isString } from "../internal/is.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
+import { sleep } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -60,7 +61,9 @@ export interface AzureAdapterOptions {
    * AccountKey=...;EndpointSuffix=core.windows.net`). Highest precedence.
    * Falls back to `AZURE_STORAGE_CONNECTION_STRING`, but only when none of
    * `connectionString`, `accountKey`, `credential`, or `sasToken` is passed:
-   * explicit auth options always beat ambient environment variables.
+   * explicit auth options always beat ambient environment variables. The env
+   * connection string is also skipped when it names a different account than
+   * an explicit `accountName`.
    *
    * The adapter parses out `AccountName` + `AccountKey` so `url()` and
    * `signedUploadUrl()` can mint new SAS without a separate credential.
@@ -75,7 +78,9 @@ export interface AzureAdapterOptions {
   /**
    * Shared-key (account key). Required to sign URLs with shared-key
    * credentials. Falls back to `AZURE_STORAGE_ACCOUNT_KEY`, then
-   * `AZURE_STORAGE_KEY`, when no explicit auth option is passed.
+   * `AZURE_STORAGE_KEY`, when no explicit auth option is passed — and not
+   * when `AZURE_STORAGE_ACCOUNT_NAME` (or `AZURE_STORAGE_ACCOUNT`) names a
+   * different account than an explicit `accountName`.
    */
   accountKey?: string;
   /**
@@ -103,7 +108,8 @@ export interface AzureAdapterOptions {
    * `accountKey`, `url()` and `signedUploadUrl()` cannot mint new SAS — they
    * throw an `Unsupported` error. Reading/writing/listing still works as long as
    * the SAS has the relevant permissions. Falls back to
-   * `AZURE_STORAGE_SAS_TOKEN` when no explicit auth option is passed.
+   * `AZURE_STORAGE_SAS_TOKEN` when no explicit auth option is passed, with the
+   * same account-name pairing as `accountKey`.
    */
   sasToken?: string;
   /**
@@ -136,6 +142,14 @@ export type AzureAdapter = Adapter<BlobServiceClient> & {
 };
 
 const COPY_SOURCE_SAS_SECONDS = 300;
+// Copy Blob From URL (`syncCopyFromURL`) only takes a source up to 256 MiB;
+// above that the service answers 409 CannotVerifyCopySource and `copy()`
+// falls back to the asynchronous Copy Blob (`beginCopyFromURL`).
+const SYNC_COPY_MAX_BYTES = 256 * 1024 * 1024;
+// Polling cadence for a pending asynchronous copy: start quick (a same-account
+// copy usually finishes fast), back off to a ceiling for long copies.
+const ASYNC_COPY_POLL_START_MS = 250;
+const ASYNC_COPY_POLL_MAX_MS = 5000;
 // Azure's Blob Batch API caps a single batch at 256 sub-requests.
 const AZURE_BATCH_DELETE_MAX = 256;
 const USER_DELEGATION_KEY_SLACK_MS = 5 * 60 * 1000;
@@ -179,28 +193,37 @@ interface RestErrorFields {
   statusCode?: number;
 }
 
+/** What a thrown Azure error is classified on. */
+interface AzureErrorFields {
+  code?: string;
+  message?: string;
+  status?: number;
+}
+
+const azureErrorFields = (cause: unknown): AzureErrorFields => {
+  // SAFETY: every field is read optionally; a thrown value that is not an
+  // Azure RestError (or not even an object) just yields no code/status/message.
+  const e = cause as RestErrorFields | null | undefined;
+  // Azure RestError carries the storage error code on `details.errorCode`
+  // (the value from the response body) and the HTTP status on `statusCode`.
+  // The top-level `code` is sometimes the same string and sometimes an SDK
+  // class name, so prefer `details.errorCode` when present.
+  const code =
+    e?.details?.errorCode ?? (isString(e?.code) ? e.code : undefined);
+  return {
+    ...(code && { code }),
+    ...(e?.message && { message: e.message }),
+    ...(e?.statusCode !== undefined && { status: e.statusCode }),
+  };
+};
+
 export const mapAzureError = makeErrorMapper({
   codes: {
     conflict: AZURE_CONFLICT_CODES,
     notFound: AZURE_NOT_FOUND_CODES,
     unauthorized: AZURE_UNAUTH_CODES,
   },
-  extract: (cause) => {
-    // SAFETY: every field is read optionally; a thrown value that is not an
-    // Azure RestError (or not even an object) just yields no code/status/message.
-    const e = cause as RestErrorFields | null | undefined;
-    // Azure RestError carries the storage error code on `details.errorCode`
-    // (the value from the response body) and the HTTP status on `statusCode`.
-    // The top-level `code` is sometimes the same string and sometimes an SDK
-    // class name, so prefer `details.errorCode` when present.
-    const code =
-      e?.details?.errorCode ?? (isString(e?.code) ? e.code : undefined);
-    return {
-      ...(code && { code }),
-      ...(e?.message && { message: e.message }),
-      ...(e?.statusCode !== undefined && { status: e.statusCode }),
-    };
-  },
+  extract: azureErrorFields,
   providerLabel: "Azure error",
 });
 
@@ -550,13 +573,48 @@ const readAuthEnv = (
   }
 };
 
+/**
+ * True when ambient credentials belong to a different account than the
+ * `accountName` passed explicitly. An `AZURE_STORAGE_CONNECTION_STRING` (or an
+ * `AZURE_STORAGE_ACCOUNT_KEY` / `AZURE_STORAGE_SAS_TOKEN` paired with an env
+ * account name) for account B must not authenticate an adapter configured for
+ * account A: every data call would hit B, or be signed with A's name and B's
+ * key and fail with 403. Account names are case-insensitive. When either side
+ * is unknown (no explicit `accountName`, or env credentials that name no
+ * account) they are assumed to match.
+ */
+const isForOtherAccount = (
+  opts: AzureAdapterOptions,
+  ambientAccount: string | undefined
+): boolean =>
+  opts.accountName !== undefined &&
+  ambientAccount !== undefined &&
+  ambientAccount.toLowerCase() !== opts.accountName.toLowerCase();
+
+/**
+ * `AZURE_STORAGE_CONNECTION_STRING`, unless an explicit auth option turns the
+ * auth env vars off or the connection string names another account than the
+ * explicit `accountName`.
+ */
+const readEnvConnectionString = (
+  opts: AzureAdapterOptions
+): string | undefined => {
+  const connectionString = readAuthEnv(opts, "AZURE_STORAGE_CONNECTION_STRING");
+  if (
+    connectionString === undefined ||
+    isForOtherAccount(opts, parseConnectionString(connectionString).accountName)
+  ) {
+    return;
+  }
+  return connectionString;
+};
+
 const MISSING_CREDENTIALS_MESSAGE =
   "azure adapter: missing credentials. Pass `connectionString`, or `accountName` together with one of `accountKey`, `credential` (a Microsoft Entra TokenCredential), or `sasToken` — or `accountName` alone for a public-read container. Env fallbacks: AZURE_STORAGE_CONNECTION_STRING, or AZURE_STORAGE_ACCOUNT_NAME (or AZURE_STORAGE_ACCOUNT) with AZURE_STORAGE_ACCOUNT_KEY (or AZURE_STORAGE_KEY) or AZURE_STORAGE_SAS_TOKEN.";
 
 const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
   const connectionString =
-    opts.connectionString ??
-    readAuthEnv(opts, "AZURE_STORAGE_CONNECTION_STRING");
+    opts.connectionString ?? readEnvConnectionString(opts);
   if (connectionString) {
     return buildFromConnectionString(connectionString, opts);
   }
@@ -566,10 +624,18 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
     throw new FilesError("Invalid", MISSING_CREDENTIALS_MESSAGE);
   }
 
+  // The account-key / SAS env vars pair with the env account name; when the
+  // explicit `accountName` is a different account, they aren't its secrets.
+  const envSecretsApply = !isForOtherAccount(
+    opts,
+    readEnv("AZURE_STORAGE_ACCOUNT_NAME") ?? readEnv("AZURE_STORAGE_ACCOUNT")
+  );
   const endpoint = opts.endpoint ?? defaultEndpoint(accountName);
   const accountKey =
     opts.accountKey ??
-    readAuthEnv(opts, "AZURE_STORAGE_ACCOUNT_KEY", "AZURE_STORAGE_KEY");
+    (envSecretsApply
+      ? readAuthEnv(opts, "AZURE_STORAGE_ACCOUNT_KEY", "AZURE_STORAGE_KEY")
+      : undefined);
   if (accountKey) {
     const sharedKey = new StorageSharedKeyCredential(accountName, accountKey);
     return {
@@ -595,7 +661,10 @@ const buildClient = (opts: AzureAdapterOptions): AzureClientBundle => {
   }
 
   const sasToken =
-    opts.sasToken ?? readAuthEnv(opts, "AZURE_STORAGE_SAS_TOKEN");
+    opts.sasToken ??
+    (envSecretsApply
+      ? readAuthEnv(opts, "AZURE_STORAGE_SAS_TOKEN")
+      : undefined);
   if (sasToken) {
     const trimmed = trimSas(sasToken);
     return {
@@ -792,6 +861,75 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     return { url: baseUrl };
   };
 
+  /**
+   * Whether a failed `syncCopyFromURL` is Copy Blob From URL's 256 MiB source
+   * cap. The service reports it as a 409 CannotVerifyCopySource — a code it
+   * also uses for unreadable sources — so confirm with the source's size
+   * before switching to the asynchronous copy. A failed size probe keeps the
+   * original error.
+   */
+  const exceedsSyncCopyLimit = async (
+    { code, status }: AzureErrorFields,
+    fromKey: string,
+    signal: AbortSignal | undefined
+  ): Promise<boolean> => {
+    if (status !== 409 || code !== "CannotVerifyCopySource") {
+      return false;
+    }
+    try {
+      const props = await containerClient
+        .getBlobClient(fromKey)
+        .getProperties(abortOpts(signal));
+      return (props.contentLength ?? 0) > SYNC_COPY_MAX_BYTES;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Copy through the asynchronous Copy Blob (`beginCopyFromURL`), which has no
+   * source-size cap, and wait for it to finish. The source is in the same
+   * account, so the destination request's own credentials (shared key or
+   * Entra token) authorize reading it; a SAS-only client's blob URLs already
+   * carry its token. `signal` stops the wait but deliberately doesn't abort
+   * the copy: Abort Copy Blob would leave an empty destination blob, while a
+   * pending copy blocks other writes to the destination until it completes.
+   */
+  const copyAsync = async (
+    fromKey: string,
+    toKey: string,
+    signal: AbortSignal | undefined
+  ): Promise<void> => {
+    const target = containerClient.getBlobClient(toKey);
+    const poller = await target.beginCopyFromURL(
+      containerClient.getBlobClient(fromKey).url,
+      abortOpts(signal)
+    );
+    // `beginCopyFromURL` already started the copy; it is done when the service
+    // finished it synchronously. Otherwise poll the destination's copy status
+    // ourselves: the SDK's poller never settles on an `aborted` copy.
+    if (poller.isDone()) {
+      return;
+    }
+    let delayMs = ASYNC_COPY_POLL_START_MS;
+    while (true) {
+      // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- polling one pending copy; each check waits for the previous
+      await sleep(delayMs, signal);
+      // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- see above
+      const props = await target.getProperties(abortOpts(signal));
+      if (props.copyStatus !== "pending") {
+        if (props.copyStatus === "failed" || props.copyStatus === "aborted") {
+          throw new FilesError(
+            "Provider",
+            `azure: copy of "${fromKey}" to "${toKey}" ${props.copyStatus}${props.copyStatusDescription ? `: ${props.copyStatusDescription}` : ""}`
+          );
+        }
+        return;
+      }
+      delayMs = Math.min(delayMs * 2, ASYNC_COPY_POLL_MAX_MS);
+    }
+  };
+
   // A User Delegation SAS is capped at 7 days (`url()` and `signedUploadUrl()`
   // throw above it); account-key SAS has no such limit, so the cap is declared
   // only in user-delegation mode.
@@ -810,7 +948,8 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       // A plain `url()` returns the permanent `publicBaseUrl` link when set.
       publicUrl: Boolean(publicBaseUrl),
       rangeRead: true,
-      // `copy()` is a server-side `syncCopyFromURL`.
+      // `copy()` is a server-side `syncCopyFromURL`, or the asynchronous
+      // Copy Blob for sources over its 256 MiB cap.
       serverSideCopy: true,
       // `signedUploadUrl()` mints a write SAS — only when a signer exists. A
       // SAS binds neither a size limit nor the request Content-Type, so
@@ -837,12 +976,21 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       try {
         const signal = operationOpts?.signal;
         const source = await buildCopySource(from, signal);
-        await containerClient.getBlobClient(to).syncCopyFromURL(source.url, {
-          ...abortOpts(signal),
-          ...(source.sourceAuthorization && {
-            sourceAuthorization: source.sourceAuthorization,
-          }),
-        });
+        try {
+          await containerClient.getBlobClient(to).syncCopyFromURL(source.url, {
+            ...abortOpts(signal),
+            ...(source.sourceAuthorization && {
+              sourceAuthorization: source.sourceAuthorization,
+            }),
+          });
+        } catch (error) {
+          if (
+            !(await exceedsSyncCopyLimit(azureErrorFields(error), from, signal))
+          ) {
+            throw error;
+          }
+          await copyAsync(from, to, signal);
+        }
       } catch (error) {
         throw mapAzureError(error);
       }

@@ -33,7 +33,7 @@ Every form but `exists` returns the same `BulkResult` shape: successes in `resul
 - **`concurrency`** (default 8) — how many per-key ops run in parallel.
 - **`stopOnError: true`** — bail at the first failure, returning results gathered so far plus that error. Runs **sequentially** (ignores `concurrency`).
 - **No `signal` or `retries`** — bulk calls aren't retried (`onRetry` never fires) and don't take a per-call signal; re-drive failed keys from `errors[]` instead. Cancellation/retries are single-key concerns.
-- **Native batch delete:** `delete([...])` uses a provider's native bulk primitive where it has one (S3-family `DeleteObjects` chunked at 1000, Azure Blob Batch chunked at 256, Supabase, UploadThing; FTP/SFTP run the whole batch over one connection) and ignores `concurrency`; others fall back to bounded fan-out. The other four methods always fan out (no provider batch primitive).
+- **Native batch delete:** `delete([...])` uses a provider's native bulk primitive where it has one (S3-family `DeleteObjects` chunked at 1000, Azure Blob Batch chunked at 256, Supabase chunked at 1000, UploadThing; FTP/SFTP run the whole batch over one connection) and ignores `concurrency`; others fall back to bounded fan-out. The other four methods always fan out (no provider batch primitive).
 - **Hooks:** one aggregated `onAction` per call (carries `keys` + the aggregated result; per-item failures live in `result.errors`, not `onError`).
 - **`prefix`** is honored throughout — resolved on the way in, stripped on the way out.
 
@@ -53,7 +53,7 @@ await files.move("uploads/tmp-abc.png", "avatars/user-123.png");
 await files.file("avatars/user-123.png").moveFrom("uploads/tmp-abc.png");
 ```
 
-Uses the adapter's native rename where one exists (`fs` renames in place atomically; FTP, SFTP, and WebDAV use the server's rename/`MOVE`; Cloudinary uses server-side `rename`, keeping the same `asset_id` with no re-upload; the in-memory adapter re-keys the entry) and otherwise falls back to `copy` + `delete` — the same two-step every object store takes (none offer an atomic move). Moving a key onto itself is a no-op, so the fallback can't delete a file out of existence. **Throws on Convex** (immutable storage ids, no rename), where `copy` also throws. Fires the lifecycle hooks with a `"move"` action type (`from`/`to`).
+Uses the adapter's native rename where one exists (`fs` renames in place atomically; FTP, SFTP, and WebDAV use the server's rename/`MOVE`, overwriting an existing destination like every other adapter — FTP servers that refuse to rename over a file, and SFTP generally, delete the destination first, so the key is briefly absent; Cloudinary uses server-side `rename`, keeping the same `asset_id` with no re-upload; the in-memory adapter re-keys the entry) and otherwise falls back to `copy` + `delete` — the same two-step every object store takes (none offer an atomic move). Moving a key onto itself is a no-op, so the fallback can't delete a file out of existence. **Throws on Convex** (immutable storage ids, no rename), where `copy` also throws. Fires the lifecycle hooks with a `"move"` action type (`from`/`to`).
 
 ## `listAll`
 

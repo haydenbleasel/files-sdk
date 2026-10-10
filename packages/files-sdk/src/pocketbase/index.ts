@@ -60,9 +60,11 @@ export interface PocketBaseAdapterOptions {
   /**
    * Pre-issued auth token. Saved into the client's `authStore` directly —
    * use this when you already have a token from elsewhere (e.g. an OAuth2
-   * exchange or a custom user auth flow). Falls back to
-   * `POCKETBASE_AUTH_TOKEN`. Mutually exclusive with the admin email/password
-   * pair; if both are provided, the explicit token wins.
+   * exchange or a custom user auth flow). Mutually exclusive with the admin
+   * email/password pair; if both are provided, this token wins. Falls back to
+   * `POCKETBASE_AUTH_TOKEN`, which is used ahead of `POCKETBASE_ADMIN_EMAIL` /
+   * `POCKETBASE_ADMIN_PASSWORD` but never ahead of `adminEmail` /
+   * `adminPassword` passed as options.
    */
   authToken?: string;
   /**
@@ -244,14 +246,24 @@ export const pocketbase = (
   // store reports it invalid) triggers a fresh login on the next call.
   let authPromise: Promise<void> | undefined;
   const doAuth = async (): Promise<void> => {
-    const explicitToken = opts.authToken ?? readEnv("POCKETBASE_AUTH_TOKEN");
-    if (explicitToken) {
-      pb.authStore.save(explicitToken, null);
+    // Precedence: the `authToken` option, then admin credentials passed as
+    // options, then `POCKETBASE_AUTH_TOKEN`, then the admin env vars. Options
+    // beat the environment, so a stale token left in the env can't shadow
+    // credentials passed in code.
+    if (opts.authToken) {
+      pb.authStore.save(opts.authToken, null);
       return;
     }
     const adminEmail = opts.adminEmail ?? readEnv("POCKETBASE_ADMIN_EMAIL");
     const adminPassword =
       opts.adminPassword ?? readEnv("POCKETBASE_ADMIN_PASSWORD");
+    const explicitAdmin =
+      opts.adminEmail !== undefined || opts.adminPassword !== undefined;
+    const envToken = readEnv("POCKETBASE_AUTH_TOKEN");
+    if (envToken && !(explicitAdmin && adminEmail && adminPassword)) {
+      pb.authStore.save(envToken, null);
+      return;
+    }
     if (adminEmail && adminPassword) {
       // PocketBase v0.23+ moved admins into the `_superusers` collection.
       await pb

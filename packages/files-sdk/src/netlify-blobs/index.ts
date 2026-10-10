@@ -255,6 +255,36 @@ const mapNetlifyError = (cause: unknown): FilesError => {
   return new FilesError(code, message, cause);
 };
 
+const KEY_PROBE_PREFIX = "/key/";
+const KEY_PROBE_BASE = "https://netlify-blobs.invalid";
+
+/**
+ * `@netlify/blobs` builds each request URL as `new URL(`/${site}/${store}/${key}`)`
+ * from the raw key, so URL parsing rewrites some keys before they're sent: a
+ * `#` starts a fragment and a `?` a query (`Invoice #42.pdf` stored as
+ * `Invoice `), `\` becomes `/`, tabs and newlines are dropped, trailing spaces
+ * and control characters are trimmed, and `.` / `..` segments are resolved
+ * (`../x` even leaves the store). Whether Netlify percent-decodes the path is
+ * undocumented (the SDK's local server doesn't), so a `%` can't be sent safely
+ * either, raw or encoded. Such keys are refused before any request rather than
+ * silently addressing a different blob.
+ */
+const assertAddressableKey = (key: string): void => {
+  // Without a `%` in the key, every escape in the parsed path came from URL
+  // encoding, so decoding it gives back exactly what the URL still names.
+  const path = new URL(`${KEY_PROBE_PREFIX}${key}`, KEY_PROBE_BASE).pathname;
+  if (
+    !key.includes("%") &&
+    decodeURIComponent(path) === `${KEY_PROBE_PREFIX}${key}`
+  ) {
+    return;
+  }
+  throw new FilesError(
+    "Invalid",
+    `netlify-blobs: key ${JSON.stringify(key)} can't be addressed. @netlify/blobs puts keys into request URLs unencoded, so "#", "?", "%", "\\", tabs and newlines, trailing spaces or control characters, and "." / ".." path segments would name a different blob. Rename the key.`
+  );
+};
+
 const unpackUserMetadata = (
   meta: NetlifyMetadata | undefined
 ): Record<string, string> | undefined => {
@@ -452,6 +482,8 @@ export const netlifyBlobs = (
       // Refresh `__lastModified` to the time of the copy — the destination
       // is a new write, not a clone of the source's mtime (matches S3
       // server-side copy semantics).
+      assertAddressableKey(from);
+      assertAddressableKey(to);
       try {
         const src = await store.getWithMetadata(from, {
           type: "arrayBuffer",
@@ -467,6 +499,7 @@ export const netlifyBlobs = (
       }
     },
     async delete(key) {
+      assertAddressableKey(key);
       try {
         // Netlify's delete is idempotent — succeeds whether or not the key
         // existed. Matches the unified contract.
@@ -476,6 +509,7 @@ export const netlifyBlobs = (
       }
     },
     async download(key, downloadOpts) {
+      assertAddressableKey(key);
       try {
         if (downloadOpts?.as === "stream") {
           const result = await store.getWithMetadata(key, { type: "stream" });
@@ -527,6 +561,7 @@ export const netlifyBlobs = (
       }
     },
     async exists(key) {
+      assertAddressableKey(key);
       let result: Awaited<ReturnType<Store["getMetadata"]>>;
       try {
         result = await store.getMetadata(key);
@@ -540,6 +575,7 @@ export const netlifyBlobs = (
       return result !== null;
     },
     async head(key) {
+      assertAddressableKey(key);
       let result: Awaited<ReturnType<Store["getMetadata"]>>;
       try {
         result = await store.getMetadata(key);
@@ -617,6 +653,7 @@ export const netlifyBlobs = (
       );
     },
     async upload(key, body, options): Promise<UploadResult> {
+      assertAddressableKey(key);
       const contentType = inferContentType(body, options?.contentType);
       let storable: Awaited<ReturnType<typeof bodyToStorable>>;
       try {

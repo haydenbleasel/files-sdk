@@ -60,7 +60,7 @@ export const adminApp = getApps().length
   : initializeApp({ storageBucket: process.env.FIREBASE_STORAGE_BUCKET });
 ```
 
-The same app verifies ID tokens and backs the storage adapter. `firebaseStorage({ app: adminApp })` reuses it instead of initializing a second one, and picks the bucket from `FIREBASE_STORAGE_BUCKET`, then from the app's `storageBucket`.
+The same app verifies ID tokens and backs the storage adapter. `firebaseStorage({ app: adminApp })` reuses it instead of initializing a second one, and picks the bucket from the app's `storageBucket`, then from `FIREBASE_STORAGE_BUCKET`.
 
 ## Verify the ID token in authorize
 
