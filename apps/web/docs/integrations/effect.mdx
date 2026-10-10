@@ -90,7 +90,7 @@ Each reason carries the SDK error's fields: `message`, `permanent`, `timedOut`, 
 
 ### Retries
 
-The instance's own [`retries`](/docs/retries) still apply. If you'd rather retry with an Effect `Schedule`, leave `retries` unset and retry only what the SDK would: a `Provider` failure that isn't `permanent`. Both together multiply the attempts.
+The instance's own [`retries`](/docs/retries) still apply. If you'd rather retry with an Effect `Schedule`, leave `retries` unset and retry only what the SDK would: a `Provider` failure that isn't `permanent` or `aborted` (including timeouts). Both together multiply the attempts.
 
 ```ts lineNumbers
 import { Effect, Schedule } from "effect";
@@ -103,14 +103,16 @@ const info = Effect.gen(function* () {
     schedule: Schedule.exponential("100 millis"),
     times: 3,
     while: (error) =>
-      error.reason._tag === "Provider" && !error.reason.permanent,
+      error.reason._tag === "Provider" &&
+      !error.reason.permanent &&
+      !error.reason.aborted,
   })
 );
 ```
 
 ## Cancellation
 
-Each operation passes its fiber's `AbortSignal` to the call as `signal`, so interrupting the fiber aborts the provider request, the same as an [abort signal](/docs/cancellations) does without Effect. `Effect.timeout`, a lost `Effect.race`, and a closed scope all interrupt:
+Each single-object operation passes its fiber's `AbortSignal` to the SDK call as `signal`, so interrupting the fiber stops waiting for the operation and forwards the abort signal to the adapter, as described in [cancellation](/docs/cancellations). **This does not guarantee the underlying provider request stops**: some provider SDKs cannot cancel in-flight requests and may finish them in the background. `Effect.timeout`, a lost `Effect.race`, and a closed scope all interrupt:
 
 ```ts lineNumbers
 const download = Effect.gen(function* () {
@@ -127,7 +129,7 @@ The array (bulk) forms take no per-call `signal` in the SDK, so they run to comp
 
 ## Downloads, listings, and search
 
-`download` resolves to a `DownloadedFile`: the object's metadata (`key`, `size`, `contentType`, `etag`, `lastModified`, `metadata`) plus its body as Effect values. `text`, `arrayBuffer`, and `blob` buffer the body and can be run more than once. `stream` reads it unbuffered as a `Stream<Uint8Array>`, and interrupting the stream cancels the read. As with the SDK's [`StoredFile`](/docs/api/stored-file), use one or the other: a body read as a stream can't be read again. `file` is the SDK's `StoredFile`, for APIs that take a `File`-like value.
+`download` resolves to a `DownloadedFile`: the object's metadata (`key`, `size`, `contentType`, `etag`, `lastModified`, `metadata`) plus its body as Effect values. `text`, `arrayBuffer`, and `blob` buffer the body and can be run more than once. These buffered accessors do not have their own cancellation signal, so interrupting their Effects does not necessarily stop an in-progress body read. For large downloads that need cancellation, prefer `stream`: it reads unbuffered as a `Stream<Uint8Array>`, and interruption cancels the stream reader. As with the SDK's [`StoredFile`](/docs/api/stored-file), use one or the other: a body read as a stream can't be read again. `file` is the SDK's `StoredFile`, for APIs that take a `File`-like value.
 
 `listAll` and `search` are Streams that fetch one page at a time. Stopping the stream early (`Stream.take`, an interruption) aborts any page in flight and fetches no more.
 
