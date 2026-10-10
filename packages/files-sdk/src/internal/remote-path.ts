@@ -58,6 +58,11 @@ export const trimSlashes = (s: string): string => {
   return start === 0 && end === s.length ? s : s.slice(start, end);
 };
 
+// A Windows drive designator: `C:` alone is the drive's root once joined to an
+// empty root (`C:/Windows/win.ini`), and `C:name` is relative to that drive's
+// current directory. Either way the path leaves the adapter root.
+const DRIVE_LETTER = /^[A-Za-z]:/u;
+
 /**
  * Split a virtual key into clean path segments. Drops empty and `.` segments,
  * and throws `Invalid` on a `..` segment or an embedded null byte — those are
@@ -65,12 +70,23 @@ export const trimSlashes = (s: string): string => {
  * underlying protocol command — and on a key with no segment left (`"/"`,
  * `"."`, `"./"`), which would address the root directory itself rather than
  * an object under it. Pure string math: no host filesystem is touched.
+ *
+ * Servers on Windows hosts (OpenSSH, IIS FTP and WebDAV) also treat `\` as a
+ * separator and a leading drive letter as an absolute path, so a key with a
+ * backslash (`..\..\x` would slip past the `..` check as one segment) or one
+ * whose first segment starts with a drive letter is refused too.
  */
 const normalizeKeySegments = (key: string): string[] => {
   if (key.includes("\0")) {
     throw new FilesError(
       "Invalid",
       `key must not contain null bytes: ${JSON.stringify(key)}`
+    );
+  }
+  if (key.includes("\\")) {
+    throw new FilesError(
+      "Invalid",
+      `key must not contain backslashes: ${JSON.stringify(key)}`
     );
   }
   const segments: string[] = [];
@@ -93,6 +109,12 @@ const normalizeKeySegments = (key: string): string[] => {
     throw new FilesError(
       "Invalid",
       `key must name an object below the adapter root: ${JSON.stringify(key)}`
+    );
+  }
+  if (DRIVE_LETTER.test(segments[0] ?? "")) {
+    throw new FilesError(
+      "Invalid",
+      `key must not start with a drive letter: ${JSON.stringify(key)}`
     );
   }
   return segments;

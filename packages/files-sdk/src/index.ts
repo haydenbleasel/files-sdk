@@ -54,6 +54,7 @@ export type {
   OffsetResumableDriver,
   PartMeta,
   PartsResumableDriver,
+  ResumableCallOptions,
   ResumableDriver,
   ResumableDriverOptions,
   ResumableUploadSession,
@@ -1528,6 +1529,55 @@ const assertValidKey = (key: string, label = "key"): void => {
   }
 };
 
+const isPositiveInteger = (value: number): boolean =>
+  Number.isSafeInteger(value) && value > 0;
+
+/**
+ * Reject a count, size, or lifetime option that isn't a positive integer.
+ * Left unchecked, each one fails somewhere far from the call: a `limit` of
+ * `-1` drops the last key of a walk, an `expiresIn` of `0` signs a URL that is
+ * dead on arrival, a fractional `partSize` slices empty parts forever. Absent
+ * (`undefined`) means "use the default" and passes.
+ */
+const assertPositiveInteger = (
+  value: number | undefined,
+  label: string,
+  unit?: string
+): void => {
+  if (value === undefined || isPositiveInteger(value)) {
+    return;
+  }
+  throw new FilesError(
+    "Invalid",
+    `${label} must be a positive integer${unit ? ` number of ${unit}` : ""}; got ${String(value)}`
+  );
+};
+
+const assertValidMultipartOptions = (
+  multipart: UploadOptions["multipart"]
+): void => {
+  if (!isObject(multipart)) {
+    return;
+  }
+  assertPositiveInteger(multipart.partSize, "multipart.partSize", "bytes");
+  assertPositiveInteger(multipart.concurrency, "multipart.concurrency");
+};
+
+/**
+ * The numeric-option checks for one operation, shared by the gate that runs
+ * before any plugin and the inner verbs that catch a value a plugin injects.
+ */
+const assertValidOperationOptions = (op: FilesOperation): void => {
+  if (op.kind === "upload") {
+    const opts: UploadOptions | undefined = op.options;
+    assertValidMultipartOptions(opts?.multipart);
+  } else if (op.kind === "list") {
+    assertPositiveInteger(op.options?.limit, "limit");
+  } else if (op.kind === "url" || op.kind === "signedUploadUrl") {
+    assertPositiveInteger(op.options?.expiresIn, "expiresIn", "seconds");
+  }
+};
+
 const assertCanonicalStrongEtag: (
   etag: unknown,
   label?: string
@@ -2073,8 +2123,10 @@ export class Files<A extends Adapter = Adapter> {
       // is about to reject. The inner gates still catch options a plugin
       // injects on the way in, but they read only the adapter's declaration —
       // so this is also the one place a plugin that narrows a capability
-      // without wrapping anything gets that narrowing enforced.
+      // without wrapping anything gets that narrowing enforced. A malformed
+      // numeric option is refused here for the same reason.
       try {
+        assertValidOperationOptions(op);
         this.#assertSupportedBeforePlugins(op);
       } catch (error) {
         return Promise.reject(error);
@@ -2164,6 +2216,18 @@ export class Files<A extends Adapter = Adapter> {
       }
     };
 
+    // Once the native call has committed, any rejection that follows — an
+    // awaited plugin throwing after `next()`, or a post-commit check failing
+    // below — describes an applied-but-unacknowledged mutation. Mark it so
+    // hooks, audit, and callers can tell it apart from a veto or a provider
+    // failure, and know to reconcile rather than retry the same predicate.
+    // Idempotent, so a rejection marked on its way through an inner layer
+    // keeps its identity (and its original `cause`) as it bubbles outward.
+    const applied = (cause: unknown): FilesError =>
+      cause instanceof FilesError && cause.applied
+        ? cause
+        : FilesError.applied(cause, nativeUploadEtag);
+
     const guardedBase: InternalNext = async (nextOp) => {
       if (settlement.state !== "idle") {
         // The once-only rule is documented, but when the first call failed
@@ -2177,32 +2241,29 @@ export class Files<A extends Adapter = Adapter> {
         );
       }
       settlement.state = "pending";
+      let result: AnyOperationResult;
       try {
-        const result = await base(nextOp);
-        if (op.kind === "upload") {
-          assertConditionalUploadResult(result);
-          nativeUploadEtag = result.etag;
-        }
-        settlement.state = "success";
-        return result;
+        result = await base(nextOp);
       } catch (error) {
         settlement.state = "error";
         baseFailure = error;
         throw error;
       }
+      // The provider accepted the write, so it has committed whatever the
+      // result looks like: a malformed ETag is a post-commit failure, marked
+      // applied (with no `appliedEtag`, since there's no usable one).
+      settlement.state = "success";
+      if (op.kind === "upload") {
+        try {
+          assertConditionalUploadResult(result);
+        } catch (error) {
+          throw applied(error);
+        }
+        nativeUploadEtag = result.etag;
+      }
+      return result;
     };
 
-    // Once the native call has committed, any rejection that follows — an
-    // awaited plugin throwing after `next()`, or a post-commit check failing
-    // below — describes an applied-but-unacknowledged mutation. Mark it so
-    // hooks, audit, and callers can tell it apart from a veto or a provider
-    // failure, and know to reconcile rather than retry the same predicate.
-    // Idempotent, so a rejection marked on its way through an inner layer
-    // keeps its identity (and its original `cause`) as it bubbles outward.
-    const applied = (cause: unknown): FilesError =>
-      cause instanceof FilesError && cause.applied
-        ? cause
-        : FilesError.applied(cause, nativeUploadEtag);
     const markCommitted = async (
       pending: Promise<AnyOperationResult>
     ): Promise<AnyOperationResult> => {
@@ -2464,7 +2525,8 @@ export class Files<A extends Adapter = Adapter> {
       case "url": {
         const ctx: ActionContext = { key: op.key, type: "url" };
         const path = this.#path(op.key);
-        // Also catches an `expiresIn` a plugin injected on the way in.
+        // Both checks also catch an `expiresIn` a plugin injected on the way in.
+        assertValidOperationOptions(op);
         if (
           op.options?.expiresIn !== undefined &&
           this.#declared().signedUrl?.supported !== true
@@ -2484,6 +2546,7 @@ export class Files<A extends Adapter = Adapter> {
       case "signedUploadUrl": {
         const ctx: ActionContext = { key: op.key, type: "signedUploadUrl" };
         const path = this.#path(op.key);
+        assertValidOperationOptions(op);
         // SAFETY: the public `signedUploadUrl(key, opts)` always supplies
         // options and `#run` hands that same object back (minus
         // `retries`/`timeout`); `op.options` is optional only because every
@@ -2508,6 +2571,7 @@ export class Files<A extends Adapter = Adapter> {
   /** The prefix-aware `list` body, extracted so {@link Files.#perform} stays flat. */
   #performList(opts?: ListOptions): Promise<ListResult> {
     const ctx: ActionContext = { type: "list" };
+    assertPositiveInteger(opts?.limit, "limit");
     this.#assertDelimiterSupported(opts);
     if (!this.#prefix) {
       return this.#run(
@@ -3032,6 +3096,9 @@ export class Files<A extends Adapter = Adapter> {
     ctx?: ActionContext,
     conditional?: Extract<ConditionalFilesOperation, { kind: "upload" }>
   ): Promise<UploadResult> {
+    // Every upload path reads `multipart` from here: the adapter's own
+    // multipart upload, the resumable orchestrator, and the bulk form.
+    assertValidMultipartOptions(opts?.multipart);
     this.#assertUploadOptionsSupported(opts);
     const path = this.#path(key);
     if (
@@ -3084,15 +3151,16 @@ export class Files<A extends Adapter = Adapter> {
           await this.#adapter.upload(path, uploadBody, attemptOpts)
         );
       }
-      const result = this.#uploadResult(
+      // The result's ETag is checked by the conditional dispatcher once this
+      // returns: the write has committed by then, so a failed check must be
+      // reported as applied rather than as a plain provider failure.
+      return this.#uploadResult(
         await nativeConditionalUpload(
           path,
           uploadBody,
           toAdapterUploadOptions(attemptOpts)
         )
       );
-      assertConditionalUploadResult(result);
-      return result;
     };
 
     if (!onProgress) {
@@ -3187,8 +3255,9 @@ export class Files<A extends Adapter = Adapter> {
    * Gates on the adapter's optional {@link Adapter.resumableUpload} capability
    * (mirroring {@link Files.#assertRangeSupported}) and on a re-readable body,
    * then hands off to the orchestrator. Bypasses {@link Files.#run} — the
-   * orchestrator owns per-chunk retry and abort, so retrying the whole call
-   * would restart the upload from zero.
+   * orchestrator owns retry, timeout, and abort for each provider call (the
+   * session calls and every chunk), so retrying the whole call would restart
+   * the upload from zero.
    */
   async #runResumable(
     path: string,
@@ -3920,7 +3989,18 @@ export class Files<A extends Adapter = Adapter> {
       caseInsensitive = false,
       ...rest
     } = opts ?? {};
-    if (maxResults !== undefined && maxResults <= 0) {
+    // `0` is a valid "no matches wanted"; a negative, fractional, or `NaN` cap
+    // would otherwise yield nothing, one extra match, or everything.
+    if (
+      maxResults !== undefined &&
+      !(Number.isSafeInteger(maxResults) && maxResults >= 0)
+    ) {
+      throw new FilesError(
+        "Invalid",
+        `maxResults must be a non-negative integer; got ${String(maxResults)}`
+      );
+    }
+    if (maxResults === 0) {
       return;
     }
     const matches = buildSearchMatcher(pattern, match, caseInsensitive);

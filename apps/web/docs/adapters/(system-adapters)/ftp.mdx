@@ -13,9 +13,9 @@ files-sdk basic-ftp
 
 ## Usage
 
-FTP and FTPS via the [`basic-ftp`](https://www.npmjs.com/package/basic-ftp) library. Virtual keys map to paths under a configurable `root` on the server, with a `..` traversal guard. **Node-only** — FTP uses raw sockets, so this adapter does not run on edge/browser/Workers runtimes.
+FTP and FTPS via the [`basic-ftp`](https://www.npmjs.com/package/basic-ftp) library. Virtual keys map to paths under a configurable `root` on the server, with a traversal guard that refuses `..` segments, backslashes, and a leading drive letter (`C:`), since servers on Windows hosts treat those as path syntax too. **Node-only** — FTP uses raw sockets, so this adapter does not run on edge/browser/Workers runtimes.
 
-By default the adapter opens a fresh connection per operation and closes it afterwards. For batch work, connect once and pass the `client` so every call reuses the same connection — you own its lifecycle.
+By default the adapter opens a fresh connection per operation and closes it afterwards. For batch work, connect once and pass the `client` so every call reuses the same connection — you own its lifecycle. An FTP connection runs one command at a time, so calls on an injected client queue and run one after another, bulk calls and `Promise.all` included. A streamed download (`as: "stream"`) holds the client until the stream is read to the end or cancelled, so consume or cancel it before you expect later calls to run.
 
 ```ts lineNumbers
 import { Files } from "files-sdk";
@@ -50,7 +50,7 @@ Auth falls back to `FTP_HOST`, `FTP_USERNAME` (alias `FTP_USER`), `FTP_PASSWORD`
 
 Connect-per-operation means a high call rate becomes a high connection rate, and FTP servers commonly cap connections per IP - inject a pre-connected `client` for batch jobs.
 
-Resumable uploads (`upload({ control })`) append each chunk to a `<key>.fls-part` staging file next to the target and rename it over the key only when the upload completes, so an existing object stays readable until then and `abort()` removes just the partial. `list()` hides staging files, and writes to keys ending in `.fls-part` throw. Servers that refuse to rename onto an existing file (IIS, for one) have the target deleted and the rename retried, so the key is briefly absent at that moment.
+Resumable uploads (`upload({ control })`) append each chunk to a `<key>.fls-part` staging file next to the target and rename it over the key only when the upload completes, so an existing object stays readable until then and `abort()` removes just the partial. `list()` hides staging files, and writes to keys ending in `.fls-part` throw. Servers that refuse to rename onto an existing file (IIS, for one) have the target deleted and the rename retried, so the key is briefly absent at that moment. `move()` overwrites an existing destination the same way.
 
 ## Compatibility
 
@@ -64,5 +64,6 @@ Resumable uploads (`upload({ control })`) append each chunk to a `<key>.fls-part
 | `head` | ⚠️ | FTP stores no content type, etag, or user metadata - `head()` infers the type from the key's extension (or `application/octet-stream`) and returns no etag. `size` comes from `SIZE`; `lastModified` is an `MDTM` probe that many servers don't support, so it can be absent. |
 | `exists` | ✅ |  |
 | `copy` | ⚠️ | Read-then-write - FTP has no server-side copy, so the source is downloaded and re-uploaded over one connection. The whole object is buffered in memory; not atomic. |
+| `move` | ✅ | Native rename (`RNFR`/`RNTO`), no body round-trip. An existing destination is overwritten like the other adapters: Unix servers replace it atomically, and on servers that refuse (IIS) the destination is deleted and the rename retried, so the key is briefly absent. |
 | `url` | ❌ | Throws unless `publicBaseUrl` is set (an HTTP server fronting the same tree), in which case it returns `<publicBaseUrl>/<key>`. FTP serves no HTTP and has no signing primitive. `responseContentDisposition` always throws because the HTTP-front URL cannot bind the override. |
 | `signedUploadUrl` | ❌ | Throws - FTP has no presigned-upload concept. Use `upload()`, or inject a pre-connected `client` for batch transfers. |

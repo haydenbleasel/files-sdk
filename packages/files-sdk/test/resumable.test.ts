@@ -1191,3 +1191,491 @@ describe("files.abortUpload", () => {
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Option validation, stalled drivers, and the session calls (begin / probe /
+// complete) running under the same timeout, abort, and retry rules as chunks.
+// ---------------------------------------------------------------------------
+
+const filesWithDriver = (
+  driver: ResumableDriver,
+  opts?: { retries?: number; timeout?: number }
+): Files =>
+  new Files({
+    adapter: {
+      copy: unsupported,
+      delete: unsupported,
+      download: unsupported,
+      exists: unsupported,
+      head: unsupported,
+      list: unsupported,
+      name: "fake-custom",
+      raw: {},
+      resumableUpload: () => driver,
+      signedUploadUrl: unsupported,
+      upload: unsupported,
+      url: unsupported,
+    },
+    ...(opts?.retries !== undefined && {
+      retries: { backoff: () => 0, max: opts.retries },
+    }),
+    ...(opts?.timeout !== undefined && { timeout: opts.timeout }),
+  });
+
+const gcsToken: ResumableUploadSession = {
+  bucket: "b",
+  key: "k",
+  provider: "gcs",
+  uri: "uri-k",
+};
+
+const offsetDriver = (
+  overrides: Partial<OffsetResumableDriver> = {}
+): OffsetResumableDriver => ({
+  adopt: () => {
+    // Any token is accepted.
+  },
+  begin: () => Promise.resolve(gcsToken),
+  complete: () => Promise.resolve({ contentType: "x", key: "k", size: 8 }),
+  discard: () => Promise.resolve(),
+  mode: "offset",
+  partSize: 4,
+  probe: () => Promise.resolve({ nextOffset: 0 }),
+  uploadAt: ({ offset, data }) =>
+    Promise.resolve({ nextOffset: offset + data.byteLength }),
+  ...overrides,
+});
+
+describe("resumable option validation", () => {
+  test.each([
+    ["parts", { partSize: 0.5 }],
+    ["parts", { partSize: -1 }],
+    ["parts", { concurrency: 0.5 }],
+    ["offset", { partSize: 0.5 }],
+    ["offset", { partSize: 0 }],
+    ["offset", { concurrency: -2 }],
+  ] as const)(
+    "%s: multipart %j is Invalid before a session opens",
+    async (mode, multipart) => {
+      // A fractional part size used to slice empty chunks forever, `-1`
+      // dropped the last byte, and a fractional concurrency committed an
+      // empty part list.
+      const server = newServer();
+      const files = makeFiles(server, mode);
+      await expect(
+        files.upload("v.bin", new Uint8Array(10), {
+          control: new UploadControl(),
+          multipart,
+        })
+      ).rejects.toMatchObject({ code: "Invalid", permanent: true });
+      expect(server.uploadIds).toBe(0);
+      expect(server.objects.size).toBe(0);
+    }
+  );
+
+  test("a resume token's unusable part size is refused before any chunk", async () => {
+    // Azure, S3, and Vercel Blob read the part size back from the token.
+    let uploads = 0;
+    const driver: PartsResumableDriver = {
+      adopt: () => {
+        // Accepts the (tampered) token.
+      },
+      begin: () => Promise.reject(new Error("not a fresh upload")),
+      complete: () => Promise.resolve({ contentType: "x", key: "k", size: 0 }),
+      discard: () => Promise.resolve(),
+      mode: "parts",
+      partSize: -1,
+      probe: () => Promise.resolve({ committedParts: [] }),
+      uploadPart: ({ partNumber, data }) => {
+        uploads += 1;
+        return Promise.resolve({ partNumber, size: data.byteLength });
+      },
+    };
+    const control = UploadControl.from(partsToken("k"));
+    await expect(
+      filesWithDriver(driver).upload("k", new Uint8Array(10), { control })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/part size must be a positive integer/u),
+    });
+    expect(uploads).toBe(0);
+    expect(control.status).toBe("error");
+  });
+});
+
+describe("resumable drivers that don't make progress", () => {
+  test("an offset chunk acknowledged without advancing fails instead of looping", async () => {
+    let calls = 0;
+    const driver = offsetDriver({
+      uploadAt: ({ offset }) => {
+        calls += 1;
+        return Promise.resolve({ nextOffset: offset });
+      },
+    });
+    await expect(
+      filesWithDriver(driver, { retries: 2 }).upload("k", new Uint8Array(8), {
+        control: new UploadControl(),
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/made no progress/u),
+    });
+    // Treated like any transient chunk failure: re-sent within the budget.
+    expect(calls).toBe(3);
+  });
+
+  test("an offset driver reporting NaN fails instead of finalizing", async () => {
+    let completed = false;
+    const driver = offsetDriver({
+      complete: () => {
+        completed = true;
+        return Promise.resolve({ contentType: "x", key: "k", size: 8 });
+      },
+      uploadAt: () => Promise.resolve({ nextOffset: Number.NaN }),
+    });
+    await expect(
+      filesWithDriver(driver).upload("k", new Uint8Array(8), {
+        control: new UploadControl(),
+      })
+    ).rejects.toMatchObject({ message: expect.stringMatching(/NaN/u) });
+    expect(completed).toBe(false);
+  });
+
+  test("a stalled chunk that lands on a retry still completes", async () => {
+    let calls = 0;
+    const driver = offsetDriver({
+      uploadAt: ({ offset, data }) => {
+        calls += 1;
+        return Promise.resolve({
+          nextOffset: calls === 1 ? offset : offset + data.byteLength,
+        });
+      },
+    });
+    const result = await filesWithDriver(driver, { retries: 1 }).upload(
+      "k",
+      new Uint8Array(8),
+      { control: new UploadControl() }
+    );
+    expect(result.size).toBe(8);
+    expect(calls).toBe(3);
+  });
+
+  test("parts that don't rebuild the body are never committed", async () => {
+    let completed = false;
+    const driver: PartsResumableDriver = {
+      adopt: () => {
+        // Unused: a fresh upload.
+      },
+      begin: () => Promise.resolve(partsToken("k")),
+      complete: () => {
+        completed = true;
+        return Promise.resolve({ contentType: "x", key: "k", size: 0 });
+      },
+      discard: () => Promise.resolve(),
+      mode: "parts",
+      partSize: 4,
+      probe: () => Promise.resolve({ committedParts: [] }),
+      // Reports one byte short per part, as a buggy driver might.
+      uploadPart: ({ partNumber, data }) =>
+        Promise.resolve({ partNumber, size: data.byteLength - 1 }),
+    };
+    await expect(
+      filesWithDriver(driver).upload("k", new Uint8Array(10), {
+        control: new UploadControl(),
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/3 of 3 parts, 7 of 10 bytes/u),
+      permanent: true,
+    });
+    expect(completed).toBe(false);
+  });
+});
+
+describe("resumable session calls run like chunks", () => {
+  test("begin(), probe(), and complete() each receive the attempt's signal", async () => {
+    const seen: (AbortSignal | undefined)[] = [];
+    const driver = offsetDriver({
+      begin: ({ signal }) => {
+        seen.push(signal);
+        return Promise.resolve(gcsToken);
+      },
+      complete: (_parts, opts) => {
+        seen.push(opts?.signal);
+        return Promise.resolve({ contentType: "x", key: "k", size: 8 });
+      },
+      probe: (opts) => {
+        seen.push(opts?.signal);
+        return Promise.resolve({ nextOffset: 0 });
+      },
+    });
+    const files = filesWithDriver(driver);
+    await files.upload("k", new Uint8Array(8), {
+      control: new UploadControl(),
+    });
+    await files.upload("k", new Uint8Array(8), {
+      control: UploadControl.from(gcsToken),
+    });
+    expect(seen).toHaveLength(4);
+    for (const signal of seen) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  test("a hung begin() honors the timeout, and a session it opens late is discarded", async () => {
+    let discards = 0;
+    let beginSignal: AbortSignal | undefined;
+    const driver = offsetDriver({
+      begin: async ({ signal }) => {
+        beginSignal = signal;
+        await delay(40);
+        return gcsToken;
+      },
+      discard: () => {
+        discards += 1;
+        return Promise.resolve();
+      },
+    });
+    const control = new UploadControl();
+    await expect(
+      filesWithDriver(driver, { timeout: 10 }).upload("k", new Uint8Array(8), {
+        control,
+      })
+    ).rejects.toMatchObject({ timedOut: true });
+    expect(beginSignal?.aborted).toBe(true);
+    expect(control.session).toBeUndefined();
+    expect(discards).toBe(0);
+    await delay(60);
+    expect(discards).toBe(1);
+  });
+
+  test("a begin() that fails after the timeout leaves nothing to discard", async () => {
+    let discards = 0;
+    const driver = offsetDriver({
+      begin: async () => {
+        await delay(30);
+        throw new Error("too late anyway");
+      },
+      discard: () => {
+        discards += 1;
+        return Promise.resolve();
+      },
+    });
+    await expect(
+      filesWithDriver(driver, { timeout: 5 }).upload("k", new Uint8Array(8), {
+        control: new UploadControl(),
+      })
+    ).rejects.toMatchObject({ timedOut: true });
+    await delay(50);
+    expect(discards).toBe(0);
+  });
+
+  test("control.abort() and a caller signal both reject a hung begin()", async () => {
+    const hung = offsetDriver({
+      begin: () =>
+        // oxlint-disable-next-line promise/avoid-new -- a provider call that never settles
+        new Promise<ResumableUploadSession>(() => {
+          // Never settles: a stuck connection.
+        }),
+    });
+    const control = new UploadControl();
+    const viaControl = filesWithDriver(hung).upload("k", new Uint8Array(8), {
+      control,
+    });
+    await tick();
+    await control.abort();
+    await expect(viaControl).rejects.toMatchObject({ aborted: true });
+    expect(control.status).toBe("aborted");
+
+    const caller = new AbortController();
+    const viaSignal = filesWithDriver(hung).upload("k", new Uint8Array(8), {
+      control: new UploadControl(),
+      signal: caller.signal,
+    });
+    await tick();
+    caller.abort();
+    await expect(viaSignal).rejects.toMatchObject({ aborted: true });
+  });
+
+  test("transient begin() and probe() failures are retried", async () => {
+    let begins = 0;
+    let probes = 0;
+    const driver = offsetDriver({
+      begin: () => {
+        begins += 1;
+        return begins === 1
+          ? Promise.reject(new FilesError("Provider", "503 SlowDown"))
+          : Promise.resolve(gcsToken);
+      },
+      probe: () => {
+        probes += 1;
+        return probes === 1
+          ? Promise.reject(new FilesError("Provider", "503 SlowDown"))
+          : Promise.resolve({ nextOffset: 4 });
+      },
+    });
+    const files = filesWithDriver(driver, { retries: 1 });
+    const fresh = await files.upload("k", new Uint8Array(8), {
+      control: new UploadControl(),
+    });
+    expect(fresh.size).toBe(8);
+    expect(begins).toBe(2);
+    const resumed = await files.upload("k", new Uint8Array(8), {
+      control: UploadControl.from(gcsToken),
+    });
+    expect(resumed.size).toBe(8);
+    expect(probes).toBe(2);
+  });
+
+  test("a transient complete() failure is retried", async () => {
+    let completes = 0;
+    const driver = offsetDriver({
+      complete: () => {
+        completes += 1;
+        return completes === 1
+          ? Promise.reject(new FilesError("Provider", "socket hang up"))
+          : Promise.resolve({ contentType: "x", key: "k", size: 8 });
+      },
+    });
+    const result = await filesWithDriver(driver, { retries: 2 }).upload(
+      "k",
+      new Uint8Array(8),
+      { control: new UploadControl() }
+    );
+    expect(result.size).toBe(8);
+    expect(completes).toBe(2);
+  });
+
+  test("a retried complete() that finds no session says the object may exist", async () => {
+    // The first CompleteMultipartUpload committed but its response was lost;
+    // the retry gets NoSuchUpload. That must not read as "never uploaded".
+    let completes = 0;
+    const first = new FilesError("Provider", "socket hang up");
+    const driver = offsetDriver({
+      complete: () => {
+        completes += 1;
+        return Promise.reject(
+          completes === 1
+            ? first
+            : new FilesError("NotFound", "NoSuchUpload", undefined, {
+                permanent: true,
+              })
+        );
+      },
+    });
+    const failure = await filesWithDriver(driver, { retries: 3 })
+      .upload("k", new Uint8Array(8), { control: new UploadControl() })
+      .catch((error: unknown) => error);
+    expect(failure).toMatchObject({
+      code: "Provider",
+      message: expect.stringMatching(/may have committed the object/u),
+      permanent: true,
+    });
+    expect((failure as FilesError).cause).toBe(first);
+    // Permanent, so the remaining retry budget isn't spent.
+    expect(completes).toBe(2);
+  });
+
+  test("a second complete() failure of another kind surfaces as itself", async () => {
+    let completes = 0;
+    const driver = offsetDriver({
+      complete: () => {
+        completes += 1;
+        return Promise.reject(new FilesError("Provider", `blip ${completes}`));
+      },
+    });
+    await expect(
+      filesWithDriver(driver, { retries: 1 }).upload("k", new Uint8Array(8), {
+        control: new UploadControl(),
+      })
+    ).rejects.toMatchObject({ code: "Provider", message: "blip 2" });
+  });
+
+  test("a hung complete() honors the timeout", async () => {
+    const driver = offsetDriver({
+      complete: () =>
+        // oxlint-disable-next-line promise/avoid-new -- a provider call that never settles
+        new Promise<never>(() => {
+          // Never settles.
+        }),
+    });
+    const control = new UploadControl();
+    await expect(
+      filesWithDriver(driver, { timeout: 10 }).upload("k", new Uint8Array(8), {
+        control,
+      })
+    ).rejects.toMatchObject({ timedOut: true });
+    expect(control.status).toBe("error");
+  });
+});
+
+// Run `fn` after `n` microtask hops: sweeping `n` lands an abort inside a
+// provider call, in the hand-off just after it resolves, and later.
+const afterMicrotasks = (n: number, fn: () => void): void => {
+  if (n === 0) {
+    fn();
+    return;
+  }
+  queueMicrotask(() => afterMicrotasks(n - 1, fn));
+};
+
+describe("control.abort() at any point around the session calls", () => {
+  test("around begin(): rejects as aborted and discards the session exactly once", async () => {
+    for (let n = 0; n <= 16; n += 1) {
+      const control = new UploadControl();
+      let discards = 0;
+      const driver = offsetDriver({
+        begin: () => {
+          afterMicrotasks(n, () => {
+            void control.abort();
+          });
+          return Promise.resolve(gcsToken);
+        },
+        discard: () => {
+          discards += 1;
+          return Promise.resolve();
+        },
+        // Slow chunks keep every swept abort ahead of completion.
+        uploadAt: async ({ offset, data }) => {
+          await delay(5);
+          return { nextOffset: offset + data.byteLength };
+        },
+      });
+      // eslint-disable-next-line no-await-in-loop -- one microtask offset at a time
+      await expect(
+        filesWithDriver(driver).upload("k", new Uint8Array(8), { control })
+      ).rejects.toMatchObject({ aborted: true });
+      // eslint-disable-next-line no-await-in-loop -- let a late discard land
+      await delay(10);
+      expect([n, control.status, control.session, discards]).toEqual([
+        n,
+        "aborted",
+        undefined,
+        1,
+      ]);
+    }
+  });
+
+  test("around complete(): either completes or rejects as aborted, never both", async () => {
+    for (let n = 0; n <= 16; n += 1) {
+      const control = new UploadControl();
+      const driver = offsetDriver({
+        complete: () => {
+          afterMicrotasks(n, () => {
+            void control.abort();
+          });
+          return Promise.resolve({ contentType: "x", key: "k", size: 8 });
+        },
+      });
+      // eslint-disable-next-line no-await-in-loop -- one microtask offset at a time
+      const outcome = await filesWithDriver(driver)
+        .upload("k", new Uint8Array(8), { control })
+        .then(
+          () => "completed",
+          (error: unknown) =>
+            error instanceof FilesError && error.aborted ? "aborted" : "other"
+        );
+      expect([n, outcome]).toEqual([n, control.status]);
+    }
+  });
+});

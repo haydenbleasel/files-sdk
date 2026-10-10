@@ -76,7 +76,7 @@ A glob's auto push-down is disabled when `caseInsensitive` is set (a provider's 
 
 ## Stopping early
 
-`maxResults` caps the number of matches yielded; because the walk is lazy, it also stops paging once the cap is hit. Equivalently, `break` out of the loop.
+`maxResults` caps the number of matches yielded; because the walk is lazy, it also stops paging once the cap is hit. Equivalently, `break` out of the loop. `maxResults: 0` yields nothing; a negative or fractional cap (or `NaN`) throws an `Invalid` [`FilesError`](/docs/api/errors), as does a `limit` (the page size) that isn't a positive integer.
 
 ```ts lineNumbers
 // First 10 matches, then stop fetching pages:

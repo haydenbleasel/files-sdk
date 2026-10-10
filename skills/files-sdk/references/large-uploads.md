@@ -23,7 +23,7 @@ await files.upload("backups/db.tar", stream, {
 - **Dropbox**: streams `ReadableStream` bodies through its upload session chunk-by-chunk (never buffers the whole file); `partSize` rounds to a 4 MiB multiple. Buffered bodies over 150 MB use a concurrent session with `dropbox` 10.47+ (`concurrency` chunks in parallel, default 4; `concurrency: 1` keeps it sequential).
 - Everything else either streams natively or only takes a buffered body, so it ignores the flag — except the `fetch` S3 engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), which throws rather than buffer a body it was asked to chunk.
 
-Adapters that chunk natively round `partSize` to their own granularity (OneDrive → 320 KiB multiple, GCS/Firebase → 256 KiB); S3 enforces a 5 MiB minimum per part except the last, and caps an object at 10,000 parts (so very large objects need a big enough `partSize`). Memory footprint is up to `partSize × concurrency`. Multipart is still **one `upload` call** for retries/timeouts/cancellation — a failure retries the whole call, not a part. To retry individual parts and pause/resume, use `control` below.
+Adapters that chunk natively round `partSize` to their own granularity (OneDrive → 320 KiB multiple, GCS/Firebase → 256 KiB); S3 adapters raise `partSize` to the 5 MiB per-part minimum and, when the body's length is known, until it fits S3's 10,000-part cap (an unknown-length stream can't be fitted, so very large streams need a big enough `partSize`). Memory footprint is up to `partSize × concurrency`. Multipart is still **one `upload` call** for retries/timeouts/cancellation — a failure retries the whole call, not a part. To retry individual parts and pause/resume, use `control` below.
 
 ## `control` — resumable uploads
 
@@ -82,7 +82,8 @@ await files.abortUpload("backups/db.tar", token);
 - **Cross-process resume:** S3 + S3-compatible on the AWS SDK engine (token carries the `UploadId`; resume via `ListParts`, abort via `AbortMultipartUpload`), GCS, Firebase, Google Drive, Azure, OneDrive, SharePoint, Dropbox, Vercel Blob, local `fs`, FTP, and SFTP (these three stage to `<key>.fls-part` and rename onto the key on completion, so a partial upload is never visible at the key), Supabase (TUS), Appwrite, Cloudinary.
 - **In-process only** (`toJSON()` can't resume in a new process): Box, bun-s3, memory.
 - **Throws** an `Unsupported` `FilesError` when `control` is passed: Netlify Blobs, UploadThing, PocketBase, Bunny Storage, Convex, WebDAV, the R2 Workers binding, the fetch engine (`files-sdk/s3-fetch`, or `client: "fetch"` on `r2`/`minio`/`rustfs`), and the rest.
-- `partSize`/`concurrency` come from `multipart` and tune the same trade-off; each part is retried individually under the call's retry policy.
+- `partSize`/`concurrency` come from `multipart` and tune the same trade-off (both positive integers, else `Invalid` before any request); each part is retried individually under the call's retry policy.
+- Opening the session, the resume probe, and finalizing run like parts: per-attempt `timeout`, the caller's `signal` / `control.abort()`, and retries on transient `Provider` errors. A session that opens after its attempt timed out is discarded when it lands. A finalize retry that finds the session gone throws a permanent `Provider` error saying the object may already exist (first failure in `cause`): `head()` it before re-uploading.
 
 > The Supabase (TUS), Appwrite, and Cloudinary resumable drivers are built to each provider's documented protocol and covered by mocked tests, but haven't been exercised against a live account — verify end-to-end before relying on them in production.
 

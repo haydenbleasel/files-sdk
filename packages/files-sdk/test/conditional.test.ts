@@ -612,6 +612,44 @@ describe("conditional plugin boundary", () => {
     expect(failingHarness.base.has("a")).toBe(false);
   });
 
+  test("a non-canonical ETag from a committed native upload is reported as applied", async () => {
+    // The adapter's write succeeds but answers with a weak ETag: the object
+    // changed, so the post-commit check must mark the failure applied, with
+    // or without a plugin in the onion.
+    const passthrough: FilesPlugin = {
+      name: "passthrough",
+      wrap: (op, next) => next(op),
+    };
+    for (const plugins of [undefined, [passthrough]]) {
+      const harness = conditionalHarness();
+      const adapter: Adapter = {
+        ...harness.adapter,
+        conditional: {
+          ...harness.adapter.conditional,
+          create: async (key, body, uploadOptions) => {
+            const result = await harness.base.upload(key, body, uploadOptions);
+            return { ...result, etag: 'W/"weak"' };
+          },
+        },
+      };
+      // eslint-disable-next-line no-await-in-loop -- each plugin setup runs its own isolated upload
+      const failure = await new Files({ adapter, ...(plugins && { plugins }) })
+        .upload("a", "v", { condition: { type: "create" } })
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(FilesError);
+      expect(failure).toMatchObject({
+        applied: true,
+        code: "Provider",
+        message: expect.stringContaining(
+          "must return its new canonical strong ETag"
+        ),
+        permanent: true,
+      });
+      expect((failure as FilesError).appliedEtag).toBeUndefined();
+      expect(harness.base.has("a")).toBe(true);
+    }
+  });
+
   test("retrying next() after the native call failed carries the first failure as cause", async () => {
     const harness = conditionalHarness({ createFailures: 1 });
     let seen: unknown;

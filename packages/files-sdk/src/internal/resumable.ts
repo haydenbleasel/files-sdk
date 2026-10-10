@@ -293,6 +293,16 @@ export interface ResumableDriverOptions {
   metadata?: Record<string, string>;
 }
 
+/**
+ * The per-attempt signal the orchestrator hands a driver's session calls. It
+ * aborts on the attempt's `timeout`, the caller's `signal`, or
+ * `control.abort()`; a driver may pass it to its provider request. The
+ * orchestrator stops waiting on it either way.
+ */
+export interface ResumableCallOptions {
+  signal?: AbortSignal;
+}
+
 interface ResumableDriverBase {
   /**
    * Bytes per part/chunk, finalized by {@link begin} / {@link adopt}. Pinned in
@@ -303,11 +313,15 @@ interface ResumableDriverBase {
   begin: (meta: {
     total: number;
     contentType: string;
+    signal?: AbortSignal;
   }) => Promise<ResumableUploadSession>;
   /** Resume: load (and validate) a persisted token. Throws on a mismatch. */
   adopt: (session: ResumableUploadSession) => void;
   /** Finalize the upload into an {@link UploadResult}. */
-  complete: (parts: PartMeta[]) => Promise<UploadResult>;
+  complete: (
+    parts: PartMeta[],
+    opts?: ResumableCallOptions
+  ) => Promise<UploadResult>;
   /** Discard the provider session and any uploaded-but-uncommitted data. */
   discard: () => Promise<void>;
 }
@@ -316,7 +330,9 @@ interface ResumableDriverBase {
 export interface PartsResumableDriver extends ResumableDriverBase {
   readonly mode: "parts";
   /** Discover which parts already landed server-side (for resume). */
-  probe: () => Promise<{ committedParts: PartMeta[] }>;
+  probe: (
+    opts?: ResumableCallOptions
+  ) => Promise<{ committedParts: PartMeta[] }>;
   uploadPart: (part: {
     partNumber: number;
     data: Uint8Array;
@@ -328,7 +344,7 @@ export interface PartsResumableDriver extends ResumableDriverBase {
 export interface OffsetResumableDriver extends ResumableDriverBase {
   readonly mode: "offset";
   /** Discover the next byte the server expects (for resume). */
-  probe: () => Promise<{ nextOffset: number }>;
+  probe: (opts?: ResumableCallOptions) => Promise<{ nextOffset: number }>;
   uploadAt: (chunk: {
     offset: number;
     data: Uint8Array;
@@ -421,11 +437,33 @@ export interface RunResumableOptions {
 
 const DEFAULT_CONCURRENCY = 4;
 
+const isPositiveInteger = (value: number | undefined): value is number =>
+  value !== undefined && Number.isSafeInteger(value) && value > 0;
+
+// `Files` rejects a non-integer `concurrency` before it gets here; this only
+// guarantees the worker pool is never sized from one (a pool of `0.5` workers
+// rounds to none, and the run would commit an empty part list).
 const resolveConcurrency = (
   multipart: boolean | MultipartOptions | undefined
 ): number => {
   const concurrency = isObject(multipart) ? multipart.concurrency : undefined;
-  return concurrency && concurrency > 0 ? concurrency : DEFAULT_CONCURRENCY;
+  return isPositiveInteger(concurrency) ? concurrency : DEFAULT_CONCURRENCY;
+};
+
+/**
+ * Refuse a part size the slicing can't use. A fractional or non-positive size
+ * slices empty chunks (an offset loop that never advances) or a negative end
+ * (a part list that silently drops the last bytes). `Files` validates the
+ * caller's `multipart.partSize`; this also covers a size read back from a
+ * resume token or finalized by the driver.
+ */
+const assertPartSize = (partSize: number): void => {
+  if (!isPositiveInteger(partSize)) {
+    throw new FilesError(
+      "Invalid",
+      `resumable upload part size must be a positive integer number of bytes; got ${String(partSize)}`
+    );
+  }
 };
 
 /**
@@ -514,9 +552,10 @@ const pauseGate = async (
 };
 
 /**
- * Throw the control's aborted error if `control.abort()` has landed. Checked at
- * the points where the runners are about to finalize — an abort that arrives
- * once every chunk is up must still win over `complete()`.
+ * Throw the control's aborted error if `control.abort()` has landed. Every
+ * provider call (including `complete()`) runs under the control's signal, so
+ * this only guards the moment after the final call resolved: an abort that
+ * lands there must still win over reporting success.
  */
 const assertNotAborted = (state: ControlInternals): void => {
   if (state.abortController.signal.aborted) {
@@ -555,6 +594,104 @@ const attempt = async <T>(
       runtime.cleanup?.();
     }
   }
+};
+
+/** The per-attempt signal as a driver call's options, omitted when unset. */
+const callOptions = (
+  signal: AbortSignal | undefined
+): ResumableCallOptions | undefined => (signal ? { signal } : undefined);
+
+/** The latest `begin()` call, kept so a late session can be discarded. */
+interface BeginAttempt {
+  begun?: Promise<ResumableUploadSession>;
+}
+
+/**
+ * Open the provider session through {@link attempt}, so `begin()` honors the
+ * per-attempt `timeout`, the caller's `signal`, `control.abort()`, and the
+ * retry budget like every chunk does. Only a transient `Provider` failure is
+ * retried — never a timeout or abort — so a retry can't race a request that
+ * is still in flight. A failed `begin()` could still have opened a session the
+ * provider never acknowledged; that one is left to the provider's own cleanup
+ * (an S3 lifecycle rule, an expiring session URL), as before.
+ *
+ * Giving up on a hung `begin()` doesn't stop it, though: a session it opens
+ * afterwards has a token nobody holds, so it can be neither resumed nor
+ * discarded by the caller. Discard it as soon as it lands. No retry follows an
+ * abort or timeout, so the driver holds no newer session this could clobber.
+ */
+const beginSession = async (
+  driver: ResumableDriver,
+  meta: { total: number; contentType: string },
+  opts: RunResumableOptions,
+  signals: AbortSignal[]
+): Promise<ResumableUploadSession> => {
+  const latest: BeginAttempt = {};
+  try {
+    return await attempt(
+      (signal) => {
+        latest.begun = driver.begin({ ...meta, ...(signal && { signal }) });
+        return latest.begun;
+      },
+      opts,
+      signals
+    );
+  } catch (error) {
+    const { begun } = latest;
+    if (begun && error instanceof FilesError && error.aborted) {
+      void (async () => {
+        try {
+          await begun;
+          await driver.discard();
+        } catch {
+          // Best-effort cleanup: `begin()` failed after all, or the provider
+          // refused the cancel and its own session expiry takes over.
+        }
+      })();
+    }
+    throw error;
+  }
+};
+
+/**
+ * Finalize through {@link attempt}, with the same per-attempt timeout, abort
+ * race, and retry budget as the chunks; an attempt never starts once
+ * `control.abort()` has landed. Retrying a transient failure is safe while the
+ * session lives, with one catch: when the first attempt committed but its
+ * response was lost, the retry finds the session gone (S3's `NoSuchUpload`).
+ * Reporting that `NotFound` would claim the upload never happened, so it
+ * surfaces as a permanent failure that says the object may exist, with the
+ * first failure as its `cause`.
+ */
+const finalize = (
+  driver: ResumableDriver,
+  parts: PartMeta[],
+  opts: RunResumableOptions,
+  signals: AbortSignal[]
+): Promise<UploadResult> => {
+  let firstFailure: FilesError | undefined;
+  return attempt(
+    async (signal) => {
+      try {
+        return await driver.complete(parts, callOptions(signal));
+      } catch (error) {
+        const wrapped = FilesError.wrap(error);
+        if (firstFailure === undefined) {
+          firstFailure = wrapped;
+        } else if (wrapped.code === "NotFound") {
+          throw new FilesError(
+            "Provider",
+            `Finalizing the upload failed (${firstFailure.message}) and the retry found no upload session, so the first attempt may have committed the object. Check it with head() before uploading it again.`,
+            firstFailure,
+            { permanent: true }
+          );
+        }
+        throw wrapped;
+      }
+    },
+    opts,
+    signals
+  );
 };
 
 const runParts = async (
@@ -670,8 +807,27 @@ const runParts = async (
     throw failure;
   }
   results.sort((a, b) => a.partNumber - b.partNumber);
-  assertNotAborted(state);
-  return driver.complete(results);
+  // Commit only a part list that rebuilds this exact body: every part number
+  // from 1 to `numParts` once, each at the size the slicing gives it. A gap
+  // or a short part would otherwise finalize a truncated object as success
+  // (Azure commits whatever block list it is handed, even an empty one).
+  const covers =
+    results.length === numParts &&
+    results.every(
+      (part, index) =>
+        part.partNumber === index + 1 &&
+        part.size === expectedSize(part.partNumber)
+    );
+  if (!covers) {
+    const landed = results.reduce((sum, p) => sum + p.size, 0);
+    throw new FilesError(
+      "Provider",
+      `resumable upload parts don't add up to the body: ${results.length} of ${numParts} parts, ${landed} of ${total} bytes. Nothing was committed.`,
+      undefined,
+      { permanent: true }
+    );
+  }
+  return finalize(driver, results, opts, signals);
 };
 
 const runOffset = async (
@@ -699,7 +855,7 @@ const runOffset = async (
       opts,
       signals
     );
-    return driver.complete([]);
+    return finalize(driver, [], opts, signals);
   }
 
   // Clamp: a probe of a session that already finalized server-side reports a
@@ -718,14 +874,27 @@ const runOffset = async (
     const current = offset;
     // eslint-disable-next-line no-await-in-loop -- sequential offset upload; nextOffset drives the next iteration.
     const { nextOffset } = await attempt(
-      (signal) =>
-        driver.uploadAt({
+      async (signal) => {
+        const acknowledged = await driver.uploadAt({
           data,
           isLast,
           offset: current,
           total,
           ...(signal && { signal }),
-        }),
+        });
+        // A chunk the server reports as moving the offset nowhere (or
+        // backwards, or to `NaN`) means none of it was persisted. Looping
+        // on it would re-send forever, so fail the attempt instead: the
+        // retry budget re-sends the chunk, as for any transient failure,
+        // and a token resume re-probes the true offset.
+        if (!(acknowledged.nextOffset > current)) {
+          throw new FilesError(
+            "Provider",
+            `resumable upload made no progress: a ${data.byteLength}-byte chunk at offset ${current} was acknowledged with next offset ${String(acknowledged.nextOffset)}.`
+          );
+        }
+        return acknowledged;
+      },
       opts,
       signals
     );
@@ -733,8 +902,7 @@ const runOffset = async (
     state.loaded = offset;
     reportProgress(opts.onProgress, { loaded: offset, total });
   }
-  assertNotAborted(state);
-  return driver.complete([]);
+  return finalize(driver, [], opts, signals);
 };
 
 /**
@@ -765,6 +933,9 @@ export const runResumableUpload = async (
 
   let committedParts: PartMeta[] = [];
   let nextOffset = 0;
+  // The control's own signal plus the caller's: `begin()`, `probe()`, every
+  // chunk, and `complete()` all run under them (and the per-attempt timeout).
+  const signals = [state.abortController.signal, ...opts.signals];
   try {
     if (state.session) {
       driver.adopt(state.session);
@@ -773,17 +944,30 @@ export const runResumableUpload = async (
       // a union and lose the narrowing.
       // oxlint-disable-next-line oxc/branches-sharing-code -- see above.
       if (driver.mode === "parts") {
-        const probed = await driver.probe();
+        const probed = await attempt(
+          (signal) => driver.probe(callOptions(signal)),
+          opts,
+          signals
+        );
         ({ committedParts } = probed);
       } else {
-        const probed = await driver.probe();
+        const probed = await attempt(
+          (signal) => driver.probe(callOptions(signal)),
+          opts,
+          signals
+        );
         ({ nextOffset } = probed);
       }
     } else {
-      state.session = await driver.begin({
-        contentType: inferContentType(opts.body, opts.contentTypeHint),
-        total,
-      });
+      state.session = await beginSession(
+        driver,
+        {
+          contentType: inferContentType(opts.body, opts.contentTypeHint),
+          total,
+        },
+        opts,
+        signals
+      );
     }
 
     state.discard = () => driver.discard();
@@ -806,7 +990,9 @@ export const runResumableUpload = async (
       state.session = undefined;
       throw abortError(state.abortController.signal.reason);
     }
-    const signals = [state.abortController.signal, ...opts.signals];
+    // `begin()`/`adopt()`/`probe()` have settled, so the part size is final
+    // (some drivers can't report it any earlier).
+    assertPartSize(driver.partSize);
 
     const result =
       driver.mode === "parts"

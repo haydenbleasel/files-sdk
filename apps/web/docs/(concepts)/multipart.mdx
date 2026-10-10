@@ -35,11 +35,11 @@ The flag maps onto whatever chunking primitive the provider exposes, so the mech
 - **Dropbox** streams `ReadableStream` bodies through its upload session chunk-by-chunk, so a large stream is never buffered whole; `partSize` (rounded to a 4 MiB multiple) tunes the chunk size.
 - Other adapters already stream natively or only accept a fully-buffered body, so they ignore the option.
 
-Adapters that chunk natively round `partSize` to their own valid granularity — OneDrive to a 320-KiB multiple, GCS and Firebase to 256 KiB — and S3 enforces a 5 MiB minimum for every part except the last.
+Adapters that chunk natively round `partSize` to their own valid granularity — OneDrive to a 320-KiB multiple, GCS and Firebase to 256 KiB — and the S3 adapters raise it to S3's 5 MiB minimum (which every part but the last must meet).
 
 ## Sizing the parts
 
-`partSize` and `concurrency` trade memory for throughput: up to `partSize × concurrency` bytes are buffered at once. The defaults (5 MiB × 4) keep that footprint small; raise them for fat pipes and large objects, lower them on memory-constrained workers. Because S3 caps an object at 10,000 parts, very large objects need a `partSize` big enough to fit under that ceiling.
+`partSize` and `concurrency` trade memory for throughput: up to `partSize × concurrency` bytes are buffered at once. Both must be positive integers. `0`, a negative or fractional number, or `NaN` throws an `Invalid` [`FilesError`](/docs/api/errors) before any request, on every adapter (including the ones that otherwise ignore `multipart`) and for resumable uploads. The defaults (5 MiB × 4) keep that footprint small; raise them for fat pipes and large objects, lower them on memory-constrained workers. S3 caps an upload at 10,000 parts, so when the body's length is known the S3 adapters grow `partSize` until it fits; an unknown-length stream can't be fitted, so very large streams need a `partSize` big enough on their own.
 
 ## Progress and retries
 

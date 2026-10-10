@@ -13,7 +13,7 @@ files-sdk webdav
 
 ## Usage
 
-WebDAV via the [`webdav`](https://www.npmjs.com/package/webdav) library. Virtual keys map to paths under a configurable `root` on the server, with a `..` traversal guard. Because WebDAV is plain HTTP (`PROPFIND` / `GET` / `PUT` / `COPY` / `MOVE` / `DELETE`), the adapter is transport-agnostic and works against Nextcloud, ownCloud, Apache `mod_dav`, `sabre/dav`, and most NAS boxes.
+WebDAV via the [`webdav`](https://www.npmjs.com/package/webdav) library. Virtual keys map to paths under a configurable `root` on the server, with a traversal guard that refuses `..` segments, backslashes, and a leading drive letter (`C:`), since servers on Windows hosts treat those as path syntax too. Because WebDAV is plain HTTP (`PROPFIND` / `GET` / `PUT` / `COPY` / `MOVE` / `DELETE`), the adapter is transport-agnostic and works against Nextcloud, ownCloud, Apache `mod_dav`, `sabre/dav`, and most NAS boxes.
 
 ```ts lineNumbers
 import { Files } from "files-sdk";
@@ -71,7 +71,7 @@ There's no resumable/chunked upload: WebDAV has no portable append primitive, so
 | Method | Status | Notes |
 | --- | :-: | --- |
 | `upload` | ⚠️ | User `metadata` and `cacheControl` throw - WebDAV has no arbitrary-metadata or cache-header field. `contentType` is sent as the `PUT` `Content-Type`, so servers that persist it round-trip it on read. Stream bodies are buffered (no chunked upload). |
-| `download` | ✅ | Ranged reads issue a `Range` request; `as: "stream"` streams the response body without buffering. A server that ignores `Range` throws rather than silently returning the whole object. |
+| `download` | ✅ | Ranged reads issue a `Range` request; `as: "stream"` streams the response body without buffering; when the response has no `Content-Length` (a chunked reply), `size` comes from an extra `PROPFIND`. A server that ignores `Range` throws rather than silently returning the whole object. |
 | `delete` | ✅ | Idempotent - a missing file is not an error. A collection (folder) key is a no-op too: a WebDAV `DELETE` would remove the whole tree. Costs one extra `PROPFIND`. |
 | `list` | ⚠️ | Walks the collection tree recursively (one `PROPFIND` per directory). `prefix`/`limit`/`cursor`/`delimiter` are applied client-side over the full walk. A subcollection that disappears mid-walk is skipped; a missing root lists as empty. `size`/`lastModified`/`contentType` come from the `PROPFIND` props. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |

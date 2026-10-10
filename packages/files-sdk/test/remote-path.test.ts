@@ -63,6 +63,48 @@ describe("joinRemotePath", () => {
     }
   });
 
+  test.each([
+    ["..\\..\\x"],
+    ["a\\b.txt"],
+    ["dir/..\\secret"],
+    ["\\\\host\\share"],
+  ])("rejects a key containing a backslash: %j", (key) => {
+    // A server on a Windows host splits on `\` too, so `..\..\x` would
+    // climb out of the root as a single `/`-segment.
+    for (const root of ["/uploads", ""]) {
+      expect(() => joinRemotePath(root, key)).toThrow(
+        expect.objectContaining({
+          code: "Invalid",
+          message: expect.stringMatching(/backslash/u),
+        })
+      );
+    }
+  });
+
+  test.each([["C:/Windows/win.ini"], ["c:"], ["/D:/x"], ["./z:/x"], ["C:foo"]])(
+    "rejects a key whose first segment is a drive letter: %j",
+    (key) => {
+      // With an empty root, `C:/Windows/win.ini` is an absolute path on a
+      // Windows server, and `C:foo` is relative to the drive's current dir.
+      for (const root of ["", ".", "/", "/uploads"]) {
+        expect(() => joinRemotePath(root, key)).toThrow(
+          expect.objectContaining({
+            code: "Invalid",
+            message: expect.stringMatching(/drive letter/u),
+          })
+        );
+      }
+    }
+  );
+
+  test("still accepts colons that aren't a leading drive letter", () => {
+    expect(joinRemotePath("", "logs/C:/x.txt")).toBe("logs/C:/x.txt");
+    expect(joinRemotePath("/up", "2024-01-01T10:00:00.log")).toBe(
+      "/up/2024-01-01T10:00:00.log"
+    );
+    expect(joinRemotePath("/up", "ab:c/d")).toBe("/up/ab:c/d");
+  });
+
   test("rejects a key containing a null byte", () => {
     const key = `a${NULL_BYTE}b`;
     expect(() => joinRemotePath("/uploads", key)).toThrow(FilesError);

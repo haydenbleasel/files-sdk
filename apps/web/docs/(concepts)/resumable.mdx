@@ -94,4 +94,8 @@ Every remaining adapter — Netlify Blobs, UploadThing, PocketBase, Bunny, Conve
 
 ## Parts, retries, and progress
 
-`partSize` and `concurrency` come from the [`multipart`](/docs/multipart) option and tune the same trade-off. Each part (or chunk) is retried on its own under the call's [retry](/docs/retries) policy, so a transient failure mid-upload doesn't restart the whole transfer. [`onProgress`](/docs/api/onprogress) fires as parts confirm, and on resume it starts from the bytes already uploaded.
+`partSize` and `concurrency` come from the [`multipart`](/docs/multipart) option and tune the same trade-off; both must be positive integers, or the upload throws an `Invalid` [`FilesError`](/docs/api/errors) before a session opens. Each part (or chunk) is retried on its own under the call's [retry](/docs/retries) policy, so a transient failure mid-upload doesn't restart the whole transfer. [`onProgress`](/docs/api/onprogress) fires as parts confirm, and on resume it starts from the bytes already uploaded.
+
+Opening the session, checking it on resume, and finalizing it follow the same rules as the parts: each attempt gets the per-attempt [`timeout`](/docs/timeouts), stops on the caller's `signal` or `control.abort()`, and is retried on a transient provider error. A session that opens after its attempt timed out or was aborted is discarded as soon as it lands, since no one holds its token. If a finalize attempt fails and its retry finds the session already gone, the first attempt may have committed the object: the error says so (with the first failure as its `cause`), so check with [`head`](/docs/api/head) before uploading again.
+
+The SDK also refuses to finalize a body it didn't fully send. A chunk the provider acknowledges without moving its offset forward counts as a failed attempt (retried within the budget) rather than being re-sent forever, and a part list that doesn't add up to the whole body is never committed.

@@ -2708,6 +2708,36 @@ describe("isReadOnly", () => {
   });
 });
 
+// Counts every adapter call so a test can prove a refusal came first.
+const spiedAdapter = (): {
+  adapter: Adapter;
+  calls: string[];
+} => {
+  const base = fakeAdapter();
+  const calls: string[] = [];
+  const adapter: Adapter = {
+    ...base,
+    list: (opts) => {
+      calls.push("list");
+      return base.list(opts);
+    },
+    signedUploadUrl: (key, opts) => {
+      calls.push("signedUploadUrl");
+      return base.signedUploadUrl(key, opts);
+    },
+    upload: (key, body, opts) => {
+      calls.push("upload");
+      return base.upload(key, body, opts);
+    },
+    url: (key, opts) => {
+      calls.push("url");
+      return base.url(key, opts);
+    },
+  };
+  return { adapter, calls };
+};
+const BAD_COUNTS = [-1, 0, 0.5, Number.NaN, Number.POSITIVE_INFINITY];
+
 describe("SDK-side gates", () => {
   test("capability and key rejections are permanent FilesErrors", async () => {
     const files = new Files({ adapter: fakeAdapter() });
@@ -2820,6 +2850,192 @@ describe("SDK-side gates", () => {
     const files = new Files({ adapter, plugins: [firstFive] });
     const many = await files.download(["a"]);
     expect(await many.results[0]?.text()).toBe("hello");
+  });
+
+  test("a non-positive-integer list limit is Invalid before any provider call", async () => {
+    // `limit: -1` used to drop the last key of a walk on adapters that slice
+    // their own pages, and `0`/`NaN` walked nothing.
+    const { adapter, calls } = spiedAdapter();
+    const files = new Files({ adapter });
+    for (const limit of BAD_COUNTS) {
+      const expected = {
+        code: "Invalid",
+        message: `limit must be a positive integer; got ${String(limit)}`,
+        permanent: true,
+      };
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(files.list({ limit })).rejects.toMatchObject(expected);
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(
+        Array.fromAsync(files.listAll({ limit }))
+      ).rejects.toMatchObject(expected);
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(
+        Array.fromAsync(files.search("*", { limit }))
+      ).rejects.toMatchObject(expected);
+    }
+    expect(calls).toEqual([]);
+    await files.upload("a", "x");
+    const page = await files.list({ limit: 1 });
+    expect(page.items).toHaveLength(1);
+  });
+
+  test("search maxResults must be a non-negative integer", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    await files.upload("a.txt", "x");
+    await files.upload("b.txt", "x");
+    for (const maxResults of [-1, 0.5, Number.NaN]) {
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(
+        Array.fromAsync(files.search("*.txt", { maxResults }))
+      ).rejects.toMatchObject({
+        code: "Invalid",
+        message: `maxResults must be a non-negative integer; got ${String(maxResults)}`,
+      });
+    }
+    // `0` still means "no matches wanted".
+    expect(
+      await Array.fromAsync(files.search("*.txt", { maxResults: 0 }))
+    ).toEqual([]);
+    expect(
+      await Array.fromAsync(files.search("*.txt", { maxResults: 1 }))
+    ).toHaveLength(1);
+  });
+
+  test("an expiresIn that isn't a positive integer is Invalid before signing", async () => {
+    // `-60`, `0`, `NaN`, and `0.5` used to reach the signer and come back as
+    // URLs that never work.
+    const { adapter, calls } = spiedAdapter();
+    const files = new Files({ adapter });
+    for (const expiresIn of BAD_COUNTS) {
+      const expected = {
+        code: "Invalid",
+        message: `expiresIn must be a positive integer number of seconds; got ${String(expiresIn)}`,
+        permanent: true,
+      };
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(files.url("a", { expiresIn })).rejects.toMatchObject(
+        expected
+      );
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(
+        files.signedUploadUrl("a", { expiresIn })
+      ).rejects.toMatchObject(expected);
+    }
+    expect(calls).toEqual([]);
+    // Invalid wins over Unsupported on an adapter that can't sign at all.
+    const permanent = new Files({
+      adapter: withCapabilities(fakeAdapter(), {
+        signedUrl: { supported: false },
+      }),
+    });
+    await expect(permanent.url("a", { expiresIn: 0 })).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    await files.upload("a", "x");
+    expect(await files.url("a", { expiresIn: 60 })).toContain("expires=60");
+  });
+
+  test("multipart partSize and concurrency must be positive integers on every upload path", async () => {
+    const { adapter, calls } = spiedAdapter();
+    const files = new Files({ adapter });
+    const cases: [UploadOptions["multipart"], string][] = [
+      [
+        { partSize: 0.5 },
+        "multipart.partSize must be a positive integer number of bytes; got 0.5",
+      ],
+      [
+        { partSize: -1 },
+        "multipart.partSize must be a positive integer number of bytes; got -1",
+      ],
+      [
+        { partSize: 0 },
+        "multipart.partSize must be a positive integer number of bytes; got 0",
+      ],
+      [
+        { concurrency: 0.5 },
+        "multipart.concurrency must be a positive integer; got 0.5",
+      ],
+      [
+        { concurrency: Number.NaN },
+        "multipart.concurrency must be a positive integer; got NaN",
+      ],
+    ];
+    for (const [multipart, message] of cases) {
+      const expected = { code: "Invalid", message, permanent: true };
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      await expect(
+        files.upload("big.bin", "x", { multipart })
+      ).rejects.toMatchObject(expected);
+      // The bulk form reports it per item instead of throwing.
+      // eslint-disable-next-line no-await-in-loop -- one bad value at a time
+      const bulk = await files.upload([
+        { body: "x", key: "big.bin", multipart },
+      ]);
+      expect(bulk.errors?.[0]?.error).toMatchObject(expected);
+    }
+    expect(calls).toEqual([]);
+    // `true`, `false`, and in-range values pass through.
+    await files.upload("ok.bin", "x", { multipart: true });
+    await files.upload("ok.bin", "x", { multipart: false });
+    await files.upload("ok.bin", "x", {
+      multipart: { concurrency: 2, partSize: 5 * 1024 * 1024 },
+    });
+    expect(calls).toEqual(["upload", "upload", "upload"]);
+  });
+
+  test("a malformed numeric option is refused before any plugin runs", async () => {
+    const seen: string[] = [];
+    const spy: FilesPlugin = {
+      name: "spy",
+      wrap: (op, next) => {
+        seen.push(op.kind);
+        return next(op);
+      },
+    };
+    const files = new Files({ adapter: fakeAdapter(), plugins: [spy] });
+    await expect(files.list({ limit: 0 })).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    await expect(files.url("a", { expiresIn: -1 })).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    await expect(
+      files.upload("a", "x", { multipart: { partSize: -1 } })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(seen).toEqual([]);
+  });
+
+  test("a malformed numeric option a plugin injects is still refused", async () => {
+    const { adapter, calls } = spiedAdapter();
+    const inject: FilesPlugin = {
+      name: "inject",
+      wrap: handlers({
+        list: (op, next) =>
+          next({ ...op, options: { ...op.options, limit: -1 } }),
+        signedUploadUrl: (op, next) =>
+          next({ ...op, options: { ...op.options, expiresIn: 0 } }),
+        upload: (op, next) => {
+          // Only ordinary uploads carry `multipart`; this test sends one.
+          const options: UploadOptions = {
+            ...op.options,
+            multipart: { concurrency: 0.5 },
+          };
+          return next({ ...op, options } as typeof op);
+        },
+        url: (op, next) =>
+          next({ ...op, options: { ...op.options, expiresIn: 0.5 } }),
+      }),
+    };
+    const files = new Files({ adapter, plugins: [inject] });
+    const invalid = { code: "Invalid", permanent: true };
+    await expect(files.list()).rejects.toMatchObject(invalid);
+    await expect(files.url("a")).rejects.toMatchObject(invalid);
+    await expect(
+      files.signedUploadUrl("a", { expiresIn: 60 })
+    ).rejects.toMatchObject(invalid);
+    await expect(files.upload("a", "x")).rejects.toMatchObject(invalid);
+    expect(calls).toEqual([]);
   });
 
   test("a prefixed instance rejects a key of only slashes", async () => {

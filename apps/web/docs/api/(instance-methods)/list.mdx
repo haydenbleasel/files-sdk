@@ -18,6 +18,8 @@ if (cursor) {
 }
 ```
 
+`limit` is the page size, capped per provider (most top out around 1,000, the default). It must be a positive integer: `0`, a negative or fractional number, or `NaN` throws an `Invalid` [`FilesError`](/docs/api/errors) before any provider call.
+
 ## Walking every page with `listAll`
 
 `list` returns one page plus a `cursor`; most callers actually want "walk everything under this prefix", which is a manual cursor loop. `files.listAll(options?)` is that loop as an async iterable:
