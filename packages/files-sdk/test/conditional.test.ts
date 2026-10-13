@@ -998,6 +998,79 @@ describe("conditional plugin boundary", () => {
     });
     expect(actions[0]?.receipt).toBeUndefined();
   });
+
+  test("a plugin failure after an exact read is never reported as applied (#176)", async () => {
+    const harness = conditionalHarness();
+    const writable = new Files({ adapter: harness.adapter });
+    const { etag } = await writable.upload("a", "value", {
+      condition: { type: "create" },
+    });
+    const decoderFailure = new FilesError("Provider", "decoder fixture");
+    const decoder: FilesPlugin = {
+      name: "decoder",
+      wrap: handlers({
+        download: async (op, next) => {
+          await next(op);
+          throw decoderFailure;
+        },
+      }),
+    };
+    const swallowingOuter: FilesPlugin = {
+      name: "swallowing-outer",
+      wrap: handlers({
+        download: async (op, next) => {
+          try {
+            return await next(op);
+          } catch {
+            return harness.base.download(op.key);
+          }
+        },
+      }),
+    };
+    for (const plugins of [[decoder], [swallowingOuter, decoder]]) {
+      const errors: FilesErrorEvent[] = [];
+      const files = new Files({
+        adapter: harness.adapter,
+        hooks: { onError: (event) => errors.push(event) },
+        plugins,
+      }).readonly();
+      // eslint-disable-next-line no-await-in-loop -- each plugin stack runs its own isolated read
+      const failure = await files
+        .download("a", { condition: { etag } })
+        .catch((error: unknown) => error);
+      expect(failure).toBe(decoderFailure);
+      expect(decoderFailure.applied).toBe(false);
+      expect(decoderFailure.appliedEtag).toBeUndefined();
+      expect(errors[0]?.error).toBe(decoderFailure);
+    }
+
+    // An acknowledgement a plugin raised itself keeps its identity.
+    const acknowledgement = FilesError.applied(
+      new Error("side write committed"),
+      "side-etag"
+    );
+    const acknowledging: FilesPlugin = {
+      name: "acknowledging",
+      wrap: handlers({
+        download: async (op, next) => {
+          await next(op);
+          throw acknowledgement;
+        },
+      }),
+    };
+    const failure = await new Files({
+      adapter: harness.adapter,
+      plugins: [acknowledging],
+    })
+      .download("a", { condition: { etag } })
+      .catch((error: unknown) => error);
+    expect(failure).toBe(acknowledgement);
+    expect(acknowledgement).toMatchObject({
+      applied: true,
+      appliedEtag: "side-etag",
+    });
+    expect(harness.calls.exactRead).toEqual(["a", "a", "a"]);
+  });
 });
 
 describe("conditional hooks, retries, receipts, and policy", () => {

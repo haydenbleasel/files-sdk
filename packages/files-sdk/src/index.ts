@@ -2223,9 +2223,12 @@ export class Files<A extends Adapter = Adapter> {
     // failure, and know to reconcile rather than retry the same predicate.
     // Idempotent, so a rejection marked on its way through an inner layer
     // keeps its identity (and its original `cause`) as it bubbles outward.
+    // An exact read commits nothing, so a failure after it stays an ordinary
+    // failure — though an acknowledgement a plugin raised itself still passes
+    // through untouched.
     const applied = (cause: unknown): FilesError =>
-      cause instanceof FilesError && cause.applied
-        ? cause
+      op.kind === "download" || (cause instanceof FilesError && cause.applied)
+        ? FilesError.wrap(cause)
         : FilesError.applied(cause, nativeUploadEtag);
 
     const guardedBase: InternalNext = async (nextOp) => {
