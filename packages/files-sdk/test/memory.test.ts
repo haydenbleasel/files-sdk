@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { Files, FilesError, UploadControl } from "../src/index.js";
+import { Files, FilesError, UploadControl, sync } from "../src/index.js";
 import type { ResumableUploadSession } from "../src/index.js";
 import { memory } from "../src/memory/index.js";
 
@@ -141,7 +142,7 @@ describe("memory adapter", () => {
       expect(res.key).toBe("a.txt");
       expect(res.size).toBe(5);
       expect(res.contentType).toBe("text/plain; charset=utf-8");
-      expect(res.etag).toMatch(/^"[0-9a-f]{8}"$/u);
+      expect(res.etag).toMatch(/^"[0-9a-f]{32}"$/u);
       expect(await textOf(adapter, "a.txt")).toBe("hello");
     });
 
@@ -241,6 +242,43 @@ describe("memory adapter", () => {
       const b = await adapter.upload("b", "two");
       expect(a.etag).not.toBe(b.etag);
     });
+
+    // #177: the old 31-bit polynomial hash collided on trivially related
+    // bodies — "Aa"/"BB" (65·31+97 = 66·31+66) and any run of leading zeros.
+    test("bodies the old polynomial hash conflated get distinct etags", async () => {
+      const adapter = memory();
+      const aa = await adapter.upload("item", "Aa");
+      const bb = await adapter.upload("item", "BB");
+      expect(bb.etag).not.toBe(aa.etag);
+      const short = await adapter.upload("x", new Uint8Array([7]));
+      const padded = await adapter.upload("y", new Uint8Array([0, 0, 0, 7]));
+      expect(padded.etag).not.toBe(short.etag);
+    });
+
+    test("etag is the quoted MD5 of the body, as S3 returns it", async () => {
+      const adapter = memory();
+      const res = await adapter.upload("a.txt", "hello");
+      const md5 = createHash("md5").update("hello").digest("hex");
+      expect(res.etag).toBe(`"${md5}"`);
+    });
+
+    test("a seeded body gets the same etag as an uploaded one", async () => {
+      const adapter = memory({ initial: { seeded: "same" } });
+      const uploaded = await adapter.upload("uploaded", "same");
+      const seeded = await adapter.head("seeded");
+      expect(seeded.etag).toBe(uploaded.etag);
+    });
+
+    test("sync() re-copies a same-size body whose bytes changed", async () => {
+      const from = new Files({ adapter: memory({ initial: { item: "Aa" } }) });
+      const to = new Files({ adapter: memory() });
+      await sync(from, to);
+      await from.upload("item", "BB");
+      const res = await sync(from, to);
+      expect(res.uploaded).toEqual(["item"]);
+      const copied = await to.download("item");
+      expect(await copied.text()).toBe("BB");
+    });
   });
 
   describe("download", () => {
@@ -323,7 +361,7 @@ describe("memory adapter", () => {
       const head = await adapter.head("a.txt");
       expect(head.key).toBe("a.txt");
       expect(head.size).toBe(5);
-      expect(head.etag).toMatch(/^"[0-9a-f]{8}"$/u);
+      expect(head.etag).toMatch(/^"[0-9a-f]{32}"$/u);
       // Plain metadata — no body accessors behind a head() result.
       expect(Object.keys(head).toSorted()).toEqual([
         "contentType",

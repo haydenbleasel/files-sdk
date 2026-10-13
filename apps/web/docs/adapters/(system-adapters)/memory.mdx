@@ -93,7 +93,7 @@ Listeners run synchronously after the change, and a throwing listener never fail
 
 - **Non-persistent.** The store lives in the process. Everything is lost when the process exits, and two `Files` instances built from separate `memory()` calls don't share data. Not for production.
 - **Value semantics.** Bodies are copied in on upload (and on seed), so mutating a `Uint8Array` you passed in later doesn't change the stored bytes.
-- **Content ETag.** The `etag` is a stable hash of the bytes (a pure-JS polynomial rolling hash, no `node:crypto`), so re-uploading identical content yields the same ETag - matching how real backends behave.
+- **Content ETag.** The `etag` is the quoted MD5 of the bytes (computed in pure JS, no `node:crypto`), the same value S3 returns for a single-part upload. Re-uploading or copying identical content keeps the ETag, and any change to the bytes produces a new one, so `sync()` and `If-Range` can rely on it.
 
 ## Compatibility
 

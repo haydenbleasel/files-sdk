@@ -12,6 +12,7 @@ import type {
 import { collectStream } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { isObject, isString } from "../internal/is.js";
+import { md5Hex } from "../internal/md5.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { paginateHierarchy } from "../internal/walk-paginate.js";
 
@@ -94,26 +95,12 @@ export type MemoryAdapter = Adapter<Map<string, MemoryEntry>> &
     subscribe: (listener: (change: MemoryNotification) => void) => () => void;
   };
 
-// 2^31 - 1 (a Mersenne prime). The polynomial hash below stays an exact
-// integer because `hash * MULTIPLIER + byte` peaks around 31 * 2^31 ≈ 6.7e10,
-// well under `Number.MAX_SAFE_INTEGER` (2^53), so no precision is lost.
-const ETAG_MODULUS = 2_147_483_647;
-const ETAG_MULTIPLIER = 31;
-const ETAG_HEX_LEN = 8;
-
-// Content-derived ETag via a polynomial rolling hash over the bytes. Pure
-// integer arithmetic keeps the adapter isomorphic (no `node:crypto`, no
-// bitwise ops), so it runs unchanged in the browser, edge runtimes, and Deno —
-// the environments a dependency-free test/reference adapter is most useful in.
-// Identical bytes hash to the same value, matching how a real backend returns
-// a stable content ETag for an unchanged object.
-const contentEtag = (bytes: Uint8Array): string => {
-  let hash = 0;
-  for (const byte of bytes) {
-    hash = (hash * ETAG_MULTIPLIER + byte) % ETAG_MODULUS;
-  }
-  return `"${hash.toString(16).padStart(ETAG_HEX_LEN, "0")}"`;
-};
+// Content-derived ETag: the MD5 of the bytes, quoted, matching S3's ETag for a
+// single-part upload of the same body. Identical bytes keep the
+// same ETag (re-uploads, copies), and changed bytes get a new one, so `sync()`
+// and `If-Range` can trust it. The pure-JS digest keeps the adapter isomorphic
+// (no `node:crypto`) and synchronous, which the constructor's seeds need.
+const contentEtag = (bytes: Uint8Array): string => `"${md5Hex(bytes)}"`;
 
 const textEncoder = new TextEncoder();
 
