@@ -19,7 +19,7 @@ File Browser reports the open folder through its `onNavigate` prop, so the page 
 
 ## Before you start
 
-- A Next.js App Router app with [shadcn/ui](https://ui.shadcn.com/docs/installation/next) initialized. The components import from `@/components/ui` and `@/lib/utils`.
+- A Next.js App Router app with [shadcn/ui](https://ui.shadcn.com/docs/installation/next) initialized on Tailwind CSS v4. The components import from `@/components/ui` and import `cn` from the [`cn`](https://github.com/shadcn-ui/cn) package, like shadcn's own v4 components.
 - The storage setup from [Build a Next.js file uploader with Cloudflare R2](/guides/nextjs-r2-file-upload): `lib/files.ts`, the `R2_*` and `FILES_API_SECRET` variables, and the bucket's CORS rule, with `GET` added to `AllowedMethods`. File Preview and the Download action fetch files from JavaScript, and that `fetch` follows the gateway's redirect to R2. Any signing adapter's bucket needs the same rule.
 - An auth library that can resolve the signed-in user on the server.
 - Written against files-sdk 3.0, Next.js 16.4, React 19.3, and the registry components as published on files-sdk.dev. The page below was rendered under happy-dom against the gateway and the memory adapter to check the folder, pagination, upload, retry, and error flows. It hasn't been run against R2.
@@ -30,7 +30,7 @@ File Browser reports the open folder through its `onNavigate` prop, so the page 
 npx shadcn@latest add https://files-sdk.dev/r/file-browser.json https://files-sdk.dev/r/dropzone.json https://files-sdk.dev/r/upload-progress.json https://files-sdk.dev/r/file-preview.json
 ```
 
-The files land in `components/files-sdk/`. Each registry item declares `files-sdk` and `lucide-react` as npm dependencies and the shadcn primitives it uses (`button`, `progress`, `dialog`, `dropdown-menu`, `input`) as registry dependencies. File Browser also depends on [File Actions](/docs/ui/components/file-actions), its per-row menu, so you don't add that one separately.
+The files land in `components/files-sdk/`. Each registry item declares `cn`, `files-sdk`, and `lucide-react` as npm dependencies and the shadcn primitives it uses (`button`, `progress`, `dialog`, `dropdown-menu`, `input`) as registry dependencies. File Browser also depends on [File Actions](/docs/ui/components/file-actions), its per-row menu, so you don't add that one separately.
 
 The components are your source code now, so you can change anything their props don't cover.
 

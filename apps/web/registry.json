@@ -8,7 +8,7 @@
       "type": "registry:component",
       "title": "Dropzone",
       "description": "Drag-and-drop (or click) upload area wired to files-sdk/react.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button"],
       "files": [
         {
@@ -23,7 +23,7 @@
       "type": "registry:component",
       "title": "File List",
       "description": "List of stored files with thumbnails, download and delete.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button"],
       "files": [
         {
@@ -38,7 +38,7 @@
       "type": "registry:component",
       "title": "Upload Progress",
       "description": "Per-file and aggregate progress for in-flight uploads.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["progress"],
       "files": [
         {
@@ -53,7 +53,7 @@
       "type": "registry:component",
       "title": "Multipart Uploader",
       "description": "Multi-file queue uploader with bounded concurrency, live progress and cancel.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button", "progress"],
       "files": [
         {
@@ -68,7 +68,7 @@
       "type": "registry:component",
       "title": "File Preview",
       "description": "Lazy preview of a single stored file (image, PDF or text) with metadata.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": [],
       "files": [
         {
@@ -83,7 +83,7 @@
       "type": "registry:component",
       "title": "File Browser",
       "description": "Folder-aware browser that descends into common prefixes with a breadcrumb trail.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": [
         "button",
         "https://files-sdk.dev/r/file-actions.json"
@@ -101,7 +101,7 @@
       "type": "registry:component",
       "title": "File Search",
       "description": "Search box that lists matching keys with switchable match modes.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button", "input"],
       "files": [
         {
@@ -116,7 +116,7 @@
       "type": "registry:component",
       "title": "Share Dialog",
       "description": "Dialog that mints a shareable download or upload link with a chosen expiry.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button", "dialog", "input"],
       "files": [
         {
@@ -131,7 +131,7 @@
       "type": "registry:component",
       "title": "File Actions",
       "description": "Per-file actions menu — download, copy, rename, move and delete.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button", "dialog", "dropdown-menu", "input"],
       "files": [
         {
@@ -146,7 +146,7 @@
       "type": "registry:component",
       "title": "Capabilities Badges",
       "description": "Surfaces what the configured storage adapter can do as a row of badges.",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["badge"],
       "files": [
         {
@@ -161,7 +161,7 @@
       "type": "registry:component",
       "title": "Version History",
       "description": "A version timeline for one key with one-click restore (versioning plugin).",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button"],
       "files": [
         {
@@ -176,7 +176,7 @@
       "type": "registry:component",
       "title": "Trash Bin",
       "description": "Lists, restores and permanently purges soft-deleted files (softDelete plugin).",
-      "dependencies": ["files-sdk", "lucide-react"],
+      "dependencies": ["cn", "files-sdk", "lucide-react"],
       "registryDependencies": ["button", "dialog"],
       "files": [
         {

@@ -145,6 +145,8 @@ On top of the React hook there's a [shadcn](https://ui.shadcn.com) registry of S
 - [Version history](/docs/ui/components/version-history) - browse and restore versions.
 - [Trash bin](/docs/ui/components/trash-bin) - soft-deleted files with restore and purge.
 
+They target shadcn/ui on Tailwind CSS v4 and import `cn` from the [`cn`](https://github.com/shadcn-ui/cn) package, as shadcn's own v4 components do, so `shadcn add` installs it alongside `files-sdk` and `lucide-react`.
+
 Each page has its own install command, or grab all of them at once with the `all` bundle:
 
 <ComponentInstall name="all" />

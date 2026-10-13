@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "cn";
 import type { FileInfo } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import {
@@ -12,7 +13,6 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export interface FileListProps {
   /** A `useFiles()` instance — lists, downloads and deletes through it. */

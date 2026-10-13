@@ -1,12 +1,12 @@
 "use client";
 
+import { cn } from "cn";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon, UploadIcon, XIcon } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { cn } from "@/lib/utils";
 
 type QueueStatus = "pending" | "uploading" | "success" | "error" | "cancelled";
 

@@ -1,12 +1,12 @@
 "use client";
 
+import { cn } from "cn";
 import type { AdapterCapabilities } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { CheckIcon, Loader2Icon, XIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 
 export interface CapabilitiesBadgesProps {
   /** A `useFiles()` instance — capabilities are read through it. */

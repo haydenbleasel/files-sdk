@@ -1,10 +1,10 @@
 "use client";
 
+import { cn } from "cn";
 import type { FileUploadState, UseFilesResult } from "files-sdk/react";
 import { CheckCircle2Icon, Loader2Icon, XCircleIcon } from "lucide-react";
 
 import { Progress } from "@/components/ui/progress";
-import { cn } from "@/lib/utils";
 
 export interface UploadProgressProps {
   /** A `useFiles()` instance — reads its ambient `uploads` / `progress`. */

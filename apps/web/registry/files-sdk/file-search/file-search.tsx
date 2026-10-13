@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "cn";
 import type { FileInfo, SearchMatch } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon, SearchIcon } from "lucide-react";
@@ -7,7 +8,6 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 
 export interface FileSearchProps {
   /** A `useFiles()` instance — matches are found through `search()`. */

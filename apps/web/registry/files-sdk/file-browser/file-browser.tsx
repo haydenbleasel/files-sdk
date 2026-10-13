@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "cn";
 import type { FileInfo } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import {
@@ -13,7 +14,6 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 
 import { FileActions } from "@/components/files-sdk/file-actions";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export interface FileBrowserProps {
   /** A `useFiles()` instance — folders and files are listed through it. */

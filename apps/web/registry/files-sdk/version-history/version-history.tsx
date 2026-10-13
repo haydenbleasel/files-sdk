@@ -1,11 +1,11 @@
 "use client";
 
+import { cn } from "cn";
 import type { FileVersion, UseFilesResult } from "files-sdk/react";
 import { HistoryIcon, Loader2Icon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 
 export interface VersionHistoryProps {
   /** A `useFiles()` instance backed by a gateway with the `versioning()` plugin. */

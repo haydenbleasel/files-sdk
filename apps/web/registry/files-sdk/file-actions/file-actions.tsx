@@ -1,5 +1,6 @@
 "use client";
 
+import { cn } from "cn";
 import type { UseFilesResult } from "files-sdk/react";
 import {
   CopyIcon,
@@ -30,7 +31,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 
 export interface FileActionsProps {
   /** A `useFiles()` instance — every action runs through it. */
