@@ -1,5 +1,13 @@
 # files-sdk
 
+## 3.1.1
+
+### Patch Changes
+
+- cfb6062: Interrupting a buffered `DownloadedFile` read in `files-sdk/effect` (`text`, `arrayBuffer`, or `blob`) now cancels the body read underneath, instead of leaving it running after the fiber stops waiting. The read is cancelled only once no other read is waiting on the same body, so a plain `StoredFile` read in progress is never cut short, and later reads of a cancelled body fail as an `aborted` (never retried) `Provider` error. Bodies downloaded through the `usage()` plugin stay cancellable. Resolves #173.
+- 0c51802: A plugin failure after a conditional exact read (`download(key, { condition: { etag } })`) is no longer reported as an applied mutation (#176). The conditional dispatcher marked any rejection that followed a successful native call with `applied: true`, so a plugin throwing after the read (for example `files-sdk/encryption` failing to decrypt) reached the caller, `onError`, and `files-sdk/audit` as though the object had changed. A read commits nothing, so that error now comes through unmarked. An `applied` error a plugin raises itself still passes through untouched, and conditional uploads, deletes, and copies are unchanged.
+- 6936be5: `files-sdk/memory` ETags no longer collide for different bodies (#177). The adapter hashed bytes with a 31-bit polynomial hash, so trivially related bodies shared an ETag: `"Aa"` and `"BB"` both came out as `"00000840"`, and leading zero bytes didn't change the hash at all. Because `sync()` treats a matching size and ETag as unchanged, it silently skipped a file whose bytes had changed, and the gateway's `If-Range` check could accept a stale validator. The ETag is now the quoted MD5 of the bytes (computed in pure JS, so the adapter still runs in browsers and edge runtimes), the same value S3 returns for a single-part upload. Identical content still keeps the same ETag across re-uploads and copies.
+
 ## 3.1.0
 
 ### Minor Changes
