@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   assertRangeHonored,
+  collectStream,
   deleteManyWithFallback,
   httpRangeHeader,
   joinPublicUrl,
@@ -34,6 +35,39 @@ describe("normalizeBody content types", () => {
       "application/json"
     );
     expect(normalized.contentType).toBe("application/json");
+  });
+});
+
+// A source that yields "ab" once, then stalls, recording its cancellation.
+const stalling = (cancelled: unknown[]) =>
+  new ReadableStream<Uint8Array>({
+    cancel: (reason) => {
+      cancelled.push(reason);
+    },
+    pull: (controller) => {
+      controller.enqueue(new TextEncoder().encode("ab"));
+      return Promise.withResolvers<undefined>().promise;
+    },
+  });
+
+describe("collectStream", () => {
+  test("aborting mid-read cancels the stream instead of returning a cut-off body", async () => {
+    const cancelled: unknown[] = [];
+    const controller = new AbortController();
+    const pending = collectStream(stalling(cancelled), controller.signal);
+    await Bun.sleep(0);
+    controller.abort("stop");
+    await expect(pending).rejects.toBeInstanceOf(FilesError);
+    await expect(pending).rejects.toMatchObject({ aborted: true });
+    expect(cancelled).toEqual(["stop"]);
+  });
+
+  test("an already-aborted signal cancels before reading", async () => {
+    const cancelled: unknown[] = [];
+    await expect(
+      collectStream(stalling(cancelled), AbortSignal.abort("early"))
+    ).rejects.toMatchObject({ aborted: true });
+    expect(cancelled).toEqual(["early"]);
   });
 });
 

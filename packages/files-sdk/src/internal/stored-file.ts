@@ -2,6 +2,7 @@ import type { FileInfo, StoredFile } from "../index.js";
 import { collectStream } from "./core.js";
 import { FilesError } from "./errors.js";
 import { isFunction } from "./is.js";
+import { abortError, runWithSignal } from "./retry.js";
 
 export type BodySource =
   | { kind: "buffer"; data: Uint8Array }
@@ -26,6 +27,58 @@ const streamFromPromise = (
       controller.close();
     },
   });
+
+/**
+ * A StoredFile's buffering accessors, each taking a `signal`. Not on the
+ * public `StoredFile` type: the Effect bridge reads through them so an
+ * interrupted `text`/`arrayBuffer`/`blob` cancels the body read underneath.
+ */
+export interface BufferedReads {
+  arrayBuffer: (signal?: AbortSignal) => Promise<ArrayBuffer>;
+  blob: (signal?: AbortSignal) => Promise<Blob>;
+  text: (signal?: AbortSignal) => Promise<string>;
+}
+
+/**
+ * Where {@link createStoredFile} keeps its {@link BufferedReads}. A registry
+ * symbol so it survives the core and a binding loading from different
+ * bundles, and stays off the public surface. Object spread copies it, so the
+ * `Files` prefix rewrap keeps it too.
+ */
+const BUFFERED_READS: unique symbol = Symbol.for("files-sdk.bufferedReads");
+
+type WithBufferedReads = StoredFile & { [BUFFERED_READS]: BufferedReads };
+
+// Only `createStoredFile` (and wrappers built with `withBufferedReads`) set
+// the symbol, always to a `BufferedReads`.
+const hasBufferedReads = (file: StoredFile): file is WithBufferedReads =>
+  BUFFERED_READS in file;
+
+/**
+ * `file`'s signal-aware buffering accessors. A StoredFile built some other way
+ * (a hand-rolled adapter's) has none, so its plain accessors stand in and the
+ * signal only stops the caller waiting.
+ */
+export const bufferedReads = (file: StoredFile): BufferedReads =>
+  hasBufferedReads(file)
+    ? file[BUFFERED_READS]
+    : {
+        arrayBuffer: () => file.arrayBuffer(),
+        blob: () => file.blob(),
+        text: () => file.text(),
+      };
+
+/**
+ * Attach `reads` to a StoredFile wrapper, so a wrapper (the `usage()` meter)
+ * keeps the body read cancellable.
+ */
+export const withBufferedReads = (
+  file: StoredFile,
+  reads: BufferedReads
+): StoredFile => {
+  const wrapped: WithBufferedReads = { ...file, [BUFFERED_READS]: reads };
+  return wrapped;
+};
 
 const consumedError = (): FilesError =>
   new FilesError(
@@ -80,10 +133,19 @@ export const createStoredFile = (
   // because we no longer secretly tee+buffer the whole object — that defeated
   // the point of asking for a stream and was a real OOM hazard for large
   // downloads.
+  //
+  // A signalled read (see `BufferedReads`) stops waiting when its signal
+  // aborts, and once every signalled reader of a stream drain has left that
+  // way, the drain is cancelled so the body stops downloading. A plain read
+  // (or `stream()`) joining the drain holds it, so a caller without a signal
+  // never has its read cut short by someone else's abort.
   let cached: Uint8Array | undefined;
   let cachePromise: Promise<Uint8Array> | undefined;
   let streamConsumed = false;
   let nativeBlobPromise: Promise<Blob> | undefined;
+  let drain:
+    | { controller: AbortController; held: boolean; waiting: number }
+    | undefined;
 
   const cacheFrom = async (
     source: () => Promise<Uint8Array>
@@ -93,7 +155,7 @@ export const createStoredFile = (
     return bytes;
   };
 
-  const toBytes = (): Promise<Uint8Array> => {
+  const load = (): Promise<Uint8Array> => {
     if (cached) {
       return Promise.resolve(cached);
     }
@@ -119,13 +181,61 @@ export const createStoredFile = (
       return Promise.reject(consumedError());
     }
     const stream = body.factory();
-    cachePromise = cacheFrom(() => collectStream(stream));
+    const controller = new AbortController();
+    drain = { controller, held: false, waiting: 0 };
+    cachePromise = cacheFrom(async () => {
+      try {
+        return await collectStream(stream, controller.signal);
+      } catch (error) {
+        throw controller.signal.aborted
+          ? new FilesError(
+              "Provider",
+              "StoredFile body read was cancelled before it finished. Download the object again to read it.",
+              error,
+              { aborted: true }
+            )
+          : error;
+      } finally {
+        drain = undefined;
+      }
+    });
     return cachePromise;
   };
 
-  return {
-    async arrayBuffer() {
-      const bytes = await toBytes();
+  const toBytes = async (signal?: AbortSignal): Promise<Uint8Array> => {
+    if (!signal) {
+      const pending = load();
+      if (drain) {
+        drain.held = true;
+      }
+      return await pending;
+    }
+    if (signal.aborted) {
+      throw abortError(signal.reason);
+    }
+    const pending = load();
+    const current = drain;
+    if (!current) {
+      return await runWithSignal(signal, () => pending);
+    }
+    current.waiting += 1;
+    const leave = () => {
+      current.waiting -= 1;
+      if (current.waiting === 0 && !current.held) {
+        current.controller.abort(signal.reason);
+      }
+    };
+    signal.addEventListener("abort", leave, { once: true });
+    try {
+      return await runWithSignal(signal, () => pending);
+    } finally {
+      signal.removeEventListener("abort", leave);
+    }
+  };
+
+  const reads: BufferedReads = {
+    async arrayBuffer(signal) {
+      const bytes = await toBytes(signal);
       // SAFETY: download bytes come from `collectStream`, `Response#arrayBuffer`
       // or an adapter SDK buffer — never a `SharedArrayBuffer` — and `slice`
       // preserves the backing kind, so the copy is a plain `ArrayBuffer`.
@@ -134,7 +244,7 @@ export const createStoredFile = (
         bytes.byteOffset + bytes.byteLength
       ) as ArrayBuffer;
     },
-    async blob() {
+    async blob(signal) {
       if (nativeBlobPromise) {
         return await nativeBlobPromise;
       }
@@ -149,7 +259,7 @@ export const createStoredFile = (
         nativeBlobPromise = nativeBlob();
         return await nativeBlobPromise;
       }
-      const bytes = await toBytes();
+      const bytes = await toBytes(signal);
       try {
         // SAFETY: `BlobPart` pins the view to `ArrayBuffer` backing; see
         // `arrayBuffer()` above — download bytes never share memory.
@@ -164,6 +274,16 @@ export const createStoredFile = (
         );
       }
     },
+    async text(signal) {
+      const bytes = await toBytes(signal);
+      return new TextDecoder().decode(bytes);
+    },
+  };
+
+  const file: WithBufferedReads = {
+    [BUFFERED_READS]: reads,
+    arrayBuffer: () => reads.arrayBuffer(),
+    blob: () => reads.blob(),
     contentType: meta.contentType,
     etag: meta.etag,
     key: meta.key,
@@ -176,7 +296,7 @@ export const createStoredFile = (
         return streamFromBytes(cached);
       }
       if (cachePromise) {
-        return streamFromPromise(cachePromise);
+        return streamFromPromise(toBytes());
       }
       if (body.kind === "stream") {
         if (streamConsumed) {
@@ -187,10 +307,8 @@ export const createStoredFile = (
       }
       return streamFromPromise(toBytes());
     },
-    async text() {
-      const bytes = await toBytes();
-      return new TextDecoder().decode(bytes);
-    },
+    text: () => reads.text(),
     type: meta.contentType,
   };
+  return file;
 };

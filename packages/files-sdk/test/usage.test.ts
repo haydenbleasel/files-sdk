@@ -6,6 +6,7 @@ import type {
   Files,
   PluginNext,
 } from "../src/index.js";
+import { bufferedReads } from "../src/internal/stored-file.js";
 import { memory } from "../src/memory/index.js";
 import { usage } from "../src/usage/index.js";
 
@@ -118,6 +119,54 @@ describe("usage", () => {
     expect(await file.text()).toBe("hello");
     expect(await new Response(file.stream()).text()).toBe("hello");
     expect(files.usage().bytesDown).toBe(5);
+  });
+
+  test("signalled reads through the meter count the body once", async () => {
+    const files = metered();
+    await files.upload("a.txt", bytes("hello"));
+    const reads = bufferedReads(await files.download("a.txt"));
+    const { signal } = new AbortController();
+    expect(await reads.text(signal)).toBe("hello");
+    const buffer = await reads.arrayBuffer(signal);
+    expect(buffer.byteLength).toBe(5);
+    const blob = await reads.blob(signal);
+    expect(blob.size).toBe(5);
+    expect(files.usage().bytesDown).toBe(5);
+  });
+
+  test("aborting a signalled read through the meter cancels the body", async () => {
+    const cancelled: unknown[] = [];
+    const base = memory();
+    const files = createFiles({
+      adapter: {
+        ...base,
+        download: (key) =>
+          Promise.resolve(
+            createStoredFile(
+              { contentType: "text/plain", key, size: 5 },
+              {
+                factory: () =>
+                  new ReadableStream<Uint8Array>({
+                    cancel: (reason) => {
+                      cancelled.push(reason);
+                    },
+                    pull: () => Promise.withResolvers<undefined>().promise,
+                  }),
+                kind: "stream",
+              }
+            )
+          ),
+      },
+      plugins: [usage()],
+    });
+    const controller = new AbortController();
+    const pending = bufferedReads(await files.download("a.txt")).text(
+      controller.signal
+    );
+    controller.abort("stop");
+    await expect(pending).rejects.toMatchObject({ aborted: true });
+    expect(cancelled).toEqual(["stop"]);
+    expect(files.usage().bytesDown).toBe(0);
   });
 
   test("counts head() as metadata only, moving no bytes", async () => {

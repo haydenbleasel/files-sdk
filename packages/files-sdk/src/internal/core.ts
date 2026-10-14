@@ -18,6 +18,7 @@ import type {
 import { FilesError } from "./errors.js";
 import type { ProviderFilesErrorCode } from "./errors.js";
 import { isObject, isString } from "./is.js";
+import { abortError } from "./retry.js";
 
 // =============================================================================
 // URL helpers
@@ -407,24 +408,46 @@ export const existsByProbe = async <Probe>(
  * Drain a `ReadableStream<Uint8Array>` into a single concatenated `Uint8Array`.
  * Used by adapters whose SDK lacks a streaming upload form and by
  * {@link createStoredFile} when a stream body is read into a buffering
- * accessor.
+ * accessor. Aborting `signal` cancels the stream and rejects with an
+ * `aborted` {@link FilesError}.
  */
 export const collectStream = async (
-  stream: ReadableStream<Uint8Array>
+  stream: ReadableStream<Uint8Array>,
+  signal?: AbortSignal
 ): Promise<Uint8Array> => {
   const reader = stream.getReader();
+  const onAbort = async () => {
+    try {
+      await reader.cancel(signal?.reason);
+    } catch {
+      // The abort, not a failure cancelling the source, is what the caller sees.
+    }
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) {
+    onAbort();
+  }
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (true) {
-    // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  try {
+    while (true) {
+      // eslint-disable-next-line no-await-in-loop -- single stream reader; chunks arrive sequentially.
+      const { done, value } = await reader.read();
+      // Cancelling settles a pending read as `done`, so check the signal first
+      // or a cut-off body would pass as the whole thing.
+      if (signal?.aborted) {
+        throw abortError(signal.reason);
+      }
+      if (done) {
+        break;
+      }
+      if (value) {
+        chunks.push(value);
+        total += value.byteLength;
+      }
     }
-    if (value) {
-      chunks.push(value);
-      total += value.byteLength;
-    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
   const out = new Uint8Array(total);
   let offset = 0;

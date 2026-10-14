@@ -6,6 +6,8 @@ import type {
   StoredFile,
   UploadResult,
 } from "../index.js";
+import { bufferedReads, withBufferedReads } from "../internal/stored-file.js";
+import type { BufferedReads } from "../internal/stored-file.js";
 
 /** Bucket every operation lands in when no {@link UsageOptions.group} is set. */
 const DEFAULT_GROUP = "all";
@@ -134,48 +136,59 @@ const meterRead = (
       add(bytes);
     }
   };
-  return {
-    arrayBuffer: async () => {
-      const buffer = await file.arrayBuffer();
+  // Forward the inner file's signal-aware reads, so a caller that can cancel a
+  // buffered read (the Effect bridge) still can through the meter.
+  const inner = bufferedReads(file);
+  const reads: BufferedReads = {
+    arrayBuffer: async (signal) => {
+      const buffer = await inner.arrayBuffer(signal);
       countBuffered(buffer.byteLength);
       return buffer;
     },
-    blob: async () => {
-      const blob = await file.blob();
+    blob: async (signal) => {
+      const blob = await inner.blob(signal);
       countBuffered(blob.size);
       return blob;
     },
-    contentType: file.contentType,
-    etag: file.etag,
-    key: file.key,
-    lastModified: file.lastModified,
-    metadata: file.metadata,
-    name: file.name,
-    size: file.size,
-    stream: () => {
-      const id = nextStreamId;
-      nextStreamId += 1;
-      return file.stream().pipeThrough(
-        new TransformStream<Uint8Array, Uint8Array>({
-          transform(chunk, controller) {
-            if (claimedBy === "none") {
-              claimedBy = id;
-            }
-            if (claimedBy === id) {
-              add(chunk.byteLength);
-            }
-            controller.enqueue(chunk);
-          },
-        })
-      );
-    },
-    text: async () => {
-      const text = await file.text();
+    text: async (signal) => {
+      const text = await inner.text(signal);
       countBuffered(file.size);
       return text;
     },
-    type: file.type,
   };
+  return withBufferedReads(
+    {
+      arrayBuffer: () => reads.arrayBuffer(),
+      blob: () => reads.blob(),
+      contentType: file.contentType,
+      etag: file.etag,
+      key: file.key,
+      lastModified: file.lastModified,
+      metadata: file.metadata,
+      name: file.name,
+      size: file.size,
+      stream: () => {
+        const id = nextStreamId;
+        nextStreamId += 1;
+        return file.stream().pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              if (claimedBy === "none") {
+                claimedBy = id;
+              }
+              if (claimedBy === id) {
+                add(chunk.byteLength);
+              }
+              controller.enqueue(chunk);
+            },
+          })
+        );
+      },
+      text: () => reads.text(),
+      type: file.type,
+    },
+    reads
+  );
 };
 
 /**

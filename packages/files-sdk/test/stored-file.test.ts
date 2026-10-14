@@ -1,7 +1,12 @@
 // oxlint-disable max-classes-per-file, unicorn/consistent-function-scoping -- in-test Blob/FileReader mock classes and fixture helpers.
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { createStoredFile } from "../src/internal/stored-file.js";
+import type { StoredFile } from "../src/index.js";
+import {
+  bufferedReads,
+  createStoredFile,
+  withBufferedReads,
+} from "../src/internal/stored-file.js";
 
 const collectStream = async (
   stream: ReadableStream<Uint8Array>
@@ -213,6 +218,119 @@ describe("createStoredFile", () => {
     expect(sf.etag).toBe("e1");
     expect(sf.lastModified).toBe(42);
     expect(sf.metadata).toEqual({ foo: "bar" });
+  });
+});
+
+describe("bufferedReads", () => {
+  const meta = { contentType: "text/plain", key: "k", size: 5 };
+
+  // A stream-kind file whose body waits for `release`, recording each
+  // cancellation of it.
+  const stalled = () => {
+    const cancelled: unknown[] = [];
+    const gate = Promise.withResolvers<string>();
+    const file = createStoredFile(meta, {
+      factory: () =>
+        new ReadableStream<Uint8Array>({
+          cancel: (reason) => {
+            cancelled.push(reason);
+          },
+          pull: async (controller) => {
+            controller.enqueue(new TextEncoder().encode(await gate.promise));
+            controller.close();
+          },
+        }),
+      kind: "stream",
+    });
+    return { cancelled, file, release: gate.resolve };
+  };
+
+  const handRolled = (): StoredFile => ({
+    ...meta,
+    arrayBuffer: () => Promise.resolve(new TextEncoder().encode("abc").buffer),
+    blob: () => Promise.resolve(new Blob(["abc"])),
+    name: "k",
+    stream: () => new Blob(["abc"]).stream(),
+    text: () => Promise.resolve("abc"),
+    type: "text/plain",
+  });
+
+  test("aborting the only signalled read cancels the body; later reads fail as aborted", async () => {
+    const { cancelled, file } = stalled();
+    const controller = new AbortController();
+    const pending = bufferedReads(file).text(controller.signal);
+    controller.abort("stop");
+    await expect(pending).rejects.toMatchObject({ aborted: true });
+    expect(cancelled).toEqual(["stop"]);
+    const again = await file.text().catch((error: unknown) => error);
+    expect(again).toMatchObject({ aborted: true, code: "Provider" });
+    expect(String(again)).toContain("cancelled before it finished");
+  });
+
+  test("a plain read holds the body when a signalled reader aborts", async () => {
+    const { cancelled, file, release } = stalled();
+    const controller = new AbortController();
+    const signalled = bufferedReads(file).arrayBuffer(controller.signal);
+    const plain = file.text();
+    controller.abort();
+    await expect(signalled).rejects.toMatchObject({ aborted: true });
+    release("hello");
+    expect(await plain).toBe("hello");
+    expect(cancelled).toHaveLength(0);
+  });
+
+  test("stream() during a drain holds it too", async () => {
+    const { cancelled, file, release } = stalled();
+    const controller = new AbortController();
+    const signalled = bufferedReads(file).blob(controller.signal);
+    const streamed = collectStream(file.stream());
+    controller.abort();
+    await expect(signalled).rejects.toMatchObject({ aborted: true });
+    release("hello");
+    expect(new TextDecoder().decode(await streamed)).toBe("hello");
+    expect(cancelled).toHaveLength(0);
+  });
+
+  test("a finished signalled read caches the body; a later abort cancels nothing", async () => {
+    const { cancelled, file, release } = stalled();
+    const controller = new AbortController();
+    const pending = bufferedReads(file).text(controller.signal);
+    release("hello");
+    expect(await pending).toBe("hello");
+    controller.abort();
+    expect(cancelled).toHaveLength(0);
+    expect(await file.text()).toBe("hello");
+  });
+
+  test("an already-aborted signal rejects without opening the body", async () => {
+    let opened = 0;
+    const file = createStoredFile(meta, {
+      factory: () => {
+        opened += 1;
+        return new Blob(["hello"]).stream();
+      },
+      kind: "stream",
+    });
+    await expect(
+      bufferedReads(file).text(AbortSignal.abort())
+    ).rejects.toMatchObject({ aborted: true });
+    expect(opened).toBe(0);
+    expect(await file.text()).toBe("hello");
+  });
+
+  test("a hand-rolled StoredFile reads through its plain accessors", async () => {
+    const reads = bufferedReads(handRolled());
+    const { signal } = new AbortController();
+    expect(await reads.text(signal)).toBe("abc");
+    const buffer = await reads.arrayBuffer(signal);
+    expect(buffer.byteLength).toBe(3);
+    const blob = await reads.blob(signal);
+    expect(blob.size).toBe(3);
+  });
+
+  test("withBufferedReads attaches a wrapper's reads", () => {
+    const reads = bufferedReads(handRolled());
+    expect(bufferedReads(withBufferedReads(handRolled(), reads))).toBe(reads);
   });
 });
 

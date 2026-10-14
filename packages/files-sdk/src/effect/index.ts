@@ -64,6 +64,7 @@ import { FilesError as SdkFilesError } from "../internal/errors.js";
 import type { FileEvent } from "../internal/events.js";
 import { isObject, isString } from "../internal/is.js";
 import { combineSignals } from "../internal/retry.js";
+import { bufferedReads } from "../internal/stored-file.js";
 
 export type { FileEvent, FileEventType } from "../internal/events.js";
 export type { EventTypeFilter } from "../events/index.js";
@@ -195,7 +196,9 @@ const fromCause = (cause: unknown): FilesError => {
  * A downloaded object: its {@link FileInfo} plus the body as Effect values.
  * `text`, `arrayBuffer` and `blob` buffer the body and can be run more than
  * once; `stream` reads it unbuffered, once, and can't be mixed with them (the
- * same rule as the SDK's `StoredFile`).
+ * same rule as the SDK's `StoredFile`). Interrupting a buffered read cancels
+ * the body read unless another read still waits on it, and a cancelled body
+ * can't be read again.
  */
 export interface DownloadedFile extends FileInfo {
   /** Same as `key` (the `File`-like name). */
@@ -415,33 +418,37 @@ const iterate = <A>(
 ): Stream.Stream<A, FilesError> =>
   Stream.fromAsyncIterable(abortable(open), fromCause);
 
-const toDownloadedFile = (file: StoredFile): DownloadedFile => ({
-  arrayBuffer: Effect.tryPromise({
-    catch: fromCause,
-    try: () => file.arrayBuffer(),
-  }),
-  blob: Effect.tryPromise({ catch: fromCause, try: () => file.blob() }),
-  contentType: file.contentType,
-  ...(file.etag !== undefined && { etag: file.etag }),
-  file,
-  key: file.key,
-  ...(file.lastModified !== undefined && { lastModified: file.lastModified }),
-  ...(file.metadata !== undefined && { metadata: file.metadata }),
-  name: file.name,
-  size: file.size,
-  stream: Stream.unwrap(
-    Effect.try({ catch: fromCause, try: () => file.stream() }).pipe(
-      Effect.map((readable) =>
-        Stream.fromReadableStream({
-          evaluate: () => readable,
-          onError: fromCause,
-        })
+// The buffered reads take the fiber's signal, so interrupting one cancels the
+// body read once no other reader is waiting on it.
+const toDownloadedFile = (file: StoredFile): DownloadedFile => {
+  const reads = bufferedReads(file);
+  return {
+    arrayBuffer: attempt((signal) => reads.arrayBuffer(signal)),
+    blob: attempt((signal) => reads.blob(signal)),
+    contentType: file.contentType,
+    ...(file.etag !== undefined && { etag: file.etag }),
+    file,
+    key: file.key,
+    ...(file.lastModified !== undefined && {
+      lastModified: file.lastModified,
+    }),
+    ...(file.metadata !== undefined && { metadata: file.metadata }),
+    name: file.name,
+    size: file.size,
+    stream: Stream.unwrap(
+      Effect.try({ catch: fromCause, try: () => file.stream() }).pipe(
+        Effect.map((readable) =>
+          Stream.fromReadableStream({
+            evaluate: () => readable,
+            onError: fromCause,
+          })
+        )
       )
-    )
-  ),
-  text: Effect.tryPromise({ catch: fromCause, try: () => file.text() }),
-  type: file.type,
-});
+    ),
+    text: attempt((signal) => reads.text(signal)),
+    type: file.type,
+  };
+};
 
 const hasEvents = (
   client: FilesClient

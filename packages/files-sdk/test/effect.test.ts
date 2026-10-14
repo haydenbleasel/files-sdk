@@ -76,6 +76,41 @@ const hanging = () => {
   return { adapter, seen, waiting: started.promise };
 };
 
+// An adapter whose download body is a stream that stalls on its first pull
+// until `release`, recording each cancellation of it.
+const stalled = () => {
+  const cancelled: unknown[] = [];
+  const pulling = Promise.withResolvers<null>();
+  const gate = Promise.withResolvers<string>();
+  const body = () =>
+    new ReadableStream<Uint8Array>({
+      cancel: (reason) => {
+        cancelled.push(reason);
+      },
+      pull: async (controller) => {
+        pulling.resolve(null);
+        controller.enqueue(new TextEncoder().encode(await gate.promise));
+        controller.close();
+      },
+    });
+  const adapter: Adapter = {
+    ...memory(),
+    download: (key) =>
+      Promise.resolve(
+        createStoredFile(
+          { contentType: "text/plain", key, size: 5 },
+          { factory: body, kind: "stream" }
+        )
+      ),
+  };
+  return {
+    adapter,
+    cancelled,
+    pulling: pulling.promise,
+    release: gate.resolve,
+  };
+};
+
 const event = (key: string): FileEvent => ({
   id: `id-${key}`,
   key,
@@ -374,6 +409,38 @@ describe("cancellation", () => {
     await waiting;
     await run(Fiber.interrupt(fiber));
     expect(seen.at(-1)?.aborted).toBe(true);
+  });
+
+  test.each(["text", "arrayBuffer", "blob"] as const)(
+    "interrupting a buffered %s read cancels the body stream",
+    async (accessor) => {
+      const { adapter, cancelled, pulling } = stalled();
+      const files = make(new FilesClient({ adapter, prefix: "scoped" }));
+      const file = await run(files.download("a.txt"));
+      const read: Effect.Effect<unknown, FilesError> = file[accessor];
+      const fiber = Effect.runFork(read);
+      await pulling;
+      await run(Fiber.interrupt(fiber));
+      expect(cancelled).toHaveLength(1);
+      // The body is gone, so a re-run fails as an abort, never retried.
+      const again = await reasonOf(read);
+      expect(again).toBeInstanceOf(Provider);
+      expect(again.aborted).toBe(true);
+    }
+  );
+
+  test("a buffered read keeps the body while another reader still waits", async () => {
+    const { adapter, cancelled, pulling, release } = stalled();
+    const files = make(new FilesClient({ adapter }));
+    const file = await run(files.download("a.txt"));
+    const first = Effect.runFork(file.text);
+    const second = Effect.runFork(file.text);
+    await pulling;
+    await run(Fiber.interrupt(first));
+    expect(cancelled).toHaveLength(0);
+    release("hello");
+    expect(await run(Fiber.join(second))).toBe("hello");
+    expect(await run(file.arrayBuffer)).toBeInstanceOf(ArrayBuffer);
   });
 });
 
