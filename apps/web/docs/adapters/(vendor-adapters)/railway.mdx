@@ -1,0 +1,84 @@
+---
+title: Railway Buckets
+description: Railway Buckets (private, Tigris-backed) via the S3-compatible API. Reads the AWS_* variables Railway injects; endpoint defaults to https://t3.storageapi.dev, region to auto.
+---
+
+## Installation
+
+`@aws-sdk/client-s3`, `@aws-sdk/s3-presigned-post`, and `@aws-sdk/s3-request-presigner` are optional peer dependencies of `files-sdk` - install alongside the SDK so the adapter's imports resolve at runtime.
+
+```package-install
+files-sdk @aws-sdk/client-s3 @aws-sdk/s3-presigned-post @aws-sdk/s3-request-presigner
+```
+
+`upload` also needs the optional `@aws-sdk/lib-storage` package when it uses `onProgress`, `multipart`, or a `ReadableStream` body of unknown length. It's only loaded then.
+
+## Usage
+
+```ts lineNumbers
+import { Files } from "files-sdk";
+import { railway } from "files-sdk/railway";
+
+const files = new Files({
+  adapter: railway(),
+  // bucket, endpoint, and credentials auto-loaded from
+  // AWS_S3_BUCKET_NAME / AWS_ENDPOINT_URL / AWS_ACCESS_KEY_ID /
+  // AWS_SECRET_ACCESS_KEY
+});
+```
+
+[Railway Buckets](https://docs.railway.com/storage-buckets) are private, S3-compatible object storage that runs on Tigris. The adapter is a thin wrapper around the S3 adapter: endpoint defaults to `https://t3.storageapi.dev`, region defaults to `"auto"` for signing, and errors are relabelled.
+
+The adapter reads the same `AWS_*` names that `railway bucket credentials` prints, so `railway()` needs no options once a service has them:
+
+| Variable | Option | Bucket reference | Notes |
+| --- | --- | --- | --- |
+| `AWS_S3_BUCKET_NAME` | `bucket` | `BUCKET` | The S3 name: your display name plus a short hash. Required. |
+| `AWS_ACCESS_KEY_ID` | `accessKeyId` | `ACCESS_KEY_ID` | Required. |
+| `AWS_SECRET_ACCESS_KEY` | `secretAccessKey` | `SECRET_ACCESS_KEY` | Required. |
+| `AWS_ENDPOINT_URL` | `endpoint` | `ENDPOINT` | Defaults to `https://t3.storageapi.dev`. |
+| `AWS_S3_URL_STYLE` | `forcePathStyle` |  | `"path"` or `"virtual"`. Buckets created before Railway moved to virtual-hosted URLs need `"path"`; the Credentials tab says which. |
+
+In the dashboard, open the service's **Variables** tab and auto-inject the bucket's credentials with the **AWS SDK** preset. Add any variable from the table the preset didn't create as a reference to the bucket, for example `AWS_S3_BUCKET_NAME=${{my-bucket.BUCKET}}`.
+
+Pass the options explicitly to connect from outside Railway:
+
+```ts lineNumbers
+const files = new Files({
+  adapter: railway({
+    bucket: "uploads-jdhhd8oe18xi",
+    accessKeyId: process.env.RAILWAY_BUCKET_KEY_ID,
+    secretAccessKey: process.env.RAILWAY_BUCKET_SECRET,
+  }),
+});
+```
+
+Credentials never fall back to the AWS credential chain, so a shared AWS profile or instance role can't end up signing Railway requests. Missing keys throw at construction.
+
+:::note
+Railway buckets have no public URLs, so `url()` returns a presigned `GetObject` URL (1 hour by default; SigV4 caps it at 7 days). Set `publicBaseUrl` only when a proxy service or CDN serves the bucket's objects at `${publicBaseUrl}/${key}`.
+:::
+
+Browser uploads through `signedUploadUrl()` need a CORS rule on the bucket. Railway's [uploading and serving guide](https://docs.railway.com/storage-buckets/uploading-serving) sets one with `aws s3api put-bucket-cors`.
+
+## Options
+
+<AutoTypeTable
+  path="../../packages/files-sdk/src/railway/index.ts"
+  name="RailwayAdapterOptions"
+/>
+
+## Compatibility
+
+| Method | Status | Notes |
+| --- | :-: | --- |
+| `upload` | ✅ |  |
+| `download` | ✅ |  |
+| `delete` | ✅ |  |
+| `list` | ⚠️ | The S3 list API returns no per-object `Content-Type`, so `contentType` is inferred from the key's extension (`application/octet-stream` when unknown). Use `head()` for the stored value. |
+| `search` | ✅ |  |
+| `head` | ✅ |  |
+| `exists` | ✅ |  |
+| `copy` | ✅ |  |
+| `url` | ✅ | Presigned. Railway buckets are private. |
+| `signedUploadUrl` | ✅ |  |

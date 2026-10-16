@@ -1191,6 +1191,61 @@ export const PROVIDERS = {
     peerDeps: AWS_S3_PEERS,
     slug: "r2",
   },
+  railway: {
+    description:
+      "Railway Buckets (private, Tigris-backed) via the S3-compatible API. Reads the AWS_* variables `railway bucket credentials` prints; endpoint defaults to https://t3.storageapi.dev, region to auto.",
+    env: {
+      credentialModes: [
+        {
+          label: "Access key (the bucket's ACCESS_KEY_ID / SECRET_ACCESS_KEY)",
+          vars: [
+            {
+              description: "The bucket's S3 access key ID",
+              key: "AWS_ACCESS_KEY_ID",
+              readBy: "files-sdk",
+              secret: true,
+            },
+            {
+              description: "The bucket's S3 secret access key",
+              key: "AWS_SECRET_ACCESS_KEY",
+              readBy: "files-sdk",
+              secret: true,
+            },
+          ],
+        },
+      ],
+      notes:
+        "`railway bucket credentials` prints every variable below; in the dashboard, inject them with the AWS SDK preset and add any it leaves out as references to the bucket's variables (BUCKET, ENDPOINT, ...). Credentials never fall back to the AWS credential chain, so a shared profile or instance role can't sign Railway requests.",
+      optional: [
+        {
+          description:
+            "S3 endpoint (defaults to https://t3.storageapi.dev; older buckets may show a different one)",
+          key: "AWS_ENDPOINT_URL",
+          readBy: "files-sdk",
+          secret: false,
+        },
+        {
+          description:
+            'Addressing style, "virtual" or "path" (older buckets need "path")',
+          key: "AWS_S3_URL_STYLE",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+      required: [
+        {
+          description:
+            "The bucket's S3 name, display name plus a short hash (or pass `bucket`)",
+          key: "AWS_S3_BUCKET_NAME",
+          readBy: "files-sdk",
+          secret: false,
+        },
+      ],
+    },
+    name: "Railway Buckets",
+    peerDeps: AWS_S3_PEERS,
+    slug: "railway",
+  },
   rustfs: {
     description:
       'RustFS, the Apache-2.0 Rust object store that runs as a MinIO drop-in. Path-style addressing on by default; region defaulted; errors relabelled. `client: "fetch"` swaps in an @aws-sdk-free SigV4 fetch engine (the default inside Cloudflare Workers).',

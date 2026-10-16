@@ -653,6 +653,28 @@
     },
     "uploadProgress": true
   },
+  "railway": {
+    "cacheControl": true,
+    "conditional": {
+      "create": false,
+      "delete": false,
+      "replace": false
+    },
+    "delimiter": "any",
+    "events": null,
+    "metadata": true,
+    "rangeRead": true,
+    "resumable": true,
+    "serverSideCopy": true,
+    "signedUpload": {
+      "maxSize": true
+    },
+    "signedUrl": {
+      "expiry": "exact",
+      "maxExpiresIn": 604800
+    },
+    "uploadProgress": true
+  },
   "rustfs": {
     "cacheControl": true,
     "conditional": {

@@ -169,6 +169,7 @@ const cases: Record<string, Case> = {
       secretAccessKey: "secret",
     },
   },
+  railway: { expectedName: "railway", opts: baseS3 },
   rustfs: {
     expectedName: "rustfs",
     opts: { ...baseS3, endpoint: "http://localhost:9000" },

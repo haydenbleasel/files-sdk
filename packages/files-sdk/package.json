@@ -267,6 +267,10 @@
       "types": "./dist/tigris/index.d.ts",
       "import": "./dist/tigris/index.js"
     },
+    "./railway": {
+      "types": "./dist/railway/index.d.ts",
+      "import": "./dist/railway/index.js"
+    },
     "./tencent": {
       "types": "./dist/tencent/index.d.ts",
       "import": "./dist/tencent/index.js"

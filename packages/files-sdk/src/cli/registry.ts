@@ -484,6 +484,15 @@ export const PROVIDERS: ProviderRegistry = {
     },
     required: ["--bucket"],
   },
+  railway: {
+    load: async (opts) => {
+      const { railway } = await import("../railway/index.js");
+      return construct(railway, s3LikeOpts(opts), opts.extra);
+    },
+    notes:
+      "bucket, endpoint, and credentials come from the AWS_* variables `railway bucket credentials` prints, or pass --bucket and --access-key-id/--secret-access-key",
+    required: [],
+  },
   rustfs: {
     load: async (opts) => {
       const { rustfs } = await import("../rustfs/index.js");

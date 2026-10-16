@@ -26,9 +26,9 @@ The repo is a Bun + Turbo monorepo:
 
 - `packages/files-sdk` — the published `files-sdk` package. Every folder under `src/` that has an `index.ts` is its own subpath export (`files-sdk/s3`, `files-sdk/validation`, …), except `cli/`, which is the `files` bin, so consumers only bundle what they import.
   - `src/index.ts` — the `Files` class, the `Adapter` and `FilesPlugin` contracts, `handlers()`/`createFiles()`, and every shared option/result type (`Body`, `StoredFile`, `UploadResult`, etc.)
-  - Adapters (48 at the time of writing; the live list is `src/providers/index.ts`):
+  - Adapters (49 at the time of writing; the live list is `src/providers/index.ts`):
     - Object stores with their own implementation: `src/s3/`, `src/gcs/`, `src/azure/`, `src/bun-s3/`
-    - S3-compatible stores that reuse the S3 engine: `src/r2/`, `src/minio/`, `src/rustfs/`, `src/digitalocean-spaces/`, `src/wasabi/`, `src/backblaze-b2/`, `src/tigris/`, `src/storj/`, `src/hetzner/`, `src/akamai/`, `src/scaleway/`, `src/ovhcloud/`, `src/vultr/`, `src/exoscale/`, `src/ibm-cos/`, `src/oracle-cloud/`, `src/tencent/`, `src/alibaba/`, `src/yandex/`, `src/idrive-e2/`, `src/filebase/`, `src/archil/`, `src/neon/`, plus the generic `src/s3-fetch/`
+    - S3-compatible stores that reuse the S3 engine: `src/r2/`, `src/minio/`, `src/rustfs/`, `src/digitalocean-spaces/`, `src/wasabi/`, `src/backblaze-b2/`, `src/tigris/`, `src/storj/`, `src/hetzner/`, `src/akamai/`, `src/scaleway/`, `src/ovhcloud/`, `src/vultr/`, `src/exoscale/`, `src/ibm-cos/`, `src/oracle-cloud/`, `src/tencent/`, `src/alibaba/`, `src/yandex/`, `src/idrive-e2/`, `src/filebase/`, `src/archil/`, `src/neon/`, `src/railway/`, plus the generic `src/s3-fetch/`
     - Platform blob stores: `src/vercel-blob/`, `src/netlify-blobs/`, `src/supabase/`, `src/uploadthing/`, `src/firebase-storage/`, `src/appwrite/`, `src/pocketbase/`, `src/convex/`, `src/cloudinary/`, `src/bunny-storage/`
     - Drive APIs: `src/google-drive/`, `src/onedrive/`, `src/dropbox/`, `src/box/`, `src/sharepoint/`
     - Local and protocol: `src/fs/`, `src/memory/`, `src/ftp/`, `src/sftp/`, `src/webdav/`
