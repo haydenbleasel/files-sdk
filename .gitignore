@@ -138,8 +138,7 @@ packages/files-sdk/docs/
 .yarn/install-state.gz
 .pnp.*
 
-# Remotion
-out
+# macOS
 .DS_Store
 
 # Vercel

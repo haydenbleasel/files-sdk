@@ -48,7 +48,6 @@ The repo is a Bun + Turbo monorepo:
   - `test/` — Bun tests, including `fake-adapter.ts` and `fake-s3-server.ts` for exercising the `Files` class and the fetch engine without a real backend
   - `scripts/build.ts` — the build (Bun bundler for JS, TypeScript 7's native compiler for `.d.ts`, then a docs copy)
 - `apps/web` — the Blume docs/marketing site at [files-sdk.dev](https://files-sdk.dev). **`apps/web/docs/` is the source of truth for all documentation**; `packages/files-sdk/docs/` is a gitignored copy made at build time so the published package ships version-matched docs.
-- `packages/videos` — Remotion launch and release videos (not published).
 - `skills/files-sdk` — the agent skill (`SKILL.md` + `references/`) that teaches AI coding tools how to use the SDK. Keep it in step with user-facing changes.
 
 ## Getting Started

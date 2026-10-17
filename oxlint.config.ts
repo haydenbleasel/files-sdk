@@ -8,8 +8,8 @@ import react from "ultracite/oxlint/react";
 // ruleset — where a rule genuinely doesn't fit, the exception is an inline
 // `oxlint-disable-next-line` at the call site so it's visible and grep-able.
 // The relaxations below are scoped to the peripheral trees only: the
-// presentational React trees (Remotion videos + the web app / shadcn registry),
-// which trip a batch of opinionated react rules by their nature.
+// presentational React tree (the web app / shadcn registry), which trips a
+// batch of opinionated react rules by its nature.
 export default defineConfig({
   extends: [core, react, astro, antiSlop],
   ignorePatterns: [
@@ -23,11 +23,11 @@ export default defineConfig({
   ],
   overrides: [
     {
-      // Remotion videos + web app / shadcn registry: presentational React.
-      files: ["packages/videos/**", "apps/web/**"],
+      // Web app / shadcn registry: presentational React.
+      files: ["apps/web/**"],
       rules: {
         // The React Compiler rule family (formerly the single
-        // `react/react-compiler` rule): these trees aren't compiled and lean
+        // `react/react-compiler` rule): this tree isn't compiled and leans
         // on refs/effects idiomatically.
         "react/exhaustive-effect-dependencies": "off",
         "react/memo-dependencies": "off",

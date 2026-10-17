@@ -12,7 +12,6 @@ Bun + Turbo monorepo:
 | --- | --- | --- |
 | `packages/files-sdk` | The SDK, CLI, gateways, plugins. `src/index.ts` (~3.8k lines) is the core. | Yes, npm `files-sdk` |
 | `apps/web` | Docs + marketing site (Blume/Astro), deployed to Cloudflare Workers. Owns the docs source. | No |
-| `packages/videos` | Remotion launch/release videos. | No |
 | `skills/files-sdk` | The agent skill for SDK consumers. Must track user-facing changes. | Via the repo, not the npm tarball (`files` is `dist` + `docs`) |
 
 Design intent that decides most API questions:
