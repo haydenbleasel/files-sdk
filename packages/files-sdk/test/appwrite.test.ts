@@ -761,25 +761,32 @@ describe("appwrite adapter", () => {
         total: 0,
       });
     };
-    listFilesMock.mockImplementationOnce(page as never);
-    listFilesMock.mockImplementationOnce(page as never);
-    const files = new Files({
-      adapter: appwrite({ bucket: BUCKET, projectId: PROJECT_ID }),
-    });
-    const found = [];
-    for await (const file of files.listAll({ prefix: "list-" })) {
-      found.push(file);
+    const original = listFilesMock.getMockImplementation();
+    if (!original) {
+      throw new Error("Missing default listing fixture");
     }
-    expect(found.map((file) => file.key)).toEqual(
-      records.map((file) => file.$id)
-    );
-    expect(found.map((file) => file.size)).toEqual(
-      records.map((file) => file.sizeOriginal)
-    );
-    expect(listFilesMock).toHaveBeenCalledTimes(2);
-    expect(listFilesMock).toHaveBeenLastCalledWith(
-      expect.objectContaining({ total: false })
-    );
+    listFilesMock.mockImplementation(page as never);
+    try {
+      const files = new Files({
+        adapter: appwrite({ bucket: BUCKET, projectId: PROJECT_ID }),
+      });
+      const found = [];
+      for await (const file of files.listAll({ prefix: "list-" })) {
+        found.push(file);
+      }
+      expect(found.map((file) => file.key)).toEqual(
+        records.map((file) => file.$id)
+      );
+      expect(found.map((file) => file.size)).toEqual(
+        records.map((file) => file.sizeOriginal)
+      );
+      expect(listFilesMock).toHaveBeenCalledTimes(2);
+      expect(listFilesMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ total: false })
+      );
+    } finally {
+      listFilesMock.mockImplementation(original);
+    }
   });
 
   test("list > returns next cursor when page fills the limit", async () => {
