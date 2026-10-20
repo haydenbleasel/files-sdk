@@ -740,6 +740,48 @@ describe("appwrite adapter", () => {
     });
   });
 
+  test("list > walks a thousand files without repeated small pages or totals", async () => {
+    const records = Array.from({ length: 1001 }, (_, index) => ({
+      $id: `list-${index}`,
+      mimeType: "text/plain",
+      sizeOriginal: index,
+    }));
+    const page = (params: { queries: string[] }) => {
+      const limit = Number(
+        params.queries.join(" ").match(/limit\((?<limit>\d+)\)/u)?.groups?.limit
+      );
+      const cursor = params.queries
+        .join(" ")
+        .match(/cursorAfter\("(?<cursor>[^"]+)"\)/u)?.groups?.cursor;
+      const offset = cursor
+        ? records.findIndex((file) => file.$id === cursor) + 1
+        : 0;
+      return Promise.resolve({
+        files: records.slice(offset, offset + limit),
+        total: 0,
+      });
+    };
+    listFilesMock.mockImplementationOnce(page as never);
+    listFilesMock.mockImplementationOnce(page as never);
+    const files = new Files({
+      adapter: appwrite({ bucket: BUCKET, projectId: PROJECT_ID }),
+    });
+    const found = [];
+    for await (const file of files.listAll({ prefix: "list-" })) {
+      found.push(file);
+    }
+    expect(found.map((file) => file.key)).toEqual(
+      records.map((file) => file.$id)
+    );
+    expect(found.map((file) => file.size)).toEqual(
+      records.map((file) => file.sizeOriginal)
+    );
+    expect(listFilesMock).toHaveBeenCalledTimes(2);
+    expect(listFilesMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ total: false })
+    );
+  });
+
   test("list > returns next cursor when page fills the limit", async () => {
     process.env.APPWRITE_PROJECT_ID = PROJECT_ID;
     const files = new Files({
