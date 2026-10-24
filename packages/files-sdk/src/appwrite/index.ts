@@ -67,7 +67,7 @@ export type AppwriteAdapter = Adapter<Storage> & {
   readonly bucket: string;
 };
 
-const DEFAULT_LIST_LIMIT = 100;
+const DEFAULT_LIST_LIMIT = 1000;
 
 const EMPTY_CODES: ReadonlySet<string> = new Set();
 
@@ -552,6 +552,7 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
         const response = await storage.listFiles({
           bucketId: opts.bucket,
           queries,
+          total: false,
         });
 
         const items: FileInfo[] = response.files.map((file) => ({
