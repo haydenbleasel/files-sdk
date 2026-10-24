@@ -414,5 +414,3 @@ Before answering with specifics:
 
 - Confirm the adapter the user has chosen actually exists by checking the `exports` in `node_modules/files-sdk/package.json` (or `PROVIDER_NAMES` from `files-sdk/providers`).
 - For non-obvious behavior (URL signing, `exists` semantics, `signedUploadUrl` POST vs PUT, which adapters support `range`/`delimiter`/resumable `control`), re-read the JSDoc in `node_modules/files-sdk/dist/index.d.ts` (and `dist/<adapter>/index.d.ts`) or the bundled `docs/` rather than trusting memory — or check `files.capabilities` at runtime.
-
-For Appwrite listing, the adapter defaults to 1,000 files per page without a total count; an explicit `limit` still controls page size.

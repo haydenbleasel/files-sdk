@@ -193,5 +193,3 @@ Notes:
 ## The shape every adapter shares
 
 Every adapter exports a factory that returns an `Adapter` satisfying the `Adapter` interface (declared in `node_modules/files-sdk/dist/index.d.ts`). As long as it satisfies that interface, the `Files` API works identically. When in doubt about a less-common adapter, read its options JSDoc in `node_modules/files-sdk/dist/<adapter>/index.d.ts` or its page under the bundled `docs/adapters/`, and check `files.capabilities` at runtime.
-
-Appwrite listing uses pages of 1,000 files by default and skips the unused total count. Pass `limit` to choose a smaller page size; cursor and prefix filtering are preserved.
