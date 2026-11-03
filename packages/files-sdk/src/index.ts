@@ -514,8 +514,9 @@ export interface BulkOptions {
    *
    * A bulk `delete` on an adapter with a native batch primitive ignores it
    * too: S3 and the S3-compatible adapters (on the `aws-sdk` client), Azure,
-   * Supabase, and UploadThing batch the keys into as few requests as the
-   * provider allows, and FTP / SFTP delete sequentially over one connection.
+   * Supabase, UploadThing, and the R2 Workers binding batch the keys into as
+   * few requests as the provider allows, and FTP / SFTP delete sequentially
+   * over one connection.
    * With a wrapping plugin installed, or without a native batch, the SDK fans
    * out to per-key `delete()` calls under this concurrency.
    */
