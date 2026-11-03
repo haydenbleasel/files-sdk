@@ -491,8 +491,10 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       for (let start = 0; start < keys.length; start += DELETE_BATCH_SIZE) {
         const batch = keys.slice(start, start + DELETE_BATCH_SIZE);
         try {
+          // Send a repeated key once: if the binding refused a key array with
+          // duplicates, the whole batch would fail on it.
           // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- batches go one at a time so a large delete doesn't fan out into many concurrent calls
-          await bucket.delete(batch);
+          await bucket.delete([...new Set(batch)]);
           results.push(...batch);
         } catch (error) {
           const mapped = mapR2Error(error);
