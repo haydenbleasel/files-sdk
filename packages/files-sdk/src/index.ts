@@ -37,6 +37,7 @@ import {
   retryBackoff,
   runWithSignal,
   sleep,
+  timeoutMs,
 } from "./internal/retry.js";
 import { buildSearchMatcher } from "./internal/search-matcher.js";
 
@@ -513,8 +514,9 @@ export interface BulkOptions {
    *
    * A bulk `delete` on an adapter with a native batch primitive ignores it
    * too: S3 and the S3-compatible adapters (on the `aws-sdk` client), Azure,
-   * Supabase, and UploadThing batch the keys into as few requests as the
-   * provider allows, and FTP / SFTP delete sequentially over one connection.
+   * Supabase, UploadThing, and the R2 Workers binding batch the keys into as
+   * few requests as the provider allows, and FTP / SFTP delete sequentially
+   * over one connection.
    * With a wrapping plugin installed, or without a native batch, the SDK fans
    * out to per-key `delete()` calls under this concurrency.
    */
@@ -1841,6 +1843,14 @@ const assertNoRelativeSegments = (key: string, label = "key"): void => {
  */
 const EXPIRING_URL_UNSUPPORTED =
   "an expiring url() (`expiresIn`) is not supported by";
+
+/**
+ * Keys per native bulk-delete call when the constructor `signal` or `timeout`
+ * can cut the delete short. 1000 is the per-request cap of S3
+ * `DeleteObjects`, Supabase, and the R2 Workers binding, so each slice is one
+ * provider call on those.
+ */
+const NATIVE_DELETE_SLICE = 1000;
 
 const normalizeDelimiterSupport = (
   declared: DelimiterSupport | undefined
@@ -3794,13 +3804,13 @@ export class Files<A extends Adapter = Adapter> {
     const toKey = (path: string): string => keyByPath.get(path) ?? path;
 
     // Retry-free (as documented for bulk), but still under the constructor
-    // `signal`/`timeout` via the non-retryable #run. The native bulk
-    // primitive takes no per-call signal, so the whole batch runs under one
-    // #run; the fan-out fallback runs one per key. (`stopOnError` never gets
-    // here — it took the per-key path above.)
+    // `signal`/`timeout` via the non-retryable #run: the native bulk
+    // primitive runs one per slice of keys (see #nativeDeleteMany), the
+    // fan-out fallback one per key. (`stopOnError` never gets here — it took
+    // the per-key path above.)
     const nativeDeleteMany = this.#adapter.deleteMany?.bind(this.#adapter);
     const result = nativeDeleteMany
-      ? await this.#run(undefined, () => nativeDeleteMany(paths, opts), false)
+      ? await this.#nativeDeleteMany(nativeDeleteMany, paths, opts)
       : await deleteManyWithFallback(
           paths,
           (path) =>
@@ -3825,6 +3835,58 @@ export class Files<A extends Adapter = Adapter> {
       errors: errors.map(({ error, key }) => ({ error, key })),
       results: deleted,
     };
+  }
+
+  /**
+   * Run the adapter's native bulk delete under the constructor `signal` /
+   * `timeout`. The native call takes no per-call signal, so with either set
+   * the paths go out in slices of {@link NATIVE_DELETE_SLICE}, each under its
+   * own #run, so the timeout bounds each slice rather than the whole delete.
+   * The first slice that throws ends the delete: a slice the signal or
+   * timeout cuts off may still be running in the adapter, so sending the next
+   * one would overlap it. That slice's keys and those of the slices never
+   * sent are reported with its error instead of rejecting the call, so the
+   * keys earlier slices deleted stay in `results`. A hard provider failure on
+   * the first slice still rejects the call, as the unsliced call does, since
+   * nothing has been deleted yet. Without either, nothing can cut the delete
+   * short, so it's one native call.
+   */
+  async #nativeDeleteMany(
+    deleteMany: NonNullable<Adapter["deleteMany"]>,
+    paths: string[],
+    opts: DeleteManyOptions | undefined
+  ): Promise<DeleteManyResult> {
+    const bounded =
+      this.#defaults.signal !== undefined ||
+      timeoutMs(this.#defaults.timeout) !== undefined;
+    if (!bounded) {
+      return await this.#run(undefined, () => deleteMany(paths, opts), false);
+    }
+    const results: string[] = [];
+    const errors: BulkError[] = [];
+    for (let start = 0; start < paths.length; start += NATIVE_DELETE_SLICE) {
+      const slice = paths.slice(start, start + NATIVE_DELETE_SLICE);
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run one at a time so a cut-off slice stops the delete before another overlaps it
+        const sliceResult = await this.#run(
+          undefined,
+          () => deleteMany(slice, opts),
+          false
+        );
+        results.push(...sliceResult.results);
+        errors.push(...(sliceResult.errors ?? []));
+      } catch (error) {
+        const wrapped = FilesError.wrap(error);
+        if (start === 0 && !wrapped.aborted) {
+          throw error;
+        }
+        for (const path of paths.slice(start)) {
+          errors.push({ error: wrapped, key: path });
+        }
+        break;
+      }
+    }
+    return errors.length === 0 ? { results } : { errors, results };
   }
 
   copy(from: string, to: string, opts?: CopyOptions): Promise<void> {

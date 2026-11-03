@@ -192,7 +192,7 @@ R2 does not advertise the SDK's provider-native [conditional operation](/docs/co
 | --- | :-: | --- |
 | `upload` | ⚠️ | A `ReadableStream` body needs a known length (a request/response body with `Content-Length`, or a `FixedLengthStream`); workerd rejects one of unknown length. Strings, bytes, and `Blob`s always work. |
 | `download` | ✅ |  |
-| `delete` | ✅ |  |
+| `delete` | ✅ | Bulk deletes go out in batches of up to 1000 keys per binding call. |
 | `list` | ✅ |  |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
@@ -207,7 +207,7 @@ R2 does not advertise the SDK's provider-native [conditional operation](/docs/co
 | --- | :-: | --- |
 | `upload` | ⚠️ | Goes through the binding, so a `ReadableStream` body needs a known length, as in binding mode. |
 | `download` | ✅ |  |
-| `delete` | ✅ |  |
+| `delete` | ✅ | Bulk deletes go out in batches of up to 1000 keys per binding call. |
 | `list` | ✅ |  |
 | `search` | ✅ |  |
 | `head` | ✅ |  |
