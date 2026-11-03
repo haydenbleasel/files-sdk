@@ -729,6 +729,49 @@ describe("r2 adapter — Workers binding path", () => {
     expect(result?.errors?.[0]?.error.code).toBe("Unauthorized");
   });
 
+  test("deleteMany sends a repeated key once per binding call but reports each occurrence", async () => {
+    const { bucket } = fakeBinding();
+    const calls: (string | string[])[] = [];
+    bucket.delete = (keys) => {
+      calls.push(keys);
+      return Promise.resolve();
+    };
+    const files = new Files({
+      adapter: r2({ binding: bucket as never }),
+      prefix: "uploads",
+    });
+    const result = await files.delete(["a.txt", "/a.txt", "b.txt", "a.txt"]);
+    expect(calls).toEqual([["uploads/a.txt", "uploads/b.txt"]]);
+    expect(result).toEqual({
+      results: ["a.txt", "a.txt", "b.txt", "a.txt"],
+    });
+  });
+
+  test("deleteMany makes no further binding call once the constructor signal aborts", async () => {
+    const { bucket } = fakeBinding();
+    const controller = new AbortController();
+    const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+    const calls: (string | string[])[] = [];
+    bucket.delete = (batch) => {
+      calls.push(batch);
+      if (calls.length === 2) {
+        controller.abort(new Error("stop"));
+        // oxlint-disable-next-line promise/avoid-new -- the binding call is still in flight when the abort lands.
+        return new Promise<void>(() => {});
+      }
+      return Promise.resolve();
+    };
+    const files = new Files({
+      adapter: r2({ binding: bucket as never }),
+      signal: controller.signal,
+    });
+    const result = await files.delete(keys);
+    expect(calls.map((batch) => batch.length)).toEqual([1000, 1000]);
+    expect(result.results).toEqual(keys.slice(0, 1000));
+    expect(result.errors?.map((e) => e.key)).toEqual(keys.slice(1000));
+    expect(result.errors?.every((e) => e.error.aborted)).toBe(true);
+  });
+
   test("deleteMany with stopOnError deletes one key at a time and stops at the first failure", async () => {
     const { bucket } = fakeBinding();
     const calls: (string | string[])[] = [];

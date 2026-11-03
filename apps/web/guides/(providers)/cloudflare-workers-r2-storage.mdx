@@ -50,7 +50,7 @@ On every configuration, `signedUploadUrl()` returns a presigned `PUT` and throws
 - **`client: "fetch"`** is for a Worker with no binding to the bucket, such as a bucket in another account. Each call is an HTTP subrequest.
 - **`client: "aws-sdk"`** only earns its weight when Worker code needs resumable or multipart uploads, and its XML parsing needs a `DOMParser` that workerd doesn't provide ([details](/docs/adapters/r2#default-inside-cloudflare-workers)). Test it under `wrangler dev` before you rely on it.
 
-When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with its own [`createMultipartUpload()`](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/).
+When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with its own [`createMultipartUpload()` and multi-key `delete()`](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/). The multi-key `delete()` still batches when a [plugin](/docs/plugins) that wraps operations makes `files.delete([...])` fan out per key.
 
 ## Configure Wrangler
 

@@ -37,6 +37,7 @@ import {
   retryBackoff,
   runWithSignal,
   sleep,
+  timeoutMs,
 } from "./internal/retry.js";
 import { buildSearchMatcher } from "./internal/search-matcher.js";
 
@@ -1841,6 +1842,14 @@ const assertNoRelativeSegments = (key: string, label = "key"): void => {
  */
 const EXPIRING_URL_UNSUPPORTED =
   "an expiring url() (`expiresIn`) is not supported by";
+
+/**
+ * Keys per native bulk-delete call when the constructor `signal` or `timeout`
+ * can cut the delete short. 1000 is the per-request cap of S3
+ * `DeleteObjects`, Supabase, and the R2 Workers binding, so each slice is one
+ * provider call on those.
+ */
+const NATIVE_DELETE_SLICE = 1000;
 
 const normalizeDelimiterSupport = (
   declared: DelimiterSupport | undefined
@@ -3794,13 +3803,13 @@ export class Files<A extends Adapter = Adapter> {
     const toKey = (path: string): string => keyByPath.get(path) ?? path;
 
     // Retry-free (as documented for bulk), but still under the constructor
-    // `signal`/`timeout` via the non-retryable #run. The native bulk
-    // primitive takes no per-call signal, so the whole batch runs under one
-    // #run; the fan-out fallback runs one per key. (`stopOnError` never gets
-    // here — it took the per-key path above.)
+    // `signal`/`timeout` via the non-retryable #run: the native bulk
+    // primitive runs one per slice of keys (see #nativeDeleteMany), the
+    // fan-out fallback one per key. (`stopOnError` never gets here — it took
+    // the per-key path above.)
     const nativeDeleteMany = this.#adapter.deleteMany?.bind(this.#adapter);
     const result = nativeDeleteMany
-      ? await this.#run(undefined, () => nativeDeleteMany(paths, opts), false)
+      ? await this.#nativeDeleteMany(nativeDeleteMany, paths, opts)
       : await deleteManyWithFallback(
           paths,
           (path) =>
@@ -3825,6 +3834,53 @@ export class Files<A extends Adapter = Adapter> {
       errors: errors.map(({ error, key }) => ({ error, key })),
       results: deleted,
     };
+  }
+
+  /**
+   * Run the adapter's native bulk delete under the constructor `signal` /
+   * `timeout`. The native call takes no per-call signal, so with either set
+   * the paths go out in slices of {@link NATIVE_DELETE_SLICE}, each under its
+   * own #run: the timeout bounds each slice rather than the whole delete, a
+   * slice the signal or timeout cuts off is reported on each of its keys
+   * instead of rejecting the call, and once the signal aborts the slices left
+   * fail fast without reaching the adapter. A hard provider failure still
+   * rejects the call. Without either, nothing can cut the delete short, so
+   * it's one native call.
+   */
+  async #nativeDeleteMany(
+    deleteMany: NonNullable<Adapter["deleteMany"]>,
+    paths: string[],
+    opts: DeleteManyOptions | undefined
+  ): Promise<DeleteManyResult> {
+    const bounded =
+      this.#defaults.signal !== undefined ||
+      timeoutMs(this.#defaults.timeout) !== undefined;
+    if (!bounded) {
+      return await this.#run(undefined, () => deleteMany(paths, opts), false);
+    }
+    const results: string[] = [];
+    const errors: BulkError[] = [];
+    for (let start = 0; start < paths.length; start += NATIVE_DELETE_SLICE) {
+      const slice = paths.slice(start, start + NATIVE_DELETE_SLICE);
+      try {
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run in order so an abort stops the delete between them
+        const sliceResult = await this.#run(
+          undefined,
+          () => deleteMany(slice, opts),
+          false
+        );
+        results.push(...sliceResult.results);
+        errors.push(...(sliceResult.errors ?? []));
+      } catch (error) {
+        if (!(error instanceof FilesError && error.aborted)) {
+          throw error;
+        }
+        for (const path of slice) {
+          errors.push({ error, key: path });
+        }
+      }
+    }
+    return errors.length === 0 ? { results } : { errors, results };
   }
 
   copy(from: string, to: string, opts?: CopyOptions): Promise<void> {
