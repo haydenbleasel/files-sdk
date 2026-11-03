@@ -1153,7 +1153,7 @@ describe("Files class", () => {
     }
   });
 
-  test("a native bulk delete runs each 1000-key slice under its own constructor timeout", async () => {
+  test("a native bulk delete stops at the first 1000-key slice that outlives the constructor timeout", async () => {
     const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
     const slices: string[][] = [];
     const files = new Files({
@@ -1161,7 +1161,7 @@ describe("Files class", () => {
         ...fakeAdapter(),
         deleteMany(sliceKeys: string[]) {
           slices.push(sliceKeys);
-          // The second slice hangs past the timeout; the others settle.
+          // The second slice hangs past the timeout; the first settles.
           return slices.length === 2
             ? // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
               new Promise<never>(() => {})
@@ -1172,14 +1172,10 @@ describe("Files class", () => {
     });
 
     const result = await files.delete(keys);
-    expect(slices.map((slice) => slice.length)).toEqual([1000, 1000, 500]);
-    expect(result.results).toEqual([
-      ...keys.slice(0, 1000),
-      ...keys.slice(2000),
-    ]);
-    expect(result.errors?.map((entry) => entry.key)).toEqual(
-      keys.slice(1000, 2000)
-    );
+    // The hung slice may still be deleting, so no third slice overlaps it.
+    expect(slices.map((slice) => slice.length)).toEqual([1000, 1000]);
+    expect(result.results).toEqual(keys.slice(0, 1000));
+    expect(result.errors?.map((entry) => entry.key)).toEqual(keys.slice(1000));
     for (const entry of result.errors ?? []) {
       expect(entry.error.timedOut).toBe(true);
     }
@@ -1231,6 +1227,32 @@ describe("Files class", () => {
     await expect(offline.delete(["a.txt"])).rejects.toMatchObject({
       message: "bucket offline",
     });
+  });
+
+  test("a native bulk delete keeps earlier slices' results when a later slice fails outright", async () => {
+    const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+    let calls = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        deleteMany(sliceKeys: string[]) {
+          calls += 1;
+          return calls === 2
+            ? Promise.reject(new Error("bucket offline"))
+            : Promise.resolve({ results: sliceKeys });
+        },
+      },
+      timeout: 1000,
+    });
+
+    const result = await files.delete(keys);
+    expect(calls).toBe(2);
+    expect(result.results).toEqual(keys.slice(0, 1000));
+    expect(result.errors?.map((entry) => entry.key)).toEqual(keys.slice(1000));
+    for (const entry of result.errors ?? []) {
+      expect(entry.error).toBeInstanceOf(FilesError);
+      expect(entry.error.message).toBe("bucket offline");
+    }
   });
 
   test("a native bulk delete with no constructor signal or timeout is one adapter call", async () => {
