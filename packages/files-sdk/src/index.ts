@@ -3841,12 +3841,15 @@ export class Files<A extends Adapter = Adapter> {
    * Run the adapter's native bulk delete under the constructor `signal` /
    * `timeout`. The native call takes no per-call signal, so with either set
    * the paths go out in slices of {@link NATIVE_DELETE_SLICE}, each under its
-   * own #run: the timeout bounds each slice rather than the whole delete, a
-   * slice the signal or timeout cuts off is reported on each of its keys
-   * instead of rejecting the call, and once the signal aborts the slices left
-   * fail fast without reaching the adapter. A hard provider failure still
-   * rejects the call. Without either, nothing can cut the delete short, so
-   * it's one native call.
+   * own #run, so the timeout bounds each slice rather than the whole delete.
+   * The first slice that throws ends the delete: a slice the signal or
+   * timeout cuts off may still be running in the adapter, so sending the next
+   * one would overlap it. That slice's keys and those of the slices never
+   * sent are reported with its error instead of rejecting the call, so the
+   * keys earlier slices deleted stay in `results`. A hard provider failure on
+   * the first slice still rejects the call, as the unsliced call does, since
+   * nothing has been deleted yet. Without either, nothing can cut the delete
+   * short, so it's one native call.
    */
   async #nativeDeleteMany(
     deleteMany: NonNullable<Adapter["deleteMany"]>,
@@ -3864,7 +3867,7 @@ export class Files<A extends Adapter = Adapter> {
     for (let start = 0; start < paths.length; start += NATIVE_DELETE_SLICE) {
       const slice = paths.slice(start, start + NATIVE_DELETE_SLICE);
       try {
-        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run in order so an abort stops the delete between them
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run one at a time so a cut-off slice stops the delete before another overlaps it
         const sliceResult = await this.#run(
           undefined,
           () => deleteMany(slice, opts),
@@ -3873,12 +3876,14 @@ export class Files<A extends Adapter = Adapter> {
         results.push(...sliceResult.results);
         errors.push(...(sliceResult.errors ?? []));
       } catch (error) {
-        if (!(error instanceof FilesError && error.aborted)) {
+        const wrapped = FilesError.wrap(error);
+        if (start === 0 && !wrapped.aborted) {
           throw error;
         }
-        for (const path of slice) {
-          errors.push({ error, key: path });
+        for (const path of paths.slice(start)) {
+          errors.push({ error: wrapped, key: path });
         }
+        break;
       }
     }
     return errors.length === 0 ? { results } : { errors, results };

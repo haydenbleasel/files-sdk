@@ -24,7 +24,7 @@ The timeout applies to **each attempt**, not to the call as a whole. Since a tim
 
 ## Bulk calls
 
-The array forms (`upload([…])`, `delete([…])`, …) give each per-key call its own timeout, and an item that times out lands in the result's `errors` rather than rejecting the call. A native bulk [`delete`](/docs/bulk) goes out in slices of up to 1000 keys while a constructor `timeout` is set, each slice with its own timeout: a slice that times out is reported on each of its keys, and the delete moves on to the next slice.
+The array forms (`upload([…])`, `delete([…])`, …) give each per-key call its own timeout, and an item that times out lands in the result's `errors` rather than rejecting the call. A native bulk [`delete`](/docs/bulk) goes out in slices of up to 1000 keys while a constructor `timeout` is set, each slice with its own timeout. The first slice that times out ends the delete, since the provider call takes no signal and may still be running: that slice's keys and those of the slices not yet sent land in `errors`, while the keys earlier slices deleted stay in `results`. Some keys of the timed-out slice may still get deleted after the call returns.
 
 ## Interaction with adapter timeouts
 
