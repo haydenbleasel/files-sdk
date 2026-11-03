@@ -39,7 +39,7 @@ files-sdk
 | `url()` and `signedUploadUrl()` | Throw (a plain `url(key)` only returns unsigned `publicBaseUrl` links; `expiresIn` throws) | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` |
 | Resumable `control` | Throws | Throws | Throws | Supported |
 | `multipart` option | Ignored, one `put` | Ignored, one `put` | Throws | Supported |
-| Bulk `delete([...])` | One binding call per 1000 keys | One binding call per 1000 keys | One `DELETE` request per key | Batched `DeleteObjects` |
+| Bulk `delete([...])` | One binding call per 1000 keys (one per key with `stopOnError`) | One binding call per 1000 keys (one per key with `stopOnError`) | One `DELETE` request per key | Batched `DeleteObjects` (one request per key with `stopOnError`) |
 | Stream of unknown length | Rejected by the runtime | Rejected by the runtime | Buffered in memory, then one `PUT` | Uploaded in parts |
 | Needs the `@aws-sdk/*` packages | No | No | No | Yes, and a `DOMParser` polyfill |
 
