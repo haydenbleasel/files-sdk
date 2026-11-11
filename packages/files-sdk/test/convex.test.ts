@@ -464,6 +464,54 @@ describe("convex adapter", () => {
       expect(first.items[0]?.size).toBe(3);
       expect(first.items[0]?.etag).toBeDefined();
     });
+
+    test("prefix filters the page to ids that start with it", async () => {
+      const backend = makeBackend();
+      backend.put(new TextEncoder().encode("one"));
+      const wanted = backend.put(new TextEncoder().encode("two"));
+      backend.put(new TextEncoder().encode("three"));
+      const adapter = convex({ ctx: backend.queryCtx });
+      const { cursor, items } = await adapter.list({ prefix: wanted });
+      expect(items.map((i) => i.key)).toEqual([wanted]);
+      expect(cursor).toBeUndefined();
+    });
+  });
+
+  describe("metadata sources", () => {
+    test("a context with ctx.db and action storage reports lastModified on upload and download", async () => {
+      // `readMeta` prefers the system table whenever `ctx.db` is present, so a
+      // context that carries both (e.g. a custom ctx merging the two) gets
+      // `_creationTime` as `lastModified` from both writes and reads.
+      const backend = makeBackend();
+      const adapter = convex({
+        ctx: { db: backend.mutationCtx.db, storage: backend.actionCtx.storage },
+      });
+      const up = await adapter.upload("k", "dated");
+      const created = backend.store.get(up.key)?.creationTime;
+      expect(created).toBeNumber();
+      expect(up.lastModified).toBe(created as number);
+      const down = await adapter.download(up.key);
+      expect(down.lastModified).toBe(created as number);
+      expect(down.etag).toBe(up.etag as string);
+      expect(await down.text()).toBe("dated");
+    });
+
+    test("with no metadata source, download falls back to the blob itself", async () => {
+      // No ctx.db and no storage.getMetadata: the type and size come from the
+      // fetched blob, and there is no etag or lastModified to report.
+      const ctx: ConvexCtx = {
+        storage: {
+          get: () => Promise.resolve(new Blob(["abcd"], { type: "image/png" })),
+          getUrl: () => Promise.resolve(null),
+        },
+      };
+      const file = await convex({ ctx }).download("kg000000");
+      expect(file.contentType).toBe("image/png");
+      expect(file.size).toBe(4);
+      expect(file.etag).toBeUndefined();
+      expect(file.lastModified).toBeUndefined();
+      expect(await file.text()).toBe("abcd");
+    });
   });
 
   describe("Files integration", () => {

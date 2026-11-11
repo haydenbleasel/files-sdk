@@ -134,6 +134,17 @@ describe("scaleway adapter", () => {
     expect(url).toContain("s3.fr-par.scw.cloud");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = scaleway({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "fr-par",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = scaleway({
       accessKeyId: "AKID",

@@ -138,6 +138,17 @@ describe("neon adapter", () => {
     expect(url).toContain(ENDPOINT_HOST);
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = neon({
+      accessKeyId: "AKID",
+      bucket: "images",
+      defaultUrlExpiresIn: 600,
+      endpoint: ENDPOINT,
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = neon({
       accessKeyId: "AKID",

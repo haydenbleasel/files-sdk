@@ -903,6 +903,30 @@ describe("bun-s3 adapter", () => {
     ]);
   });
 
+  test("list leaves lastModified unset when Bun omits it or it isn't a date", async () => {
+    // Typed as the adapter's interface: Bun's optional list fields, not the
+    // fake's always-populated ones.
+    const client: BunS3ClientLike = new FakeBunS3Client();
+    client.list = () =>
+      Promise.resolve({
+        contents: [
+          { eTag: '"a"', key: "missing.txt", size: 1 },
+          { eTag: '"b"', key: "garbled.txt", lastModified: "not a date" },
+        ],
+        isTruncated: false,
+      });
+    const { items } = await bunS3({ client }).list();
+    expect(items.map((item) => item.key)).toEqual([
+      "missing.txt",
+      "garbled.txt",
+    ]);
+    for (const item of items) {
+      expect(item.lastModified).toBeUndefined();
+    }
+    // A missing size still reports as zero rather than undefined.
+    expect(items[1]?.size).toBe(0);
+  });
+
   test("list infers the content type from the key, like the rest of the S3 family", async () => {
     const client = new FakeBunS3Client();
     const adapter = bunS3({ client });
@@ -1206,6 +1230,44 @@ describe("bun-s3 resumable uploads (in-process)", () => {
       message: expect.stringMatching(/Cannot resume a gcs/u),
     });
   });
+
+  test("a bun-s3 token for another key is refused before any write", async () => {
+    const client = new FakeBunS3Client();
+    const files = new Files({ adapter: bunS3({ client }) });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "other.bin",
+      provider: "bun-s3",
+      uploadId: "bun-1",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match this upload's key/u),
+    });
+    // abortUpload adopts the token too, so it refuses rather than discarding
+    // a session it wasn't pointed at.
+    await expect(files.abortUpload("x.bin", token)).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    expect(client.writes).toEqual([]);
+  });
+
+  test("a failed final write maps the provider error", async () => {
+    const client = new FakeBunS3Client();
+    client.write = () =>
+      Promise.reject(Object.assign(new Error("denied"), { status: 403 }));
+    const files = new Files({ adapter: bunS3({ client }) });
+    const control = new UploadControl();
+    await expect(
+      files.upload("w.bin", "abcdefgh", {
+        control,
+        multipart: { partSize: 4 },
+      })
+    ).rejects.toMatchObject({ code: "Unauthorized", message: "denied" });
+    expect(client.entries.has("w.bin")).toBe(false);
+  });
 });
 
 // What Bun 1.4 throws for a failed HEAD that isn't a 404: no status, and no
@@ -1277,6 +1339,20 @@ describe("bun-s3 status-less HEAD failures", () => {
       } finally {
         stop();
       }
+    }
+  });
+
+  test("a probe answering 404 makes exists() false and head() NotFound", async () => {
+    const { client, probes, stop } = failingHeads(404);
+    try {
+      const adapter = bunS3({ client });
+      expect(await adapter.exists("k")).toBe(false);
+      await expect(adapter.head("k")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      expect(probes()).toBe(2);
+    } finally {
+      stop();
     }
   });
 

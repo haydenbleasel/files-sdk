@@ -122,6 +122,17 @@ describe("idrive-e2 adapter", () => {
     expect(url).toContain("idrivee2-12.com");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = idriveE2({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      endpoint: "https://q9z7.va.idrivee2-12.com",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = idriveE2({
       accessKeyId: "AKID",

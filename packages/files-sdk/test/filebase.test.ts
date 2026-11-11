@@ -112,6 +112,16 @@ describe("filebase adapter", () => {
     expect(url).toContain("s3.filebase.com");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = filebase({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = filebase({
       accessKeyId: "AKID",

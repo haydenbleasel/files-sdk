@@ -472,6 +472,54 @@ describe("cloudinary", () => {
     expect(upload?.id).toStartWith("upload:a@");
     expect(upload?.contentType).toBeUndefined();
   });
+
+  test("only image and video uploads get a content type from their format", async () => {
+    const files = filesAs({ name: "cloudinary" });
+    const upload = {
+      asset_id: "a",
+      format: "mp4",
+      notification_type: "upload",
+      public_id: "p",
+    };
+    const [video] = await files.events.parse({
+      ...upload,
+      resource_type: "video",
+    });
+    expect(video?.contentType).toBe("video/mp4");
+    const [raw] = await files.events.parse({ ...upload, resource_type: "raw" });
+    expect(raw?.key).toBe("p");
+    expect(raw?.contentType).toBeUndefined();
+  });
+
+  test("a rename without a request_id derives both event ids from the asset", async () => {
+    const files = filesAs({ name: "cloudinary" });
+    const { request_id: _requestId, ...body } = json("cloudinary/rename.json");
+    const renamed = await files.events.parse(body);
+    const stamp =
+      "rename:005b8a1aca3783a729054c1533624cbb@2024-06-25T11:29:09.004998Z";
+    expect(renamed.map(({ id, type }) => `${type}:${id}`)).toEqual([
+      `deleted:${stamp}:from`,
+      `created:${stamp}:to`,
+    ]);
+  });
+
+  test("an explicit format on a non-Cloudinary adapter applies no scope", async () => {
+    const files = filesAs({ name: "memory" }, { format: "cloudinary" });
+    const parsed = await Promise.all(
+      ["image", "raw"].map((resourceType) =>
+        files.events.parse({
+          notification_type: "upload",
+          public_id: resourceType,
+          resource_type: resourceType,
+          type: "private",
+        })
+      )
+    );
+    expect(parsed.flat().map(({ key, type }) => `${type}:${key}`)).toEqual([
+      "created:image",
+      "created:raw",
+    ]);
+  });
 });
 
 describe("appwrite", () => {

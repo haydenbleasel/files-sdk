@@ -134,6 +134,17 @@ describe("alibaba adapter", () => {
     expect(url).toContain("oss-cn-hangzhou.aliyuncs.com");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = alibaba({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "cn-hangzhou",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = alibaba({
       accessKeyId: "AKID",

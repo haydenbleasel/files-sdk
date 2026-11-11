@@ -138,6 +138,17 @@ describe("ibm-cos adapter", () => {
     expect(url).toContain("s3.us-south.cloud-object-storage.appdomain.cloud");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = ibmCos({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "us-south",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = ibmCos({
       accessKeyId: "AKID",

@@ -73,6 +73,16 @@ describe("storj adapter", () => {
     expect(url).toContain("X-Amz-Expires=3600");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = storj({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = storj({
       accessKeyId: "AKID",

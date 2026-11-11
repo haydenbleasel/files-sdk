@@ -163,6 +163,18 @@ describe("oracle-cloud adapter", () => {
     );
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = oracleCloud({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      namespace: "axoki12345",
+      region: "us-ashburn-1",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = oracleCloud({
       accessKeyId: "AKID",

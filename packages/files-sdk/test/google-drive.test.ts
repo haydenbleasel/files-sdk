@@ -35,8 +35,11 @@ interface FakeFile {
 
 const STABLE_MODIFIED = "2024-01-02T03:04:05.000Z";
 const STABLE_MODIFIED_MS = new Date(STABLE_MODIFIED).getTime();
+const OCTET = "application/octet-stream";
 
 let store: Map<string, FakeFile>;
+// The media bytes each `files.create` received, by the file id it minted.
+let uploadedBytes: Map<string, Buffer>;
 let nextId = 0;
 const newId = (): string => {
   nextId += 1;
@@ -55,13 +58,16 @@ const filesCreateMock = mock(async (params: unknown) => {
     media?: { body: Readable; mimeType?: string };
   };
   // Drain the media so tests can inspect uploaded bytes if needed.
-  let size = 0;
+  const chunks: Buffer[] = [];
   if (p.media?.body) {
-    for await (const chunk of p.media.body as AsyncIterable<Buffer>) {
-      size += (chunk as Buffer).byteLength ?? 0;
+    for await (const chunk of p.media.body as AsyncIterable<Uint8Array>) {
+      chunks.push(Buffer.from(chunk));
     }
   }
+  const bytes = Buffer.concat(chunks);
+  const size = bytes.byteLength;
   const id = newId();
+  uploadedBytes.set(id, bytes);
   const file: FakeFile = {
     appProperties: p.requestBody.appProperties,
     id,
@@ -159,7 +165,7 @@ const filesListMock = mock((params: unknown) => {
   return Promise.resolve({ data: { files: matches } });
 });
 
-const filesGetMock = mock((params: unknown, requestOpts?: unknown) => {
+const fakeFilesGet = (params: unknown, requestOpts?: unknown) => {
   const p = params as { fileId: string; alt?: string };
   const file = store.get(p.fileId);
   if (!file) {
@@ -192,7 +198,9 @@ const filesGetMock = mock((params: unknown, requestOpts?: unknown) => {
     });
   }
   return Promise.resolve({ data: file });
-});
+};
+
+const filesGetMock = mock(fakeFilesGet);
 
 const filesDeleteMock = mock((params: unknown) => {
   const p = params as { fileId: string };
@@ -249,6 +257,14 @@ const fakeDriveClient = {
 
 const driveFactoryMock = mock((_opts?: unknown) => fakeDriveClient);
 
+// The auth handle the adapter last passed to the `drive()` factory.
+const lastDriveAuth = (): unknown => {
+  const factoryOpts = driveFactoryMock.mock.calls.at(-1)?.[0] as
+    | { auth?: unknown }
+    | undefined;
+  return factoryOpts?.auth;
+};
+
 mock.module("@googleapis/drive", () => ({
   drive: driveFactoryMock,
 }));
@@ -283,6 +299,7 @@ const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   store = new Map();
+  uploadedBytes = new Map();
   nextId = 0;
   filesCreateMock.mockClear();
   filesUpdateMock.mockClear();
@@ -307,6 +324,10 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
+
+// A gaxios-shaped failure: googleapis puts the HTTP status on `code`.
+const driveFailure = (code: number, message: string): Error =>
+  Object.assign(new Error(message), { code });
 
 const restoreEnv = (key: string, value: string | undefined): void => {
   if (value === undefined) {
@@ -407,6 +428,67 @@ describe("google-drive adapter", () => {
     }
   });
 
+  test("keyFilename builds a GoogleAuth that impersonates the subject and mints session tokens", async () => {
+    const adapter = googleDrive({
+      keyFilename: "/tmp/sa.json",
+      rootFolderId: "rootX",
+      subject: "user@example.com",
+    });
+    const auth = lastDriveAuth();
+    expect(auth).toBeInstanceOf(GoogleAuth);
+    const internals = auth as unknown as {
+      clientOptions: { subject?: string };
+      keyFilename: string;
+      scopes: string[];
+    };
+    expect(internals.keyFilename).toBe("/tmp/sa.json");
+    expect(internals.clientOptions).toEqual({ subject: "user@example.com" });
+    expect(internals.scopes).toEqual(["https://www.googleapis.com/auth/drive"]);
+
+    // GoogleAuth#getAccessToken resolves a bare string; the session POST
+    // still carries it as the bearer token.
+    const authorizations: (string | null)[] = [];
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      authorizations.push(new Headers(init?.headers).get("Authorization"));
+      return Promise.resolve(
+        new Response(null, {
+          headers: {
+            Location:
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=kf",
+          },
+          status: 200,
+        })
+      );
+    }) as typeof fetch;
+    await new Files({ adapter }).signedUploadUrl("a.txt", { expiresIn: 60 });
+    expect(authorizations).toEqual([`Bearer ${ACCESS_TOKEN}`]);
+  });
+
+  test("oauth builds an OAuth2Client holding the client and refresh token", () => {
+    const adapter = googleDrive({
+      oauth: {
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        refreshToken: "refresh-token",
+      },
+      rootFolderId: "rootX",
+    });
+    const auth = lastDriveAuth() as OAuth2Client;
+    expect(auth).toBeInstanceOf(OAuth2Client);
+    expect(auth.credentials).toEqual({ refresh_token: "refresh-token" });
+    const internals = auth as unknown as {
+      _clientId: string;
+      _clientSecret: string;
+    };
+    expect(internals._clientId).toBe("client-id");
+    expect(internals._clientSecret).toBe("client-secret");
+    // An auth handle is available, so resumable sessions can be opened.
+    expect(new Files({ adapter }).capabilities.resumable).toBe(true);
+  });
+
   test("upload sets fsdkKey, returns size+etag, caches fileId", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     const result = await files.upload("docs/a.txt", "hello", {
@@ -471,6 +553,105 @@ describe("google-drive adapter", () => {
     expect(args.requestBody).toEqual({ role: "reader", type: "anyone" });
   });
 
+  const createdMedia = () => {
+    const args = filesCreateMock.mock.calls.at(-1)?.[0] as {
+      media: { mimeType: string };
+      requestBody: { appProperties: Record<string, string>; mimeType: string };
+    };
+    return {
+      bytes: [...(uploadedBytes.get("id-1") ?? [])],
+      mediaType: args.media.mimeType,
+      storedType: args.requestBody.appProperties.fsdkContentType,
+    };
+  };
+
+  test.each([
+    ["a Uint8Array window", new Uint8Array([0, 1, 2, 3, 4]).subarray(1, 4)],
+    ["an ArrayBuffer", Uint8Array.of(1, 2, 3).buffer],
+    [
+      "a DataView window",
+      new DataView(Uint8Array.of(9, 1, 2, 3, 9).buffer, 1, 3),
+    ],
+  ] as const)(
+    "upload sends %s body as exactly its bytes, typed as octet-stream",
+    async (_label, body) => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      const result = await files.upload("bin/x", body);
+      expect(result).toMatchObject({ contentType: OCTET, size: 3 });
+      // Only the viewed window reaches Drive, not the whole backing buffer.
+      expect(createdMedia()).toEqual({
+        bytes: [1, 2, 3],
+        mediaType: OCTET,
+        storedType: OCTET,
+      });
+    }
+  );
+
+  test.each([
+    ["the Blob's own type", "image/png", undefined, "image/png"],
+    ["octet-stream for an untyped Blob", "", undefined, OCTET],
+    [
+      "an explicit contentType over the Blob's type",
+      "image/png",
+      "image/webp",
+      "image/webp",
+    ],
+  ] as const)(
+    "upload reads a Blob's bytes and types it with %s",
+    async (_label, blobType, contentType, expected) => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      const result = await files.upload(
+        "img/a",
+        new Blob(["png-bytes"], { type: blobType }),
+        contentType ? { contentType } : undefined
+      );
+      expect(result).toMatchObject({ contentType: expected, size: 9 });
+      expect(createdMedia()).toEqual({
+        bytes: [...Buffer.from("png-bytes")],
+        mediaType: expected,
+        storedType: expected,
+      });
+    }
+  );
+
+  test("upload streams a ReadableStream body and takes its size from Drive", async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("hello "));
+        controller.enqueue(encoder.encode("world"));
+        controller.close();
+      },
+    });
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const result = await files.upload("s.txt", body);
+    // No length is known up front, so the size is Drive's stored size.
+    expect(result).toMatchObject({ contentType: OCTET, size: 11 });
+    const media = createdMedia();
+    expect(Buffer.from(media.bytes).toString()).toBe("hello world");
+    expect(media.mediaType).toBe(OCTET);
+  });
+
+  test("the fileId cache evicts its least recently used key past fileIdCacheSize", async () => {
+    const files = new Files({
+      adapter: googleDrive({ ...baseOpts, fileIdCacheSize: 2 }),
+    });
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+    // Touching a.txt makes b.txt the least recently used entry, so caching
+    // c.txt evicts b.txt.
+    await files.head("a.txt");
+    await files.upload("c.txt", "c");
+    const listCallsFor = async (key: string): Promise<number> => {
+      const before = filesListMock.mock.calls.length;
+      await files.head(key);
+      return filesListMock.mock.calls.length - before;
+    };
+    expect(await listCallsFor("a.txt")).toBe(0);
+    expect(await listCallsFor("c.txt")).toBe(0);
+    expect(await listCallsFor("b.txt")).toBe(1);
+  });
+
   test("download (buffer) returns bytes and metadata", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("a.txt", "hi");
@@ -517,6 +698,48 @@ describe("google-drive adapter", () => {
     });
     // Metadata size is 10 (the uploaded bytes), so bytes 7..EOF → 3.
     expect(f.size).toBe(3);
+  });
+
+  // Run `fn` while `files.get` answers alt=media buffer reads with `payload`
+  // (metadata reads still go to the fake).
+  const withMediaPayload = (payload: unknown, fn: () => Promise<void>) =>
+    filesGetMock.withImplementation(
+      (params, requestOpts) =>
+        (params as { alt?: string }).alt === "media"
+          ? Promise.resolve({ data: payload as never, status: 200 })
+          : fakeFilesGet(params, requestOpts),
+      fn
+    );
+
+  test.each([
+    ["a Node Buffer", Buffer.from("payload")],
+    [
+      "a non-byte ArrayBufferView",
+      new DataView(new TextEncoder().encode("[payload]").buffer, 1, 7),
+    ],
+    ["text from a custom transport", "payload"],
+  ] as const)(
+    "download (buffer) reads the media payload as %s",
+    async (_label, payload) => {
+      const files = new Files({ adapter: googleDrive(baseOpts) });
+      await files.upload("a.txt", "hi");
+      await withMediaPayload(payload, async () => {
+        const f = await files.download("a.txt");
+        expect(await f.text()).toBe("payload");
+        expect(f.size).toBe(7);
+      });
+    }
+  );
+
+  test("download (buffer) refuses an unrecognised media payload as a Provider error", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts), retries: 0 });
+    await files.upload("a.txt", "hi");
+    await withMediaPayload({ unexpected: true }, async () => {
+      await expect(files.download("a.txt")).rejects.toMatchObject({
+        code: "Provider",
+        message: "google-drive: unexpected response payload shape",
+      });
+    });
   });
 
   test("head returns plain metadata without touching the body", async () => {
@@ -1384,6 +1607,137 @@ describe("google-drive adapter", () => {
     expect((err as FilesError).message).toBe("Permission denied on file");
   });
 
+  test("a failed key lookup is mapped and stops the upload before any write", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    filesListMock.mockImplementationOnce(() =>
+      Promise.reject(driveFailure(403, "Insufficient permissions"))
+    );
+    await expect(files.upload("a.txt", "hi")).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "Insufficient permissions",
+    });
+    expect(filesCreateMock).not.toHaveBeenCalled();
+    expect(filesUpdateMock).not.toHaveBeenCalled();
+  });
+
+  test("a key lookup that matches a file without an id is a Provider error", async () => {
+    store.set("blank", {
+      appProperties: { fsdkKey: "a.txt" },
+      id: "",
+      name: "a.txt",
+      parents: ["rootX"],
+    });
+    const files = new Files({ adapter: googleDrive(baseOpts), retries: 0 });
+    await expect(files.head("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "google-drive: list returned no fileId for a.txt",
+    });
+    expect(filesGetMock).not.toHaveBeenCalled();
+  });
+
+  test("list maps a failing files.list call, flat and delimited alike", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const denied = () => Promise.reject(driveFailure(401, "Login Required"));
+    filesListMock.mockImplementationOnce(denied);
+    await expect(files.list()).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "Login Required",
+    });
+    filesListMock.mockImplementationOnce(denied);
+    await expect(files.list({ delimiter: "/" })).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "Login Required",
+    });
+  });
+
+  test("delete surfaces a failure other than NotFound and still evicts the cached id", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    filesDeleteMock.mockImplementationOnce(() =>
+      Promise.reject(driveFailure(403, "The user does not have permission"))
+    );
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "The user does not have permission",
+    });
+    expect(store.has("id-1")).toBe(true);
+    // The cache entry is dropped either way, so the next read re-resolves.
+    const before = filesListMock.mock.calls.length;
+    await files.head("a.txt");
+    expect(filesListMock.mock.calls.length).toBe(before + 1);
+  });
+
+  test("copy onto a key whose old file vanished before its cleanup still succeeds", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("src.txt", "hi");
+    await files.upload("dst.txt", "old");
+    // Another process purges the clobbered dst.txt between the lookup and
+    // the adapter's own cleanup delete, which then 404s.
+    filesDeleteMock.mockImplementationOnce((params) => {
+      store.delete((params as { fileId: string }).fileId);
+      return Promise.reject(driveFailure(404, "File not found: id-2"));
+    });
+    await files.copy("src.txt", "dst.txt");
+    const carriers = [...store.values()].filter(
+      (f) => f.appProperties?.fsdkKey === "dst.txt"
+    );
+    expect(carriers.map((f) => f.id)).toEqual(["id-3"]);
+    // The copy's id is cached: no lookup needed to read it back.
+    const before = filesListMock.mock.calls.length;
+    await expect(files.head("dst.txt")).resolves.toMatchObject({
+      key: "dst.txt",
+    });
+    expect(filesListMock.mock.calls.length).toBe(before);
+  });
+
+  test("copy surfaces a failed cleanup of the clobbered file", async () => {
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.upload("src.txt", "hi");
+    await files.upload("dst.txt", "old");
+    filesDeleteMock.mockImplementationOnce(() =>
+      Promise.reject(driveFailure(403, "Cannot delete id-2"))
+    );
+    await expect(files.copy("src.txt", "dst.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "Cannot delete id-2",
+    });
+    expect(filesCopyMock).toHaveBeenCalledTimes(1);
+    expect(filesDeleteMock.mock.calls[0]?.[0]).toMatchObject({
+      fileId: "id-2",
+    });
+  });
+
+  test("signedUploadUrl refuses to open a session without an access token", async () => {
+    let fetched = false;
+    globalThis.fetch = (() => {
+      fetched = true;
+      return Promise.resolve(new Response(null, { status: 200 }));
+    }) as unknown as typeof fetch;
+    jwtTokenSpy.mockImplementationOnce(() => Promise.resolve({ token: null }));
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, retries: 0 })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("failed to mint access token"),
+    });
+    expect(fetched).toBe(false);
+    expect(filesListMock).not.toHaveBeenCalled();
+  });
+
+  test("signedUploadUrl maps a network failure on the session POST", async () => {
+    const networkError = new TypeError("fetch failed");
+    globalThis.fetch = (() =>
+      Promise.reject(networkError)) as unknown as typeof fetch;
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    const err = await files
+      .signedUploadUrl("a.txt", { expiresIn: 60, retries: 0 })
+      .catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(FilesError);
+    expect(err).toMatchObject({ code: "Provider", message: "fetch failed" });
+    expect((err as FilesError).cause).toBe(networkError);
+  });
+
   describe("signal forwarding", () => {
     test("upload forwards the signal to files.create", async () => {
       const files = new Files({ adapter: googleDrive(baseOpts) });
@@ -1713,6 +2067,50 @@ describe("google-drive resumable uploads", () => {
     await expect(
       files.upload("x.bin", "data", { control: new UploadControl() })
     ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("a session is never opened without an access token", async () => {
+    let fetched = false;
+    globalThis.fetch = (() => {
+      fetched = true;
+      return Promise.resolve(driveResult());
+    }) as unknown as typeof fetch;
+    jwtTokenSpy.mockImplementationOnce(() => Promise.resolve({ token: null }));
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", "data", {
+        control: new UploadControl(),
+        retries: 0,
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("failed to mint access token"),
+    });
+    expect(fetched).toBe(false);
+    expect(filesListMock).not.toHaveBeenCalled();
+  });
+
+  test("a session response without a Location header is a Provider error", async () => {
+    const methods: string[] = [];
+    globalThis.fetch = ((
+      _input: string | URL | Request,
+      init?: RequestInit
+    ) => {
+      methods.push(init?.method ?? "GET");
+      return Promise.resolve(new Response(null, { status: 200 }));
+    }) as typeof fetch;
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", "data", {
+        control: new UploadControl(),
+        retries: 0,
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: expect.stringContaining("missing Location header"),
+    });
+    // Only the initiation went out; no chunk was sent to a guessed URL.
+    expect(methods).toEqual(["POST"]);
   });
 
   test("a failed chunk PUT throws", async () => {

@@ -134,6 +134,17 @@ describe("vultr adapter", () => {
     expect(url).toContain("ewr1.vultrobjects.com");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = vultr({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "ewr1",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = vultr({
       accessKeyId: "AKID",

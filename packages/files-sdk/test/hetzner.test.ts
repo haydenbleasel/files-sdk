@@ -136,6 +136,17 @@ describe("hetzner adapter", () => {
     expect(url).toContain("fsn1.your-objectstorage.com");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = hetzner({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "fsn1",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = hetzner({
       accessKeyId: "AKID",

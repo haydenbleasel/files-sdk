@@ -49,6 +49,17 @@ describe("archil adapter", () => {
     expect(url.pathname).toBe("/dsk-abc.feature-x/data.json");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = archil({
+      bucket: "dsk-abc",
+      defaultUrlExpiresIn: 600,
+      region: "aws-us-east-1",
+      ...creds,
+    });
+    const url = new URL(await adapter.url("data.json"));
+    expect(url.searchParams.get("X-Amz-Expires")).toBe("600");
+  });
+
   test("infers bucket + region from a Disk instance, exposed at adapter.disk", () => {
     const disk = { id: "dsk-xyz", region: "aws-us-west-2" } as unknown as Disk;
     const adapter = archil({ disk, ...creds });

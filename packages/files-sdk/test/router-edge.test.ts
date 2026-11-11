@@ -96,6 +96,29 @@ describe("sign-token", () => {
       failure: "expired",
     });
   });
+
+  test("a correctly signed body that isn't JSON → malformed", async () => {
+    // Sign a non-JSON body with the real secret, so the HMAC check passes and
+    // only the payload decode can reject it.
+    const body = btoa("not json").replace(/=+$/u, "");
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(SECRET),
+      { hash: "SHA-256", name: "HMAC" },
+      false,
+      ["sign"]
+    );
+    const mac = new Uint8Array(
+      await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body))
+    );
+    const signature = btoa(String.fromCodePoint(...mac))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/u, "");
+    expect(
+      await verifyToken(`${body}.${signature}`, SECRET, NOW)
+    ).toStrictEqual({ failure: "malformed", ok: false });
+  });
 });
 
 describe("createFilesRouter — secret resolution", () => {

@@ -127,6 +127,17 @@ describe("minio adapter", () => {
     expect(url).toContain("X-Amz-Expires=3600");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = minio({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      endpoint: "http://localhost:9000",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = minio({
       accessKeyId: "AKID",

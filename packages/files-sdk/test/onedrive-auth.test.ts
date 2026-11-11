@@ -13,7 +13,11 @@ import { AuthenticationError, ClientSecretCredential } from "@azure/identity";
 import type { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import { Client } from "@microsoft/microsoft-graph-client";
 
-import { mapGraphError, onedrive } from "../src/onedrive/index.js";
+import {
+  buildAuthProvider,
+  mapGraphError,
+  onedrive,
+} from "../src/onedrive/index.js";
 
 const restoreEnv = (key: string, value: string | undefined): void => {
   if (value === undefined) {
@@ -465,5 +469,28 @@ describe("onedrive auth construction", () => {
         message: expect.stringMatching(/missing auth/iu),
       })
     );
+  });
+
+  test("buildAuthProvider builds nothing for a pre-built client", () => {
+    // A caller-built client already carries its own auth.
+    expect(
+      buildAuthProvider({ client: fakeGraphClient as never })
+    ).toBeUndefined();
+  });
+
+  test("buildAuthProvider builds nothing when no auth shape or env var is set", () => {
+    expect(buildAuthProvider({})).toBeUndefined();
+  });
+
+  test("a falsy auth option fails construction instead of building an unauthenticated client", () => {
+    // e.g. `oauth: refreshToken && { ... }` with an empty refresh token: it
+    // counts as the one auth shape, but none can be built from it.
+    expect(() => onedrive({ oauth: "" as never })).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: "onedrive: failed to build auth",
+      })
+    );
+    expect(capturedAuthProvider).toBeUndefined();
   });
 });

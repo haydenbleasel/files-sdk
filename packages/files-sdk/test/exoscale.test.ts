@@ -134,6 +134,17 @@ describe("exoscale adapter", () => {
     expect(url).toContain("sos-ch-gva-2.exo.io");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = exoscale({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "ch-gva-2",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = exoscale({
       accessKeyId: "AKID",

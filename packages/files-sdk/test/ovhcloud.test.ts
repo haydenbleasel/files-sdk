@@ -134,6 +134,17 @@ describe("ovhcloud adapter", () => {
     expect(url).toContain("s3.gra.io.cloud.ovh.net");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = ovhcloud({
+      accessKeyId: "AKID",
+      bucket: "uploads",
+      defaultUrlExpiresIn: 600,
+      region: "gra",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = ovhcloud({
       accessKeyId: "AKID",

@@ -134,6 +134,17 @@ describe("tencent adapter", () => {
     expect(url).toContain("cos.ap-guangzhou.myqcloud.com");
   });
 
+  test("url() honors defaultUrlExpiresIn", async () => {
+    const adapter = tencent({
+      accessKeyId: "AKID",
+      bucket: "uploads-1250000000",
+      defaultUrlExpiresIn: 600,
+      region: "ap-guangzhou",
+      secretAccessKey: "SECRET",
+    });
+    expect(await adapter.url("a.txt")).toContain("X-Amz-Expires=600");
+  });
+
   test("url() returns the publicBaseUrl when configured", async () => {
     const adapter = tencent({
       accessKeyId: "AKID",

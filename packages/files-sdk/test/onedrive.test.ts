@@ -343,6 +343,8 @@ const dispatchPut = mock(
 const dispatchDelete = mock((path: string) => defaultDelete(path));
 // Every `.query(...)` a request builder received, by API path.
 let queryCalls: { path: string; query: unknown }[] = [];
+// Every `.top(...)` (Graph `$top` page size) a request builder received.
+let topCalls: { path: string; top: unknown }[] = [];
 
 const makeRequestBuilder = (path: string) => {
   let responseType: string | undefined;
@@ -388,7 +390,8 @@ const makeRequestBuilder = (path: string) => {
     skip() {
       return builder;
     },
-    top() {
+    top(n: unknown) {
+      topCalls.push({ path, top: n });
       return builder;
     },
   };
@@ -425,6 +428,7 @@ beforeEach(() => {
   dispatchPut.mockClear();
   dispatchDelete.mockClear();
   queryCalls = [];
+  topCalls = [];
 });
 
 afterEach(() => {
@@ -675,6 +679,17 @@ describe("onedrive adapter", () => {
     expect(r.size).toBe("ab-body".length);
   });
 
+  test("upload accepts a non-Uint8Array view and sends only its window", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    const backing = new TextEncoder().encode("xxview-bodyxx");
+    const view = new DataView(backing.buffer, 2, "view-body".length);
+    const r = await files.upload("view.bin", view);
+    expect(r.size).toBe("view-body".length);
+    expect(r.contentType).toBe("application/octet-stream");
+    const f = await files.download("view.bin");
+    expect(await f.text()).toBe("view-body");
+  });
+
   test("upload accepts a Blob body and inherits its type", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     const blob = new Blob(["blob-body"], { type: "application/x-test" });
@@ -723,6 +738,45 @@ describe("onedrive adapter", () => {
     );
     const f = await files.download("a.txt", { as: "stream" });
     expect(await f.text()).toBe("node-me");
+  });
+
+  // `ResponseType.ARRAYBUFFER` hands back a Buffer under Node, and a custom
+  // client may answer with another view or with text.
+  test.each([
+    ["a Buffer", () => Buffer.from("payload")],
+    [
+      "a DataView window",
+      () => new DataView(new TextEncoder().encode("xxpayloadxx").buffer, 2, 7),
+    ],
+    ["a string", () => "payload"],
+  ] as [string, () => unknown][])(
+    "download reads %s content payload",
+    async (_label, payload) => {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await files.upload("a.txt", "payload");
+      dispatchGet.mockImplementationOnce((path, responseType) =>
+        defaultGet(path, responseType)
+      );
+      dispatchGet.mockImplementationOnce(() => Promise.resolve(payload()));
+      const f = await files.download("a.txt");
+      expect(await f.text()).toBe("payload");
+      expect(f.size).toBe(7);
+    }
+  );
+
+  test("download rejects a content payload that is neither bytes nor text", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "payload");
+    dispatchGet.mockImplementationOnce((path, responseType) =>
+      defaultGet(path, responseType)
+    );
+    dispatchGet.mockImplementationOnce(() =>
+      Promise.resolve({ unexpected: true })
+    );
+    await expect(files.download("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "onedrive: unexpected response payload shape",
+    });
   });
 
   test("download (stream) with a range reports the slice length", async () => {
@@ -963,6 +1017,45 @@ describe("onedrive adapter", () => {
     }
   });
 
+  test.each([
+    [
+      "a non-https URL",
+      "http://graph.microsoft.com/v1.0/me/drive/root/children?$skiptoken=abc",
+    ],
+    [
+      "a URL outside the v1.0 API",
+      "https://graph.microsoft.com/beta/me/drive/root/children?$skiptoken=abc",
+    ],
+    [
+      "an unparseable URL",
+      "https://[graph.microsoft.com/v1.0/me/drive/root/children",
+    ],
+    ["a relative path", "me/drive/root/children?$skiptoken=abc"],
+  ])("list refuses a cursor that is %s", async (_label, cursor) => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(files.list({ cursor })).rejects.toMatchObject({
+      code: "Invalid",
+      message: "onedrive: list cursor does not match this adapter root",
+    });
+    expect(dispatchGet).not.toHaveBeenCalled();
+  });
+
+  test("list sends limit as Graph's $top on the first page only", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.list({ limit: 2 });
+    expect(topCalls).toEqual([{ path: "/me/drive/root/children", top: 2 }]);
+    // A cursor is Graph's nextLink, which already carries the page size.
+    await files.list({
+      cursor:
+        "https://graph.microsoft.com/v1.0/me/drive/root/children?$top=2&$skiptoken=abc",
+      limit: 2,
+    });
+    expect(dispatchGet.mock.calls.at(-1)?.[0]).toBe(
+      "/me/drive/root/children?$top=2&$skiptoken=abc"
+    );
+    expect(topCalls).toHaveLength(1);
+  });
+
   test("copy creates new item at destination and polls monitor URL", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = ((_input: string | URL | Request) =>
@@ -981,6 +1074,31 @@ describe("onedrive adapter", () => {
       await files.copy("from.txt", "to.txt");
       const head = await files.head("to.txt");
       expect(head.key).toBe("to.txt");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("copy treats a 2xx with no monitor Location as already done", async () => {
+    // Some configurations answer the copy with the new item directly.
+    const originalFetch = globalThis.fetch;
+    const monitorPoll = mock(() =>
+      Promise.resolve(Response.json({ status: "completed" }))
+    );
+    globalThis.fetch = monitorPoll as unknown as typeof fetch;
+    try {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await files.upload("from.txt", "hi");
+      dispatchPost.mockImplementationOnce(() =>
+        Promise.resolve(
+          Response.json({ id: "copied", name: "to.txt" }, { status: 200 })
+        )
+      );
+      await files.copy("from.txt", "to.txt");
+      expect(
+        dispatchPost.mock.calls.filter(([path]) => path.endsWith("/copy"))
+      ).toHaveLength(1);
+      expect(monitorPoll).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -1257,6 +1375,26 @@ describe("onedrive adapter", () => {
     });
   });
 
+  test("copy to a top-level key under rootFolderPath targets the root folder", async () => {
+    await withCompletedCopyMonitor(async () => {
+      const files = new Files({
+        adapter: onedrive({ ...baseOpts, rootFolderPath: "app" }),
+      });
+      await files.upload("a.txt", "hello");
+      await files.copy("a.txt", "b.txt");
+      const copyCall = dispatchPost.mock.calls.find(([path]) =>
+        path.endsWith("/copy")
+      );
+      expect(copyCall?.[1]).toEqual({
+        name: "b.txt",
+        parentReference: { path: "/drive/root:/app" },
+      });
+      await expect(files.download("b.txt").then((f) => f.text())).resolves.toBe(
+        "hello"
+      );
+    });
+  });
+
   test("copy under a file that's in the way of the folder chain fails loudly", async () => {
     await withCompletedCopyMonitor(async () => {
       const files = new Files({ adapter: onedrive(baseOpts) });
@@ -1293,6 +1431,16 @@ describe("onedrive adapter", () => {
     );
     await files.delete("a.txt");
     expect(dispatchDelete.mock.calls).toEqual([["/me/drive/root:/a.txt:"]]);
+  });
+
+  test("delete is idempotent when the item vanishes between lookup and DELETE", async () => {
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await files.upload("a.txt", "hi");
+    dispatchDelete.mockImplementationOnce(() =>
+      Promise.reject(new GraphError(404, "itemNotFound"))
+    );
+    await expect(files.delete("a.txt")).resolves.toBeUndefined();
+    expect(dispatchDelete).toHaveBeenCalledTimes(1);
   });
 
   test("delete surfaces a non-NotFound lookup error", async () => {
@@ -1361,6 +1509,49 @@ describe("onedrive adapter", () => {
     }
   });
 
+  test("a multipart upload fails loudly when Graph returns no session uploadUrl", async () => {
+    const originalFetch = globalThis.fetch;
+    const chunkPut = mock(() =>
+      Promise.resolve(new Response(null, { status: 202 }))
+    );
+    globalThis.fetch = chunkPut as unknown as typeof fetch;
+    try {
+      dispatchPost.mockImplementationOnce(() => Promise.resolve({}));
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await expect(
+        files.upload("doc.bin", "hello", { multipart: true })
+      ).rejects.toMatchObject({
+        code: "Provider",
+        message: "onedrive: createUploadSession response missing uploadUrl",
+      });
+      expect(chunkPut).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("a multipart upload whose chunks never return a drive item is a provider error", async () => {
+    // Every chunk PUT answers 202 ("more expected"), so the session never
+    // hands back the created item.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(null, { status: 202 })
+      )) as unknown as typeof fetch;
+    try {
+      const files = new Files({ adapter: onedrive(baseOpts) });
+      await expect(
+        files.upload("doc.bin", "hello", { multipart: true })
+      ).rejects.toMatchObject({
+        code: "Provider",
+        message:
+          "onedrive: upload session completed without returning a drive item",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("url throws when publicByDefault is false", async () => {
     const files = new Files({ adapter: onedrive(baseOpts) });
     await files.upload("a.txt", "hi");
@@ -1393,6 +1584,27 @@ describe("onedrive adapter", () => {
     await files.upload("a.txt", "hi");
     const url = await files.url("a.txt");
     expect(url).toMatch(/^https:\/\/share\.example\.com\//u);
+  });
+
+  test("url surfaces a createLink response without a webUrl as a provider error", async () => {
+    const files = new Files({
+      adapter: onedrive({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
+    dispatchPost.mockImplementationOnce(() => Promise.resolve({ link: {} }));
+    await expect(files.url("a.txt")).rejects.toMatchObject({
+      code: "Provider",
+      message: "onedrive: createLink response missing link.webUrl",
+    });
+  });
+
+  test("url maps a Graph createLink failure", async () => {
+    const files = new Files({
+      adapter: onedrive({ ...baseOpts, publicByDefault: true }),
+    });
+    await expect(files.url("ghost.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
   });
 
   test("declares its capabilities", () => {
@@ -1503,6 +1715,27 @@ describe("onedrive adapter", () => {
       message: expect.stringMatching(/maxSize.*minSize|content-length-range/iu),
     });
     expect(dispatchPost).not.toHaveBeenCalled();
+  });
+
+  test("signedUploadUrl fails loudly when Graph returns no session uploadUrl", async () => {
+    dispatchPost.mockImplementationOnce(() => Promise.resolve({}));
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 3600 })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "onedrive: createUploadSession response missing uploadUrl",
+    });
+  });
+
+  test("signedUploadUrl maps a Graph session failure", async () => {
+    dispatchPost.mockImplementationOnce(() =>
+      Promise.reject(new GraphError(403, "accessDenied"))
+    );
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 3600 })
+    ).rejects.toMatchObject({ code: "Unauthorized" });
   });
 
   test("rootFolderPath nests virtual keys under the configured folder", async () => {
@@ -1632,6 +1865,16 @@ describe("onedrive adapter", () => {
     expect(err.message).toBe("OneDrive error");
   });
 
+  test.each(["boom", 42, null, undefined])(
+    "mapGraphError wraps the non-object cause %p as a generic Provider error",
+    (cause) => {
+      const err = mapGraphError(cause);
+      expect(err.code).toBe("Provider");
+      expect(err.message).toBe("OneDrive error");
+      expect(err.cause).toBe(cause);
+    }
+  );
+
   test("mapGraphError passes existing FilesError through unchanged", () => {
     const original = new FilesError("NotFound", "already mapped");
     expect(mapGraphError(original)).toBe(original);
@@ -1672,6 +1915,17 @@ describe("onedrive resumable uploads", () => {
       code: "Invalid",
       message: expect.stringMatching(/not started/u),
     });
+  });
+
+  test("discarding before the session starts sends nothing", async () => {
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      return new Response(null, { status: 204 });
+    });
+    const driver = onedrive(baseOpts).resumableUpload("doc.bin", {});
+    await expect(driver.discard()).resolves.toBeUndefined();
+    expect(methods).toEqual([]);
   });
 
   test("partSize is capped at Graph's 60 MiB fragment maximum", () => {
@@ -1900,6 +2154,28 @@ describe("onedrive resumable uploads", () => {
     await expect(
       files.upload("x.bin", "hi", { control: new UploadControl(), retries: 0 })
     ).rejects.toThrow(/chunk failed/u);
+  });
+
+  test("a failed chunk PUT with an unreadable body falls back to the status text", async () => {
+    const original = globalThis.fetch;
+    restoreFetch = () => {
+      globalThis.fetch = original;
+    };
+    globalThis.fetch = (() =>
+      Promise.resolve({
+        ok: false,
+        status: 507,
+        statusText: "Insufficient Storage",
+        text: () => Promise.reject(new Error("chunk body errored")),
+      })) as unknown as typeof fetch;
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.upload("x.bin", "hi", { control: new UploadControl(), retries: 0 })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message:
+        "onedrive: upload session chunk failed (507): Insufficient Storage",
+    });
   });
 
   test("a failed resume status check throws", async () => {

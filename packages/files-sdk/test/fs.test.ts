@@ -377,6 +377,64 @@ describe("fs adapter", () => {
       expect(remaining.toSorted()).toEqual(["race.txt", "race.txt.meta.json"]);
     });
 
+    test("an upload queued behind a failed same-key commit still commits", async () => {
+      const root = await makeRoot();
+      const adapter = fsAdapter({ root });
+      const originalWriteFile = fsp.writeFile;
+      const originalRename = fsp.rename;
+      // Hold the first commit's rename until the second upload has staged its
+      // sidecar (and so queued on the commit lock), then fail it.
+      const queued = Promise.withResolvers<undefined>();
+      let stagedSidecars = 0;
+      const writeSpy = spyOn(fsp, "writeFile");
+      writeSpy.mockImplementation((async (
+        ...args: Parameters<typeof fsp.writeFile>
+      ) => {
+        await originalWriteFile(...args);
+        if (String(args[0]).includes(".meta.json.")) {
+          stagedSidecars += 1;
+          if (stagedSidecars === 2) {
+            setTimeout(() => queued.resolve(), 0);
+          }
+        }
+      }) as typeof fsp.writeFile);
+      let renames = 0;
+      const renameSpy = spyOn(fsp, "rename");
+      renameSpy.mockImplementation((async (
+        ...args: Parameters<typeof fsp.rename>
+      ) => {
+        renames += 1;
+        if (renames === 1) {
+          await queued.promise;
+          throw Object.assign(new Error("rename denied"), { code: "EACCES" });
+        }
+        await originalRename(...args);
+      }) as typeof fsp.rename);
+      const bodies = ["first", "second"];
+      let results: PromiseSettledResult<unknown>[];
+      try {
+        results = await Promise.allSettled(
+          bodies.map((body) => adapter.upload("k.txt", body))
+        );
+      } finally {
+        writeSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+      const rejected = results.filter((r) => r.status === "rejected");
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]).toMatchObject({
+        reason: { code: "Unauthorized", message: "rename denied" },
+      });
+      const winner = bodies[results.findIndex((r) => r.status === "fulfilled")];
+      const got = await adapter.download("k.txt");
+      expect(await got.text()).toBe(winner as string);
+      const hex = createHash("sha1")
+        .update(winner as string)
+        .digest("hex")
+        .slice(0, 16);
+      expect(got.etag).toBe(`"${hex}"`);
+    });
+
     test("a key whose ancestor is an existing file is rejected", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
@@ -716,6 +774,23 @@ describe("fs adapter", () => {
       expect(await got.text()).toBe("fresh");
       expect(got.metadata).toBeUndefined();
     });
+
+    test("a sidecar that can't be moved fails the move rather than dropping its metadata", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("src.txt", "data", { metadata: { v: "1" } });
+      // A directory at the destination's sidecar path makes the sidecar
+      // rename fail with EISDIR, which isn't the "source had none" ENOENT.
+      await fsp.mkdir(path.join(root, "dst.txt.meta.json"));
+      await expect(files.move("src.txt", "dst.txt")).rejects.toMatchObject({
+        code: "Conflict",
+      });
+      // The metadata is still on disk at the source sidecar, not discarded.
+      const sidecar = JSON.parse(
+        await fsp.readFile(path.join(root, "src.txt.meta.json"), "utf-8")
+      );
+      expect(sidecar.metadata).toEqual({ v: "1" });
+    });
   });
 
   describe("list", () => {
@@ -774,6 +849,24 @@ describe("fs adapter", () => {
       const result = await files.list({ delimiter: "/", prefix: "a/" });
       expect(result.items.map((i) => i.key)).toEqual(["a/1.txt"]);
       expect(result.prefixes).toEqual(["a/b/", "a/c/"]);
+    });
+
+    test("skips entries that are neither files nor directories", async () => {
+      if (process.platform === "win32") {
+        // No FIFOs on Windows.
+        return;
+      }
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("a.txt", "x");
+      const made = Bun.spawnSync(["mkfifo", path.join(root, "pipe")]);
+      expect(made.exitCode).toBe(0);
+      const { items } = await files.list();
+      expect(items.map((i) => i.key)).toEqual(["a.txt"]);
+      // Consistent with head(), which reports a non-file as absent.
+      await expect(files.head("pipe")).rejects.toMatchObject({
+        code: "NotFound",
+      });
     });
 
     test("does not include sidecar files as items", async () => {
@@ -903,6 +996,23 @@ describe("fs adapter", () => {
   });
 
   describe("path safety", () => {
+    test("a root at the filesystem root reads files by their path under it", async () => {
+      // The real root already ends in a separator ("/" or "C:\"), so the
+      // under-root check must not append another one and reject every key.
+      const root = await makeRoot();
+      await new Files({ adapter: fsAdapter({ root }) }).upload("a.txt", "hi");
+      const fsRoot = path.parse(root).root;
+      const files = new Files({ adapter: fsAdapter({ root: fsRoot }) });
+      const key = path
+        .relative(fsRoot, path.join(root, "a.txt"))
+        .split(path.sep)
+        .join("/");
+      const info = await files.head(key);
+      expect(info.size).toBe(2);
+      const got = await files.download(key);
+      expect(await got.text()).toBe("hi");
+    });
+
     test("rejects keys that escape root via ..", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });
@@ -1418,6 +1528,17 @@ describe("fs adapter", () => {
         code: "Provider",
       });
     });
+
+    test("list surfaces a corrupt sidecar instead of skipping the key", async () => {
+      // Only a vanished file (ENOENT) is skipped mid-page; any other per-key
+      // failure fails the listing.
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("a.txt", "fine");
+      await fsp.writeFile(path.join(root, "x.bin"), "data");
+      await fsp.writeFile(path.join(root, "x.bin.meta.json"), "{not json");
+      await expect(files.list()).rejects.toMatchObject({ code: "Provider" });
+    });
   });
 
   describe("upload failure cleanup", () => {
@@ -1453,6 +1574,27 @@ describe("fs adapter", () => {
       const remaining = await fsp.readdir(root);
       expect(remaining.some((n) => n.endsWith(".fls-tmp"))).toBe(false);
       expect(remaining.some((n) => n.endsWith(".meta.json"))).toBe(false);
+    });
+
+    test("a failed cleanup never masks the commit error", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await fsp.mkdir(path.join(root, "blocker"));
+      const rmSpy = spyOn(fsp, "rm");
+      rmSpy.mockImplementation((() =>
+        Promise.reject(
+          Object.assign(new Error("rm busy"), { code: "EBUSY" })
+        )) as typeof fsp.rm);
+      try {
+        // The rename onto the directory is the real failure (Conflict); the
+        // staging-file removals that follow also fail, and are swallowed.
+        await expect(files.upload("blocker", "x")).rejects.toMatchObject({
+          code: "Conflict",
+        });
+        expect(rmSpy).toHaveBeenCalled();
+      } finally {
+        rmSpy.mockRestore();
+      }
     });
   });
 });
@@ -1595,6 +1737,35 @@ describe("fs resumable uploads", () => {
     await expect(promise).rejects.toMatchObject({ aborted: true });
     await aborting;
     await expect(fsp.stat(path.join(root, "a.bin.fls-part"))).rejects.toThrow();
+  });
+
+  test("metadata and cacheControl land in the sidecar on complete", async () => {
+    const root = await makeRoot();
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    await files.upload("m.bin", "abcdefgh", {
+      cacheControl: "max-age=60",
+      control: new UploadControl(),
+      metadata: { v: "1" },
+      multipart: { partSize: 4 },
+    });
+    const info = await files.head("m.bin");
+    expect(info.metadata).toEqual({ v: "1" });
+    const sidecar = JSON.parse(
+      await fsp.readFile(path.join(root, "m.bin.meta.json"), "utf-8")
+    );
+    expect(sidecar.cacheControl).toBe("max-age=60");
+    expect(sidecar.metadata).toEqual({ v: "1" });
+  });
+
+  test("probe surfaces a non-ENOENT stat failure instead of restarting at zero", async () => {
+    const root = await makeRoot();
+    // An ancestor that is a regular file makes the partial's stat fail with
+    // ENOTDIR: not "no partial yet", so it must not read as offset 0.
+    await fsp.writeFile(path.join(root, "sub"), "file, not a directory");
+    const driver = adoptedDriver(root, "sub/x.bin");
+    const failure = driver.probe();
+    await expect(failure).rejects.toBeInstanceOf(FilesError);
+    await expect(failure).rejects.toMatchObject({ code: "NotFound" });
   });
 
   test("uses the default part size when multipart is unset", async () => {
