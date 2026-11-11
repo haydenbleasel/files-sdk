@@ -55,8 +55,8 @@ const exec = async (
 
 const newFiles = () => new Files({ adapter: fakeAdapter() });
 
-// Compile-time regression check, enforced by `bun run types` (tsc covers
-// `test/**`): the tool records must be assignable to `ai`'s `ToolSet`, an
+// Compile-time regression check, enforced by `bun run types` (bun check
+// covers `test/**`): the tool records must be assignable to `ai`'s `ToolSet`, an
 // index-signature record. An `interface` has no implicit index signature, so
 // declaring `FileTools` as one broke `generateText({ tools })` and friends.
 describe("AI SDK ToolSet compatibility", () => {

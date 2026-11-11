@@ -172,7 +172,7 @@ describe("createAgentsFileTools", () => {
   });
 
   test("the tool record fits a string-keyed record of agent tools", () => {
-    // Compile-time regression check (tsc covers test/**): an `interface` has
+    // Compile-time regression check (bun check covers test/**): an `interface` has
     // no implicit index signature, so it wouldn't be assignable here.
     const record: Record<string, Tool> = createAgentsFileTools({
       files: newFiles(),

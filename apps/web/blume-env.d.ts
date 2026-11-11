@@ -1,4 +1,4 @@
-// Let tsc resolve `.astro` component imports (e.g. from components.ts) — Astro
+// Let the type checker resolve `.astro` component imports (e.g. from components.ts) — Astro
 // files aren't type-checked here, they just need a module shim. A compiled
 // `.astro` module's default export is Astro's server component factory.
 declare module "*.astro" {

@@ -67,12 +67,12 @@ From the repo root:
 
 - `bun run build` — build all packages with Turbo
 - `bun test` — run the full test suite
-- `bun run types` — type-check every workspace (TypeScript 7)
+- `bun run types` — type-check every workspace with `bun check` (TypeScript 7)
 - `bun run check` / `bun run fix` — lint and auto-fix with [Ultracite](https://www.ultracite.ai/) (oxlint + oxfmt). `fix` can need a second pass before it reports clean.
 
 From `packages/files-sdk`:
 
-- `bun run dev` — rebuild on change (Bun bundler + tsgo, watch mode)
+- `bun run dev` — rebuild on change (Bun bundler + tsc, watch mode)
 - `bun test` — run only the SDK tests
 - `bun test <substring>` — run a subset (Bun filters are path substrings, not globs: `bun test s3` also runs `bun-s3`, `s3-fetch*`, `cli-conditional-s3`, … but not `minio` or `r2`; pass a file path to run exactly one file)
 - `bun run test:coverage` — tests with the per-file coverage gate (see [Tests](#tests)). Run it from this directory; from the root the threshold isn't applied.

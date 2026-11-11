@@ -8,7 +8,7 @@
     "preview": "blume preview",
     "audit": "blume audit",
     "deploy": "wrangler deploy",
-    "types": "tsc --noEmit",
+    "types": "bun check --no-script",
     "test": "echo 'no tests'"
   },
   "dependencies": {

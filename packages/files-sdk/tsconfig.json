@@ -3,7 +3,7 @@
   "compilerOptions": {
     // No `rootDir`: the published build is produced by scripts/build.ts (Bun
     // for .js + tsc for .d.ts, via tsconfig.build.json). This config is only
-    // used for `tsc --noEmit` typechecking, which covers `test/**` and the
+    // used for `bun check` typechecking, which covers `test/**` and the
     // build scripts too. Setting `rootDir: "src"` made the typecheck fail every
     // non-src file with TS6059 ("not under rootDir").
     "outDir": "dist",

@@ -394,7 +394,7 @@
     "size": "bun run scripts/size.ts",
     "test": "bun test",
     "test:coverage": "bun test --coverage",
-    "types": "tsc --noEmit"
+    "types": "bun check --no-script"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
