@@ -1229,7 +1229,7 @@ describe("Files class", () => {
     });
   });
 
-  test("a native bulk delete keeps earlier slices' results when a later slice fails outright", async () => {
+  test("a native bulk delete reports a later slice that fails outright and sends the next one", async () => {
     const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
     let calls = 0;
     const files = new Files({
@@ -1246,12 +1246,69 @@ describe("Files class", () => {
     });
 
     const result = await files.delete(keys);
-    expect(calls).toBe(2);
-    expect(result.results).toEqual(keys.slice(0, 1000));
-    expect(result.errors?.map((entry) => entry.key)).toEqual(keys.slice(1000));
+    // The failed call has settled, so nothing overlaps the third slice.
+    expect(calls).toBe(3);
+    expect(result.results).toEqual([
+      ...keys.slice(0, 1000),
+      ...keys.slice(2000),
+    ]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual(
+      keys.slice(1000, 2000)
+    );
     for (const entry of result.errors ?? []) {
       expect(entry.error).toBeInstanceOf(FilesError);
       expect(entry.error.message).toBe("bucket offline");
+    }
+  });
+
+  test("a native bulk delete whose first slice times out reports every key instead of rejecting", async () => {
+    const keys = Array.from({ length: 1500 }, (_, i) => `k${i}`);
+    let calls = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        deleteMany() {
+          calls += 1;
+          // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+          return new Promise<never>(() => {});
+        },
+      },
+      timeout: 20,
+    });
+
+    const result = await files.delete(keys);
+    expect(calls).toBe(1);
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual(keys);
+    for (const entry of result.errors ?? []) {
+      expect(entry.error.timedOut).toBe(true);
+    }
+  });
+
+  test("a native bulk delete under an already-aborted constructor signal reaches no adapter", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    let calls = 0;
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        deleteMany(sliceKeys: string[]) {
+          calls += 1;
+          return Promise.resolve({ results: sliceKeys });
+        },
+      },
+      signal: controller.signal,
+    });
+
+    const result = await files.delete(["a.txt", "b.txt"]);
+    expect(calls).toBe(0);
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual([
+      "a.txt",
+      "b.txt",
+    ]);
+    for (const entry of result.errors ?? []) {
+      expect(entry.error.aborted).toBe(true);
     }
   });
 

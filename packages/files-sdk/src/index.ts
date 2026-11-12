@@ -3842,14 +3842,18 @@ export class Files<A extends Adapter = Adapter> {
    * `timeout`. The native call takes no per-call signal, so with either set
    * the paths go out in slices of {@link NATIVE_DELETE_SLICE}, each under its
    * own #run, so the timeout bounds each slice rather than the whole delete.
-   * The first slice that throws ends the delete: a slice the signal or
-   * timeout cuts off may still be running in the adapter, so sending the next
-   * one would overlap it. That slice's keys and those of the slices never
-   * sent are reported with its error instead of rejecting the call, so the
-   * keys earlier slices deleted stay in `results`. A hard provider failure on
-   * the first slice still rejects the call, as the unsliced call does, since
-   * nothing has been deleted yet. Without either, nothing can cut the delete
-   * short, so it's one native call.
+   *
+   * - A slice the signal or timeout cuts off ends the delete: it may still be
+   *   running in the adapter, so sending the next one would overlap it. Its
+   *   keys and those of the slices never sent are reported with the abort
+   *   error, and the keys earlier slices deleted stay in `results`.
+   * - A slice that fails outright (the adapter threw rather than reporting
+   *   per-key errors) has settled, so only its own keys are reported and the
+   *   next slice goes out, as the adapters' own batches do. On the first
+   *   slice the call rejects instead, as the unsliced call does, since nothing
+   *   has been deleted yet.
+   *
+   * Without either, nothing can cut the delete short, so it's one native call.
    */
   async #nativeDeleteMany(
     deleteMany: NonNullable<Adapter["deleteMany"]>,
@@ -3867,7 +3871,7 @@ export class Files<A extends Adapter = Adapter> {
     for (let start = 0; start < paths.length; start += NATIVE_DELETE_SLICE) {
       const slice = paths.slice(start, start + NATIVE_DELETE_SLICE);
       try {
-        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run one at a time so a cut-off slice stops the delete before another overlaps it
+        // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run one at a time so a cut-off slice ends the delete before another overlaps it
         const sliceResult = await this.#run(
           undefined,
           () => deleteMany(slice, opts),
@@ -3877,8 +3881,14 @@ export class Files<A extends Adapter = Adapter> {
         errors.push(...(sliceResult.errors ?? []));
       } catch (error) {
         const wrapped = FilesError.wrap(error);
-        if (start === 0 && !wrapped.aborted) {
-          throw error;
+        if (!wrapped.aborted) {
+          if (start === 0) {
+            throw wrapped;
+          }
+          for (const path of slice) {
+            errors.push({ error: wrapped, key: path });
+          }
+          continue;
         }
         for (const path of paths.slice(start)) {
           errors.push({ error: wrapped, key: path });

@@ -10,6 +10,7 @@ import type {
   Adapter,
   AdapterCapabilityDeclaration,
   Body,
+  BulkError,
   DownloadOptions,
   FileInfo,
   SignUploadOptions,
@@ -487,12 +488,12 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       // The binding only reports that a whole call failed, so a failure is
       // mapped onto every key in its batch.
       const results: string[] = [];
-      const errors: { error: FilesError; key: string }[] = [];
+      const errors: BulkError[] = [];
       for (let start = 0; start < keys.length; start += DELETE_BATCH_SIZE) {
         const batch = keys.slice(start, start + DELETE_BATCH_SIZE);
         try {
-          // Send a repeated key once: if the binding refused a key array with
-          // duplicates, the whole batch would fail on it.
+          // A repeated key only needs deleting once, so the binding gets each
+          // key once; every occurrence is still reported in `results`.
           // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- batches go one at a time so a large delete doesn't fan out into many concurrent calls
           await bucket.delete([...new Set(batch)]);
           results.push(...batch);
