@@ -4,9 +4,9 @@ import SftpClient from "ssh2-sftp-client";
 
 import type {
   Adapter,
+  AdapterDeleteManyOptions,
   Body,
   BulkError,
-  DeleteManyOptions,
   DeleteManyResult,
   DownloadOptions,
   FileInfo,
@@ -39,6 +39,7 @@ import {
   joinRemotePath,
   trimSlashes,
 } from "../internal/remote-path.js";
+import { throwIfAborted } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
 
@@ -370,17 +371,21 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     },
     async deleteMany(
       keys,
-      opts2?: DeleteManyOptions
+      opts2?: AdapterDeleteManyOptions
     ): Promise<DeleteManyResult> {
       const deleted: string[] = [];
       const errors: BulkError[] = [];
       if (keys.length === 0) {
         return { results: deleted };
       }
+      const signal = opts2?.signal;
       // One connection, sequential deletes — opening a socket per key (the
-      // default fan-out) would trip server session limits.
-      await run(undefined, async (client) => {
+      // default fan-out) would trip server session limits. Once the signal
+      // aborts the core has already reported these keys, so stop before the
+      // next delete rather than keep going behind its result.
+      await run(signal, async (client) => {
         for (const key of keys) {
+          throwIfAborted(signal);
           try {
             // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- single SFTP connection: concurrent deletes would trip server session limits, and stopOnError early-exits
             await client.delete(keyToRemote(key), true);

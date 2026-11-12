@@ -70,6 +70,7 @@ createFilesRouter({
 - Scope it to keys whose content you control, like PDFs your server composes. Inline turns off the gateway's `attachment` guard for those keys.
 - A name containing `"`, `\` or non-ASCII characters needs [RFC 6266](https://www.rfc-editor.org/rfc/rfc6266) escaping (`filename*=UTF-8''…`).
 - Some adapters can't bind a disposition into their URLs (see [provider gaps](/docs/provider-gaps#responsecontentdisposition)). On those, `FilePreview` loads PDFs through the proxy, but the gateway's default `downloadMode: "auto"` still redirects an inline download to a URL without the header. Set `downloadMode: "proxy"` on the gateway to keep the filename.
+- Only PDFs stored as `application/pdf` load by URL. A PDF [stored with a generic type](#files-without-a-real-content-type) and recognized by its extension or signature would be served as `application/octet-stream`, which browsers download instead of rendering, so it still previews from a `blob:` URL (and its viewer saves it under a made-up name). Store the right type to name it.
 
 ## Custom viewers
 
@@ -91,7 +92,7 @@ Pass `renderPreview` to replace the built-in preview with your own viewer compon
 />
 ```
 
-The callback receives the resolved `FileInfo` plus the same `type`, `src` and `text` the built-in preview would use. `type` is the stored type without parameters (`text/csv`, not `text/csv; charset=utf-8`), or the inferred one for [files without a real content type](#files-without-a-real-content-type), so branch on it rather than `file.contentType`. PDFs arrive as a `blob:` URL (the bytes are already downloaded, so reading it costs no second request), or as a signed or proxy URL with [`pdfSource="url"`](#naming-the-viewers-download); other types as a signed or proxy URL.
+The callback receives the resolved `FileInfo` plus the same `type`, `src` and `text` the built-in preview would use. `type` is the stored type without parameters (`text/csv`, not `text/csv; charset=utf-8`), or the inferred one for [files without a real content type](#files-without-a-real-content-type), so branch on it rather than `file.contentType`. PDFs arrive as a `blob:` URL (the bytes are already downloaded, so reading it costs no second request), or as a signed or proxy URL with [`pdfSource="url"`](#naming-the-viewers-download) when they're stored as `application/pdf`; other types as a signed or proxy URL.
 
 ## Props
 

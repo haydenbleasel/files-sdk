@@ -12,6 +12,7 @@ import {
   retryBackoff,
   runWithSignal,
   sleep,
+  throwIfAborted,
   timeoutMs,
 } from "../src/internal/retry.js";
 
@@ -160,6 +161,22 @@ describe("abortError", () => {
   test("handles undefined and non-error reasons", () => {
     expect(abortError().message).toBe("Operation aborted");
     expect(abortError("stringy").message).toContain("stringy");
+  });
+});
+
+describe("throwIfAborted", () => {
+  test("returns while the signal is live or absent", () => {
+    expect(() => throwIfAborted()).not.toThrow();
+    expect(() => throwIfAborted(new AbortController().signal)).not.toThrow();
+  });
+
+  test("throws the abort error once the signal aborts", () => {
+    const controller = new AbortController();
+    controller.abort(new Error("stop"));
+    expect(() => throwIfAborted(controller.signal)).toThrow(FilesError);
+    expect(() => throwIfAborted(controller.signal)).toThrow(
+      "Operation aborted: stop"
+    );
   });
 });
 

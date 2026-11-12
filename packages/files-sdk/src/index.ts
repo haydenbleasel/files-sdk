@@ -536,6 +536,21 @@ export interface BulkOptions {
 /** The options for a bulk `delete` — the shared {@link BulkOptions}. */
 export type DeleteManyOptions = BulkOptions;
 
+/**
+ * Options passed to an adapter's native bulk delete: the caller's
+ * {@link DeleteManyOptions}, plus the `signal` of the slice it runs under.
+ */
+export interface AdapterDeleteManyOptions extends DeleteManyOptions {
+  /**
+   * Set while the constructor `signal` or `timeout` bounds the delete. Once
+   * it aborts, the SDK has already reported the call's keys with the abort
+   * error, so stop sending deletes, and cancel a request in flight where the
+   * provider's client can: whatever the adapter returns or throws afterwards
+   * is discarded. A `signal` in the caller's bulk options never reaches it.
+   */
+  signal?: AbortSignal;
+}
+
 /** A single per-key failure from the array form of a bulk method. */
 export interface BulkError {
   key: string;
@@ -1012,11 +1027,13 @@ export interface Adapter<Raw = unknown> {
   /**
    * Delete many keys in one call. Optional: when an adapter omits it, the
    * SDK fans out to `delete()` with bounded concurrency. Adapters that
-   * implement it should use a native bulk primitive where one exists.
+   * implement it should use a native bulk primitive where one exists, and
+   * stop between requests once {@link AdapterDeleteManyOptions.signal}
+   * aborts.
    */
   deleteMany?: (
     keys: string[],
-    opts?: DeleteManyOptions
+    opts?: AdapterDeleteManyOptions
   ) => Promise<DeleteManyResult>;
   copy: (from: string, to: string, opts?: OperationOptions) => Promise<void>;
   /**
@@ -3839,19 +3856,21 @@ export class Files<A extends Adapter = Adapter> {
 
   /**
    * Run the adapter's native bulk delete under the constructor `signal` /
-   * `timeout`. The native call takes no per-call signal, so with either set
-   * the paths go out in slices of {@link NATIVE_DELETE_SLICE}, each under its
-   * own #run, so the timeout bounds each slice rather than the whole delete.
+   * `timeout`. With either set, the paths go out in slices of
+   * {@link NATIVE_DELETE_SLICE}, each under its own #run, so the timeout
+   * bounds each slice rather than the whole delete. Each slice gets its
+   * attempt's signal, so the adapter stops between requests once it aborts.
    *
-   * - A slice the signal or timeout cuts off ends the delete: it may still be
-   *   running in the adapter, so sending the next one would overlap it. Its
-   *   keys and those of the slices never sent are reported with the abort
-   *   error, and the keys earlier slices deleted stay in `results`.
+   * - A slice the signal or timeout cuts off ends the delete: a request it
+   *   had in flight may still be running, so sending the next one would
+   *   overlap it. Its keys and those of the slices never sent are reported
+   *   with the abort error, and the keys earlier slices deleted stay in
+   *   `results`.
    * - A slice that fails outright (the adapter threw rather than reporting
    *   per-key errors) has settled, so only its own keys are reported and the
-   *   next slice goes out, as the adapters' own batches do. On the first
-   *   slice the call rejects instead, as the unsliced call does, since nothing
-   *   has been deleted yet.
+   *   next slice goes out, as the adapters' own batches do.
+   * - Either way, a first slice that throws rejects the call instead, as the
+   *   unsliced call does, since no slice has reported a deletion yet.
    *
    * Without either, nothing can cut the delete short, so it's one native call.
    */
@@ -3863,8 +3882,16 @@ export class Files<A extends Adapter = Adapter> {
     const bounded =
       this.#defaults.signal !== undefined ||
       timeoutMs(this.#defaults.timeout) !== undefined;
+    // Bulk calls take no per-call signal, so one that rides in on the
+    // caller's options anyway (untyped, or through a wider type) is dropped:
+    // only a slice's own attempt signal reaches the adapter.
+    const bulkOpts = opts && { ...opts, signal: undefined };
     if (!bounded) {
-      return await this.#run(undefined, () => deleteMany(paths, opts), false);
+      return await this.#run(
+        undefined,
+        () => deleteMany(paths, bulkOpts),
+        false
+      );
     }
     const results: string[] = [];
     const errors: BulkError[] = [];
@@ -3874,17 +3901,19 @@ export class Files<A extends Adapter = Adapter> {
         // oxlint-disable-next-line eslint/no-await-in-loop, react-doctor/async-await-in-loop -- slices run one at a time so a cut-off slice ends the delete before another overlaps it
         const sliceResult = await this.#run(
           undefined,
-          () => deleteMany(slice, opts),
+          // `o.signal` is always set here: the constructor signal, the
+          // timeout's, or both merged.
+          (o) => deleteMany(slice, { ...bulkOpts, signal: o?.signal }),
           false
         );
         results.push(...sliceResult.results);
         errors.push(...(sliceResult.errors ?? []));
       } catch (error) {
         const wrapped = FilesError.wrap(error);
+        if (start === 0) {
+          throw wrapped;
+        }
         if (!wrapped.aborted) {
-          if (start === 0) {
-            throw wrapped;
-          }
           for (const path of slice) {
             errors.push({ error: wrapped, key: path });
           }

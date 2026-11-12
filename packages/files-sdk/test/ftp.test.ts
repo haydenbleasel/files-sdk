@@ -1012,6 +1012,32 @@ describe("ftp edge cases (injected client)", () => {
     expect(store.has("after.txt")).toBe(true);
   });
 
+  test("a bulk delete cut off by the timeout deletes no further key behind the result", async () => {
+    const client = makeFakeClient();
+    const remove = client.remove.bind(client);
+    Object.assign(client, {
+      async remove(path: string, ignoreErrorCodes?: boolean) {
+        if (path.includes("slow")) {
+          // Outlives the instance's timeout.
+          await sleep(60);
+        }
+        return remove(path, ignoreErrorCodes);
+      },
+    });
+    const files = new Files({ adapter: ftp({ client }), timeout: 20 });
+    await files.upload("a.txt", "1");
+    await files.upload("slow.txt", "2");
+    await files.upload("c.txt", "3");
+    await expect(
+      files.delete(["a.txt", "slow.txt", "c.txt"])
+    ).rejects.toMatchObject({ timedOut: true });
+    // Once the in-flight delete settles, the adapter stops instead of moving
+    // on to keys the caller was told weren't deleted.
+    await sleep(100);
+    expect(store.has("a.txt")).toBe(false);
+    expect(store.has("c.txt")).toBe(true);
+  });
+
   test("uploading a ReadableStream looks up the size after transfer", async () => {
     const files = newFiles();
     const stream = new ReadableStream<Uint8Array>({

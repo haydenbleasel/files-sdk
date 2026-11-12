@@ -489,6 +489,25 @@ describe("s3 adapter", () => {
     expect(calls[1]?.args[0].input.Delete?.Objects).toHaveLength(500);
   });
 
+  test("deleteMany sends DeleteObjectsCommand under the slice's signal", async () => {
+    s3Mock.on(DeleteObjectsCommand).resolves({ Deleted: [{ Key: "a.txt" }] });
+    const controller = new AbortController();
+    const adapter = s3({ bucket: "test-bucket", region: "us-east-1" });
+
+    await adapter.deleteMany?.(["a.txt"], { signal: controller.signal });
+    await adapter.deleteMany?.(["a.txt"]);
+
+    const calls = s3Mock.commandCalls(DeleteObjectsCommand);
+    const sendOptions = calls.map(
+      (call) =>
+        (call.args as [DeleteObjectsCommand, { abortSignal?: AbortSignal }?])[1]
+    );
+    expect(sendOptions).toEqual([
+      { abortSignal: controller.signal },
+      undefined,
+    ]);
+  });
+
   test("copy sends CopyObjectCommand with encoded source", async () => {
     s3Mock.on(CopyObjectCommand).resolves({});
     const files = new Files({

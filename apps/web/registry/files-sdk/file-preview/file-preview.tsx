@@ -23,7 +23,9 @@ export interface FilePreviewProps {
    * viewer's Download button under the `filename` the response's
    * `Content-Disposition` carries. Use `"url"` only when `authorize` returns
    * an inline disposition for `url` and `download` on these keys; otherwise
-   * the PDF downloads instead of previewing.
+   * the PDF downloads instead of previewing. A PDF stored with a generic type
+   * (`application/octet-stream`) still previews from a `blob:` URL: its URL
+   * would serve it under that type, which browsers don't render as a PDF.
    */
   pdfSource?: "blob" | "url";
   /**
@@ -33,7 +35,8 @@ export interface FilePreviewProps {
    * when this is set, a `src` is resolved for **every** non-text type, not
    * just images and PDFs, so viewers for formats the built-in preview can't
    * render still get a URL. PDFs arrive as a `blob:` URL, or as a signed or
-   * proxy URL under `pdfSource="url"`; other types as a signed or proxy URL.
+   * proxy URL under `pdfSource="url"` when stored as `application/pdf`; other
+   * types as a signed or proxy URL.
    * `type` is the stored type without parameters, or the inferred one when
    * the stored type is generic (`application/octet-stream`).
    */
@@ -85,13 +88,17 @@ const extensionOf = (key: string): string => {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 };
 
+/** A file's stored type without parameters, lowercased. */
+const storedTypeOf = (file: FileInfo): string =>
+  file.contentType.replace(/;.*/su, "").trim().toLowerCase();
+
 /**
  * The type to preview a file as: its stored type without parameters, or —
  * when that's generic — the type its extension implies, if the preview can
  * render it.
  */
 const previewTypeOf = (file: FileInfo): string => {
-  const type = file.contentType.replace(/;.*/su, "").trim().toLowerCase();
+  const type = storedTypeOf(file);
   if (!GENERIC_TYPES.has(type)) {
     return type;
   }
@@ -242,11 +249,11 @@ const Body = ({
 /**
  * Lazy preview of a single stored file. Images prefer a direct `url()`,
  * falling back to the gateway download proxy; PDFs are downloaded and shown
- * from a `blob:` URL (or, with `pdfSource="url"`, loaded like images); text
- * is fetched and shown inline. A file stored with a generic type
- * (`application/octet-stream`) is previewed by its extension, or as a PDF
- * when its first bytes are the PDF signature. Bytes are only loaded when the
- * component mounts.
+ * from a `blob:` URL (or, with `pdfSource="url"`, loaded like images when
+ * stored as `application/pdf`); text is fetched and shown inline. A file
+ * stored with a generic type (`application/octet-stream`) is previewed by its
+ * extension, or as a PDF when its first bytes are the PDF signature. Bytes
+ * are only loaded when the component mounts.
  */
 export const FilePreview = ({
   files,
@@ -309,14 +316,20 @@ export const FilePreview = ({
           if (!controller.signal.aborted) {
             setText(body);
           }
-        } else if (resolvedType === "application/pdf" && pdfSource === "blob") {
+        } else if (
+          resolvedType === "application/pdf" &&
+          (pdfSource === "blob" || storedTypeOf(resolved) !== "application/pdf")
+        ) {
           // The gateway forces `Content-Disposition: attachment` on both
           // `url()` and the download proxy (its stored-XSS guard), and
           // browsers download an <object>'s document instead of rendering it
           // when that header is present. A `blob:` URL carries no headers, so
           // fetch the bytes and preview those. (`pdfSource="url"` is for
           // gateways that serve these PDFs inline: it loads them by URL
-          // below, keeping the response's filename for the viewer.)
+          // below, keeping the response's filename for the viewer. A PDF
+          // only inferred from its extension or signature still comes here,
+          // since its URL serves the generic stored type, which browsers
+          // download rather than render.)
           const downloaded = await filesRef.current.download(key);
           const blob = await downloaded.blob();
           if (!controller.signal.aborted) {
