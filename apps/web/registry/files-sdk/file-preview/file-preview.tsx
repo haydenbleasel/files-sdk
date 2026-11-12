@@ -15,14 +15,27 @@ export interface FilePreviewProps {
   /** Endpoint for the gateway download-proxy fallback. Default `"/api/files"`. */
   endpoint?: string;
   /**
+   * How a PDF reaches the preview. `"blob"` (the default) downloads the bytes
+   * and previews a `blob:` URL, which renders inline even though the gateway
+   * forces `Content-Disposition: attachment`. `"url"` skips that download and
+   * points the viewer at a signed URL, or the gateway download proxy, so the
+   * browser fetches the PDF itself — once, streamed, and saved by the
+   * viewer's Download button under the `filename` the response's
+   * `Content-Disposition` carries. Use `"url"` only when `authorize` returns
+   * an inline disposition for `url` and `download` on these keys; otherwise
+   * the PDF downloads instead of previewing.
+   */
+  pdfSource?: "blob" | "url";
+  /**
    * Replace the built-in preview with a custom viewer (e.g. a PDF, DOCX or
    * CSV viewer component). Called once metadata resolves, with the same
    * `type`, `src` and `text` the built-in preview would use — except that
    * when this is set, a `src` is resolved for **every** non-text type, not
    * just images and PDFs, so viewers for formats the built-in preview can't
-   * render still get a URL. PDFs arrive as a `blob:` URL; other types as a
-   * signed or proxy URL. `type` is the stored type without parameters, or the
-   * inferred one when the stored type is generic (`application/octet-stream`).
+   * render still get a URL. PDFs arrive as a `blob:` URL, or as a signed or
+   * proxy URL under `pdfSource="url"`; other types as a signed or proxy URL.
+   * `type` is the stored type without parameters, or the inferred one when
+   * the stored type is generic (`application/octet-stream`).
    */
   renderPreview?: (preview: {
     file: FileInfo;
@@ -123,6 +136,36 @@ const resolvePreviewType = async (
     : type;
 };
 
+/**
+ * A URL the browser can load `key` from. Prefers a signed/direct URL, but only
+ * when the adapter can actually sign — otherwise `url()` returns a
+ * non-loadable placeholder — and falls back to the gateway download proxy,
+ * which works on every adapter. A PDF only keeps the filename in
+ * `authorize`'s disposition when its URL carries that header, so it signs
+ * only on adapters that bind one; the proxy sends the header itself.
+ */
+const resolveSrc = async (
+  files: UseFilesResult,
+  endpoint: string,
+  key: string,
+  type: string,
+  signal: AbortSignal
+): Promise<string> => {
+  const proxy = `${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(key)}`;
+  const caps = await files.capabilities();
+  const canSign =
+    caps.signedUrl.supported &&
+    (type !== "application/pdf" || caps.signedUrl.disposition);
+  if (!canSign || signal.aborted) {
+    return proxy;
+  }
+  try {
+    return await files.url(key);
+  } catch {
+    return proxy;
+  }
+};
+
 const formatBytes = (bytes: number): string => {
   if (bytes === 0) {
     return "0 B";
@@ -199,15 +242,17 @@ const Body = ({
 /**
  * Lazy preview of a single stored file. Images prefer a direct `url()`,
  * falling back to the gateway download proxy; PDFs are downloaded and shown
- * from a `blob:` URL; text is fetched and shown inline. A file stored with a
- * generic type (`application/octet-stream`) is previewed by its extension, or
- * as a PDF when its first bytes are the PDF signature. Bytes are only loaded
- * when the component mounts.
+ * from a `blob:` URL (or, with `pdfSource="url"`, loaded like images); text
+ * is fetched and shown inline. A file stored with a generic type
+ * (`application/octet-stream`) is previewed by its extension, or as a PDF
+ * when its first bytes are the PDF signature. Bytes are only loaded when the
+ * component mounts.
  */
 export const FilePreview = ({
   files,
   file,
   endpoint = "/api/files",
+  pdfSource = "blob",
   renderPreview,
   className,
 }: FilePreviewProps) => {
@@ -264,12 +309,14 @@ export const FilePreview = ({
           if (!controller.signal.aborted) {
             setText(body);
           }
-        } else if (resolvedType === "application/pdf") {
+        } else if (resolvedType === "application/pdf" && pdfSource === "blob") {
           // The gateway forces `Content-Disposition: attachment` on both
           // `url()` and the download proxy (its stored-XSS guard), and
           // browsers download an <object>'s document instead of rendering it
           // when that header is present. A `blob:` URL carries no headers, so
-          // fetch the bytes and preview those.
+          // fetch the bytes and preview those. (`pdfSource="url"` is for
+          // gateways that serve these PDFs inline: it loads them by URL
+          // below, keeping the response's filename for the viewer.)
           const downloaded = await filesRef.current.download(key);
           const blob = await downloaded.blob();
           if (!controller.signal.aborted) {
@@ -280,20 +327,18 @@ export const FilePreview = ({
             );
             setSrc(objectUrl);
           }
-        } else if (resolvedType.startsWith("image/") || hasCustomRenderer) {
-          // Prefer a signed/direct URL, but only when the adapter can actually
-          // sign — otherwise `url()` returns a non-loadable placeholder. Fall
-          // back to the gateway download proxy, which works on every adapter.
-          const proxy = `${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(key)}`;
-          let resolvedSrc = proxy;
-          const caps = await filesRef.current.capabilities();
-          if (!controller.signal.aborted && caps.signedUrl.supported) {
-            try {
-              resolvedSrc = await filesRef.current.url(key);
-            } catch {
-              resolvedSrc = proxy;
-            }
-          }
+        } else if (
+          resolvedType.startsWith("image/") ||
+          resolvedType === "application/pdf" ||
+          hasCustomRenderer
+        ) {
+          const resolvedSrc = await resolveSrc(
+            filesRef.current,
+            endpoint,
+            key,
+            resolvedType,
+            controller.signal
+          );
           if (!controller.signal.aborted) {
             setSrc(resolvedSrc);
           }
@@ -318,7 +363,7 @@ export const FilePreview = ({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [endpoint, file, key, hasCustomRenderer]);
+  }, [endpoint, file, key, hasCustomRenderer, pdfSource]);
 
   return (
     <figure

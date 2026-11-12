@@ -3,7 +3,7 @@ title: File Preview
 description: A lazy preview of a single stored file — image, PDF or text — with metadata, resolving bytes only when it mounts.
 ---
 
-Previews one stored file by key (or its resolved [`FileInfo`](/docs/api/stored-file)). Images prefer a direct [`url()`](/docs/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; PDFs are downloaded and rendered from a `blob:` URL; text is fetched and shown inline. Bytes load only when the component mounts.
+Previews one stored file by key (or its resolved [`FileInfo`](/docs/api/stored-file)). Images prefer a direct [`url()`](/docs/ui/client/react#downloading-vs-linking), falling back to the gateway download proxy when the adapter can't sign; PDFs are downloaded and rendered from a `blob:` URL (or [loaded by URL](#naming-the-viewers-download), when your gateway serves them inline); text is fetched and shown inline. Bytes load only when the component mounts.
 
 <Component path="file-preview/examples/file-preview-basic" />
 
@@ -35,7 +35,41 @@ To store the right type in the first place, add the [`contentType()`](/docs/plug
 
 ## Why PDFs use a `blob:` URL
 
-The [gateway](/docs/ui/server/gateway) forces `Content-Disposition: attachment` on both `url()` and the download proxy — its stored-XSS guard against user-uploaded HTML and script-bearing SVGs. Browsers honor that header even for a document loaded inside an `<object>` tag, so a gateway URL would trigger a download instead of an inline PDF render. `FilePreview` sidesteps this by fetching the bytes through `download()` and previewing a `blob:` URL, which carries no headers — no server configuration needed, and the XSS guard stays intact. If you'd rather serve PDFs inline directly (e.g. for a full-page viewer), return `disposition: "inline"` from your [`authorize`](/docs/ui/server/authorization) scope for the keys and operations where that's safe.
+The [gateway](/docs/ui/server/gateway) forces `Content-Disposition: attachment` on both `url()` and the download proxy — its stored-XSS guard against user-uploaded HTML and script-bearing SVGs. Browsers honor that header even for a document loaded inside an `<object>` tag, so a gateway URL would trigger a download instead of an inline PDF render. `FilePreview` sidesteps this by fetching the bytes through `download()` and previewing a `blob:` URL, which carries no headers — no server configuration needed, and the XSS guard stays intact. If you'd rather serve PDFs inline directly (to name the file the viewer saves, say), return an inline disposition from [`authorize`](/docs/ui/server/authorization) and set `pdfSource="url"`, below.
+
+## Naming the viewer's download
+
+A browser's built-in PDF viewer names the file its Download button saves after the `filename` in the response's `Content-Disposition`. A `blob:` URL has no response headers, so a blob preview saves under a name the browser makes up (a random ID in Chrome, `document.pdf` in Firefox). Wrapping the bytes in a named `File` doesn't change that.
+
+To choose the name, have `authorize` serve those PDFs inline with a filename, and set `pdfSource="url"`:
+
+```ts title="app/api/files/route.ts" lineNumbers
+createFilesRouter({
+  files,
+  authorize: async ({ operation, key, req }) => {
+    const session = await auth(req);
+    if (
+      (operation === "url" || operation === "download") &&
+      key?.startsWith("batches/")
+    ) {
+      const batch = await getBatch(session, key); // your lookup
+      return { disposition: `inline; filename="${batch.id}.pdf"` };
+    }
+    // ...the rest of your policy
+  },
+});
+```
+
+```tsx lineNumbers
+<FilePreview file={fileKey} files={files} pdfSource="url" />
+```
+
+`FilePreview` then skips its own download and points the viewer at a signed URL, which binds that `Content-Disposition`, or at the gateway's download proxy, which sends it as given. The browser fetches the PDF once, can stream it, and saves it under the batch ID. A [`renderPreview`](#custom-viewers) viewer gets the same URL, so a custom viewer costs one fetch too.
+
+- Return the inline disposition for both `url` and `download`: `FilePreview` signs a URL when the adapter can and uses the proxy otherwise. Without it, the gateway's `attachment` default applies and the PDF downloads instead of previewing.
+- Scope it to keys whose content you control, like PDFs your server composes. Inline turns off the gateway's `attachment` guard for those keys.
+- A name containing `"`, `\` or non-ASCII characters needs [RFC 6266](https://www.rfc-editor.org/rfc/rfc6266) escaping (`filename*=UTF-8''…`).
+- Some adapters can't bind a disposition into their URLs (see [provider gaps](/docs/provider-gaps#responsecontentdisposition)). On those, `FilePreview` loads PDFs through the proxy, but the gateway's default `downloadMode: "auto"` still redirects an inline download to a URL without the header. Set `downloadMode: "proxy"` on the gateway to keep the filename.
 
 ## Custom viewers
 
@@ -57,7 +91,7 @@ Pass `renderPreview` to replace the built-in preview with your own viewer compon
 />
 ```
 
-The callback receives the resolved `FileInfo` plus the same `type`, `src` and `text` the built-in preview would use. `type` is the stored type without parameters (`text/csv`, not `text/csv; charset=utf-8`), or the inferred one for [files without a real content type](#files-without-a-real-content-type), so branch on it rather than `file.contentType`. PDFs arrive as a `blob:` URL; other types as a signed or proxy URL.
+The callback receives the resolved `FileInfo` plus the same `type`, `src` and `text` the built-in preview would use. `type` is the stored type without parameters (`text/csv`, not `text/csv; charset=utf-8`), or the inferred one for [files without a real content type](#files-without-a-real-content-type), so branch on it rather than `file.contentType`. PDFs arrive as a `blob:` URL (the bytes are already downloaded, so reading it costs no second request), or as a signed or proxy URL with [`pdfSource="url"`](#naming-the-viewers-download); other types as a signed or proxy URL.
 
 ## Props
 
