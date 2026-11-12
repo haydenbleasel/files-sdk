@@ -453,8 +453,11 @@ const fakeBinding = () => {
   const map = new Map<string, BindingEntry>();
   let counter = 0;
   const bucket = {
-    delete(key: string) {
-      map.delete(key);
+    // Like the real binding, takes one key or an array of keys per call.
+    delete(keys: string | string[]) {
+      for (const key of Array.isArray(keys) ? keys : [keys]) {
+        map.delete(key);
+      }
       return Promise.resolve();
     },
     get(key: string, opts?: { range?: { offset?: number; length?: number } }) {
@@ -668,6 +671,127 @@ describe("r2 adapter — Workers binding path", () => {
     } catch (error) {
       expect((error as FilesError).code).toBe("NotFound");
     }
+  });
+
+  test("deleteMany passes the keys to one binding delete() call", async () => {
+    const { bucket, map } = fakeBinding();
+    const calls: (string | string[])[] = [];
+    const remove = bucket.delete.bind(bucket);
+    bucket.delete = (keys) => {
+      calls.push(keys);
+      return remove(keys);
+    };
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    await files.upload("a.txt", "a");
+    await files.upload("b.txt", "b");
+    const result = await files.delete(["a.txt", "b.txt"]);
+    expect(result).toEqual({ results: ["a.txt", "b.txt"] });
+    expect(calls).toEqual([["a.txt", "b.txt"]]);
+    expect(map.size).toBe(0);
+  });
+
+  test("deleteMany short-circuits an empty list without calling the binding", async () => {
+    const { bucket } = fakeBinding();
+    let calls = 0;
+    bucket.delete = () => {
+      calls += 1;
+      return Promise.resolve();
+    };
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    const result = await files.delete([]);
+    expect(result).toEqual({ results: [] });
+    expect(calls).toBe(0);
+  });
+
+  test("deleteMany sends at most 1000 keys per binding call and scopes a batch error to that batch", async () => {
+    const { bucket } = fakeBinding();
+    const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+    const batches: string[][] = [];
+    bucket.delete = ((batch: string[]) => {
+      batches.push(batch);
+      return batches.length === 2
+        ? Promise.reject(
+            Object.assign(new Error("denied"), {
+              code: 10_002,
+              name: "R2Error",
+            })
+          )
+        : Promise.resolve();
+    }) as never;
+    const result = await r2({ binding: bucket as never }).deleteMany?.(keys);
+    expect(batches.map((batch) => batch.length)).toEqual([1000, 1000, 500]);
+    expect(batches[1]?.[0]).toBe("k1000");
+    expect(result?.results).toEqual([
+      ...keys.slice(0, 1000),
+      ...keys.slice(2000),
+    ]);
+    expect(result?.errors?.map((e) => e.key)).toEqual(keys.slice(1000, 2000));
+    expect(result?.errors?.[0]?.error.code).toBe("Unauthorized");
+  });
+
+  test("deleteMany sends a repeated key once per binding call but reports each occurrence", async () => {
+    const { bucket } = fakeBinding();
+    const calls: (string | string[])[] = [];
+    bucket.delete = (keys) => {
+      calls.push(keys);
+      return Promise.resolve();
+    };
+    const files = new Files({
+      adapter: r2({ binding: bucket as never }),
+      prefix: "uploads",
+    });
+    const result = await files.delete(["a.txt", "/a.txt", "b.txt", "a.txt"]);
+    expect(calls).toEqual([["uploads/a.txt", "uploads/b.txt"]]);
+    expect(result).toEqual({
+      results: ["a.txt", "a.txt", "b.txt", "a.txt"],
+    });
+  });
+
+  test("deleteMany makes no further binding call once the constructor signal aborts", async () => {
+    const { bucket } = fakeBinding();
+    const controller = new AbortController();
+    const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+    const calls: (string | string[])[] = [];
+    bucket.delete = (batch) => {
+      calls.push(batch);
+      if (calls.length === 2) {
+        controller.abort(new Error("stop"));
+        // oxlint-disable-next-line promise/avoid-new -- the binding call is still in flight when the abort lands.
+        return new Promise<void>(() => {});
+      }
+      return Promise.resolve();
+    };
+    const files = new Files({
+      adapter: r2({ binding: bucket as never }),
+      signal: controller.signal,
+    });
+    const result = await files.delete(keys);
+    expect(calls.map((batch) => batch.length)).toEqual([1000, 1000]);
+    expect(result.results).toEqual(keys.slice(0, 1000));
+    expect(result.errors?.map((e) => e.key)).toEqual(keys.slice(1000));
+    expect(result.errors?.every((e) => e.error.aborted)).toBe(true);
+  });
+
+  test("deleteMany with stopOnError deletes one key at a time and stops at the first failure", async () => {
+    const { bucket } = fakeBinding();
+    const calls: (string | string[])[] = [];
+    bucket.delete = (keys) => {
+      calls.push(keys);
+      return calls.length === 2
+        ? Promise.reject(
+            Object.assign(new Error("gone"), { code: 10_007, name: "R2Error" })
+          )
+        : Promise.resolve();
+    };
+    const result = await r2({ binding: bucket as never }).deleteMany?.(
+      ["a.txt", "b.txt", "c.txt"],
+      { stopOnError: true }
+    );
+    expect(result?.results).toEqual(["a.txt"]);
+    expect(result?.errors?.map((e) => e.key)).toEqual(["b.txt"]);
+    expect(result?.errors?.[0]?.error.code).toBe("NotFound");
+    // The third key is never attempted once the second fails.
+    expect(calls).toEqual(["a.txt", "b.txt"]);
   });
 
   test("exists on the binding path returns true for present keys and false for missing keys", async () => {

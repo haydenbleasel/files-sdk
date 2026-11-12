@@ -39,7 +39,7 @@ files-sdk
 | `url()` and `signedUploadUrl()` | Throw (a plain `url(key)` only returns unsigned `publicBaseUrl` links; `expiresIn` throws) | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` | Presigned `GET` and `PUT` |
 | Resumable `control` | Throws | Throws | Throws | Supported |
 | `multipart` option | Ignored, one `put` | Ignored, one `put` | Throws | Supported |
-| Bulk `delete([...])` | One binding call per key | One binding call per key | One `DELETE` request per key | Batched `DeleteObjects` |
+| Bulk `delete([...])` | One binding call per 1000 keys (one per key with `stopOnError`) | One binding call per 1000 keys (one per key with `stopOnError`) | One `DELETE` request per key | Batched `DeleteObjects` (one request per key with `stopOnError`) |
 | Stream of unknown length | Rejected by the runtime | Rejected by the runtime | Buffered in memory, then one `PUT` | Uploaded in parts |
 | Needs the `@aws-sdk/*` packages | No | No | No | Yes, and a `DOMParser` polyfill |
 
@@ -50,7 +50,7 @@ On every configuration, `signedUploadUrl()` returns a presigned `PUT` and throws
 - **`client: "fetch"`** is for a Worker with no binding to the bucket, such as a bucket in another account. Each call is an HTTP subrequest.
 - **`client: "aws-sdk"`** only earns its weight when Worker code needs resumable or multipart uploads, and its XML parsing needs a `DOMParser` that workerd doesn't provide ([details](/docs/adapters/r2#default-inside-cloudflare-workers)). Test it under `wrangler dev` before you rely on it.
 
-When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with its own [`createMultipartUpload()` and multi-key `delete()`](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/).
+When the binding modes fall short, `files.raw` is the `R2Bucket` itself, with its own [`createMultipartUpload()` and multi-key `delete()`](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/). Reach for its multi-key `delete()` when a [plugin](/docs/plugins) that wraps operations makes `files.delete([...])` fan out per key.
 
 ## Configure Wrangler
 

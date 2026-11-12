@@ -10,6 +10,7 @@ import type {
   Adapter,
   AdapterCapabilityDeclaration,
   Body,
+  BulkError,
   DownloadOptions,
   FileInfo,
   SignUploadOptions,
@@ -20,6 +21,7 @@ import type {
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
+  deleteManyWithFallback,
   joinPublicUrl,
   rangedSize,
 } from "../internal/core.js";
@@ -35,6 +37,8 @@ import { createStoredFile } from "../internal/stored-file.js";
 // fetch paths never pulls in @aws-sdk/client-s3 (~500KB+).
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
+// The Workers binding's `delete()` accepts at most 1000 keys per call.
+const DELETE_BATCH_SIZE = 1000;
 
 export interface R2HttpOptions {
   /** R2 bucket name. */
@@ -468,6 +472,39 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       } catch (error) {
         throw mapR2Error(error);
       }
+    },
+    async deleteMany(keys, deleteOpts) {
+      if (keys.length === 0) {
+        return { results: [] };
+      }
+      if (deleteOpts?.stopOnError) {
+        return deleteManyWithFallback(
+          keys,
+          (key) => bucket.delete(key),
+          deleteOpts,
+          mapR2Error
+        );
+      }
+      // The binding only reports that a whole call failed, so a failure is
+      // mapped onto every key in its batch.
+      const results: string[] = [];
+      const errors: BulkError[] = [];
+      for (let start = 0; start < keys.length; start += DELETE_BATCH_SIZE) {
+        const batch = keys.slice(start, start + DELETE_BATCH_SIZE);
+        try {
+          // A repeated key only needs deleting once, so the binding gets each
+          // key once; every occurrence is still reported in `results`.
+          // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- batches go one at a time so a large delete doesn't fan out into many concurrent calls
+          await bucket.delete([...new Set(batch)]);
+          results.push(...batch);
+        } catch (error) {
+          const mapped = mapR2Error(error);
+          for (const key of batch) {
+            errors.push({ error: mapped, key });
+          }
+        }
+      }
+      return { ...(errors.length > 0 && { errors }), results };
     },
     async download(key, downloadOpts) {
       const range = downloadOpts?.range;
