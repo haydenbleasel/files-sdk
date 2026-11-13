@@ -1168,7 +1168,12 @@ describe("r2 adapter — Workers binding path", () => {
     // Called directly, the adapter still won't hand back the permanent link.
     await expect(
       adapter.url("a.pdf", { responseContentType: "application/pdf" })
-    ).rejects.toMatchObject({ code: "Unsupported" });
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining(
+        "`responseContentType` requires signing"
+      ),
+    });
   });
 
   test("hybrid: signedUploadUrl works with binding + HTTP creds", async () => {

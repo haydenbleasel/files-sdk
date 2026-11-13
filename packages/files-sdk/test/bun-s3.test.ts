@@ -347,6 +347,8 @@ describe("bun-s3 adapter", () => {
       "application/pdf"
     );
     expect(signed.searchParams.has("X-Amz-Signature")).toBe(true);
+    // A query parameter, not a signed header a browser's GET wouldn't send.
+    expect(signed.searchParams.get("X-Amz-SignedHeaders")).toBe("host");
   });
 
   test("an explicit expiresIn signs even with publicBaseUrl configured", async () => {

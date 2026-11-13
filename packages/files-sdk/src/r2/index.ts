@@ -26,7 +26,11 @@ import {
   rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError, dispositionUnsupported } from "../internal/errors.js";
+import {
+  FilesError,
+  contentTypeUnsupported,
+  dispositionUnsupported,
+} from "../internal/errors.js";
 import { isString } from "../internal/is.js";
 import { lazyS3Adapter, resolveS3Engine } from "../internal/s3-engine.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
@@ -641,6 +645,11 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
       if (wantsDisposition && !hybrid) {
         throw dispositionUnsupported(
           "r2 binding: `responseContentDisposition` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
+        );
+      }
+      if (wantsContentType && !hybrid) {
+        throw contentTypeUnsupported(
+          "r2 binding: `responseContentType` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
         );
       }
       if (wantsExpiry && !hybrid) {

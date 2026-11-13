@@ -2776,6 +2776,61 @@ describe("capability gates run before plugins", () => {
       message:
         '`responseContentType` (a Content-Type override bound into a signed URL) is not supported by the "no-type" plugin',
     });
+    // A hook that hand-builds `signedUrl` without the field fails closed.
+    const omitsType: FilesPlugin = {
+      capabilities: (caps) => ({
+        ...caps,
+        signedUrl: { disposition: true, expiry: "exact", supported: true },
+      }),
+      name: "omits-type",
+    };
+    await expect(
+      new Files({ adapter: capable, plugins: [omitsType] }).url("a.pdf", {
+        responseContentType: "application/pdf",
+      })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message:
+        '`responseContentType` (a Content-Type override bound into a signed URL) is not supported by the "omits-type" plugin',
+    });
+  });
+
+  test("a responseContentType is refused ahead of expiresIn, folding plugins once", async () => {
+    const noSigning = withCapabilities(fakeAdapter(), {
+      signedUrl: { supported: false },
+    });
+    const both = { expiresIn: 60, responseContentType: "application/pdf" };
+    let folds = 0;
+    const counting: FilesPlugin = {
+      capabilities: (caps) => {
+        folds += 1;
+        return caps;
+      },
+      name: "counting",
+    };
+    // Without plugins the inner gate decides; with one, the gate before them.
+    for (const files of [
+      new Files({ adapter: noSigning }),
+      new Files({ adapter: noSigning, plugins: [counting] }),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- each instance on its own
+      await expect(files.url("a.pdf", both)).rejects.toMatchObject({
+        code: "Unsupported",
+        message:
+          "fake: `responseContentType` (a Content-Type override bound into a signed URL) is not supported by this adapter",
+      });
+    }
+    // The adapter's own snapshot refused it, so no hook ran.
+    expect(folds).toBe(0);
+    const capable = withCapabilities(fakeAdapter(), {
+      signedUrl: { contentType: true, disposition: true, supported: true },
+    });
+    await capable.upload("a.pdf", "x");
+    await new Files({ adapter: capable, plugins: [counting] }).url(
+      "a.pdf",
+      both
+    );
+    expect(folds).toBe(1);
   });
 
   test("a responseContentType must be exactly one media type", async () => {
@@ -2789,10 +2844,15 @@ describe("capability gates run before plugins", () => {
       "pdf",
       "image/png, text/html",
       "text/html\r\nx: 1",
+      // Not a valid header value, nor portable in a signed override.
+      "text/plain; charset=\u2603",
+      // Plain JS callers can pass anything.
+      123,
+      null,
     ]) {
       // oxlint-disable-next-line no-await-in-loop -- one value per case
       await expect(
-        files.url("a.pdf", { responseContentType: bad })
+        files.url("a.pdf", { responseContentType: bad as string })
       ).rejects.toMatchObject({ code: "Invalid" });
     }
   });

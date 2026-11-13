@@ -5,12 +5,12 @@ import {
   isMultipartRequested,
   mapMany,
 } from "./internal/core.js";
-import { FilesError } from "./internal/errors.js";
+import { FilesError, contentTypeUnsupported } from "./internal/errors.js";
 import type { EventCapability, FileEvent } from "./internal/events.js";
 import { FOLD_PROVIDER_EVENT } from "./internal/events.js";
 import { globPrefix } from "./internal/glob.js";
 import { isFunction, isNumber, isObject, isString } from "./internal/is.js";
-import { mediaTypeEssence } from "./internal/media-type.js";
+import { isSingleMediaType } from "./internal/media-type.js";
 import {
   buildReceipt,
   bufferedBodyBytes,
@@ -657,7 +657,7 @@ export interface UrlOptions extends OperationOptions {
    * Override the `Content-Type` header on the response — for example to
    * preview a PDF that was stored as `application/octet-stream`, which a
    * browser would otherwise download even with an `inline` disposition.
-   * Must be exactly one media type (`"application/pdf"`,
+   * Must be exactly one media type, in ASCII (`"application/pdf"`,
    * `"text/plain; charset=utf-8"`); anything else throws `Invalid`.
    *
    * The type is bound into the signature (S3's `response-content-type`, an
@@ -771,8 +771,12 @@ export interface SignedUrlCapability {
    * `responseType`). When `false`, passing one throws `Unsupported` before
    * the adapter runs — so the `files-sdk/api` gateway proxies a download
    * whose `authorize` overrides the content type instead of redirecting.
+   *
+   * Always reported by the adapter's own snapshot, but optional so a
+   * plugin's {@link FilesPlugin.capabilities} hook that builds its own
+   * `signedUrl` object needn't name it. A missing value reads as `false`.
    */
-  contentType: boolean;
+  contentType?: boolean;
   /**
    * Hard upper bound on `expiresIn`, in seconds, when the adapter enforces one
    * in code: a longer `expiresIn` throws rather than being clamped (e.g. SigV4
@@ -1602,13 +1606,14 @@ const assertValidMultipartOptions = (
 /**
  * A `responseContentType` must be exactly one media type: it becomes a
  * response header, so a list (`image/png, text/html`, which browsers read as
- * HTML) or a control character is refused rather than signed.
+ * HTML), a control character, or a non-ASCII one is refused rather than
+ * signed.
  */
 const assertMediaTypeOption = (value: string | undefined): void => {
-  if (value !== undefined && mediaTypeEssence(value) === undefined) {
+  if (value !== undefined && !isSingleMediaType(value)) {
     throw new FilesError(
       "Invalid",
-      `responseContentType must be exactly one media type (e.g. "application/pdf"), got ${JSON.stringify(value)}`
+      `responseContentType must be exactly one media type, in ASCII (e.g. "application/pdf"); got ${JSON.stringify(value)}`
     );
   }
 };
@@ -1901,6 +1906,15 @@ const EXPIRING_URL_UNSUPPORTED =
  */
 const URL_CONTENT_TYPE_UNSUPPORTED =
   "`responseContentType` (a Content-Type override bound into a signed URL) is not supported by";
+
+/** One option's gate against {@link Files.capabilities}, before any plugin runs. */
+interface CapabilityCheck {
+  allows: (caps: AdapterCapabilities) => boolean;
+  /** The refusal, completed with "this adapter" or the plugin's name. */
+  unsupported: string;
+  /** Builds the error, when it's branded; a plain `Unsupported` otherwise. */
+  refuse?: (message: string) => FilesError;
+}
 
 /**
  * Keys per native bulk-delete call when the constructor `signal` or `timeout`
@@ -2602,24 +2616,24 @@ export class Files<A extends Adapter = Adapter> {
       case "url": {
         const ctx: ActionContext = { key: op.key, type: "url" };
         const path = this.#path(op.key);
-        // Both checks also catch an `expiresIn` a plugin injected on the way in.
+        // These checks also catch an option a plugin injected on the way in.
         assertValidOperationOptions(op);
+        // The same normalization the capabilities snapshot uses, without
+        // building the rest of it. The content type goes first: it's the more
+        // specific refusal, and the one the gateway explains.
+        const signedUrl = normalizeSignedUrl(this.#declared().signedUrl);
         if (
-          op.options?.expiresIn !== undefined &&
-          this.#declared().signedUrl?.supported !== true
+          op.options?.responseContentType !== undefined &&
+          signedUrl.contentType !== true
         ) {
+          throw contentTypeUnsupported(
+            `${this.#adapter.name}: ${URL_CONTENT_TYPE_UNSUPPORTED} this adapter`
+          );
+        }
+        if (op.options?.expiresIn !== undefined && !signedUrl.supported) {
           throw new FilesError(
             "Unsupported",
             `${this.#adapter.name}: ${EXPIRING_URL_UNSUPPORTED} this adapter`
-          );
-        }
-        if (
-          op.options?.responseContentType !== undefined &&
-          !normalizeSignedUrl(this.#declared().signedUrl).contentType
-        ) {
-          throw new FilesError(
-            "Unsupported",
-            `${this.#adapter.name}: ${URL_CONTENT_TYPE_UNSUPPORTED} this adapter`
           );
         }
         return this.#run(
@@ -2970,40 +2984,65 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   #assertUrlSupported(opts: UrlOptions | undefined): void {
-    if (opts?.expiresIn !== undefined) {
-      this.#assertCapability(
-        (caps) => caps.signedUrl.supported,
-        EXPIRING_URL_UNSUPPORTED
-      );
-    }
+    // The content type goes first: it's the more specific refusal, and the
+    // one the gateway explains.
+    const checks: CapabilityCheck[] = [];
     if (opts?.responseContentType !== undefined) {
-      this.#assertCapability(
-        (caps) => caps.signedUrl.contentType,
-        URL_CONTENT_TYPE_UNSUPPORTED
-      );
+      checks.push({
+        allows: (caps) => caps.signedUrl.contentType === true,
+        refuse: contentTypeUnsupported,
+        unsupported: URL_CONTENT_TYPE_UNSUPPORTED,
+      });
     }
+    if (opts?.expiresIn !== undefined) {
+      checks.push({
+        allows: (caps) => caps.signedUrl.supported,
+        unsupported: EXPIRING_URL_UNSUPPORTED,
+      });
+    }
+    this.#assertCapabilities(checks);
   }
 
   #assertCapability(
     allows: (caps: AdapterCapabilities) => boolean,
     unsupported: string
   ): void {
-    let caps = this.#adapterCapabilities();
-    if (!allows(caps)) {
-      throw new FilesError(
-        "Unsupported",
-        `${this.#adapter.name}: ${unsupported} this adapter`
-      );
+    this.#assertCapabilities([{ allows, unsupported }]);
+  }
+
+  /**
+   * Refuse with the first failing check, folding the plugins' capability
+   * hooks once for all of them: against the adapter's own snapshot, then
+   * after each plugin, so a capability a plugin turns off names that plugin.
+   */
+  #assertCapabilities(checks: readonly CapabilityCheck[]): void {
+    if (checks.length === 0) {
+      return;
     }
+    const refuseUnless = (
+      caps: AdapterCapabilities,
+      describe: (unsupported: string) => string
+    ): void => {
+      const failed = checks.find((check) => !check.allows(caps));
+      if (failed) {
+        const message = describe(failed.unsupported);
+        throw failed.refuse
+          ? failed.refuse(message)
+          : new FilesError("Unsupported", message);
+      }
+    };
+    let caps = this.#adapterCapabilities();
+    refuseUnless(
+      caps,
+      (unsupported) => `${this.#adapter.name}: ${unsupported} this adapter`
+    );
     for (const plugin of this.#plugins ?? []) {
       if (plugin.capabilities) {
         caps = plugin.capabilities(caps);
-        if (!allows(caps)) {
-          throw new FilesError(
-            "Unsupported",
-            `${unsupported} the "${plugin.name}" plugin`
-          );
-        }
+        refuseUnless(
+          caps,
+          (unsupported) => `${unsupported} the "${plugin.name}" plugin`
+        );
       }
     }
   }

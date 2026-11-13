@@ -268,7 +268,7 @@ const redirectPaths = (
     canSign:
       caps.signedUrl.supported &&
       (!mustBind || caps.signedUrl.disposition) &&
-      (!bindsType || caps.signedUrl.contentType),
+      (!bindsType || caps.signedUrl.contentType === true),
   };
 };
 
@@ -293,7 +293,6 @@ const redirectTarget = async (
 ): Promise<ResultModel | undefined> => {
   const caps = cfg.files.capabilities;
   const { canLinkPublic, canSign } = redirectPaths(caps, scope, disposition);
-  const bindsType = scope.contentType !== undefined;
   const useRedirect =
     cfg.downloadMode === "redirect" ||
     (cfg.downloadMode === "auto" && (canSign || canLinkPublic));
@@ -328,7 +327,9 @@ const redirectTarget = async (
       {
         expiresIn,
         signal,
-        ...(bindsType && { responseContentType: scope.contentType }),
+        ...(scope.contentType !== undefined && {
+          responseContentType: scope.contentType,
+        }),
       },
       disposition,
       scope.disposition

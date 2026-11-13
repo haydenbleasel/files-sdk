@@ -5,7 +5,7 @@
 // type override, and bulk filter the handler applies to the actual `Files` call.
 
 import { FilesError } from "../errors.js";
-import { mediaTypeEssence } from "../media-type.js";
+import { isSingleMediaType } from "../media-type.js";
 import { RouterError, markClientFacing } from "../router-core/envelope.js";
 import { normalizePrefix } from "./keys.js";
 import type { FilesOperation } from "./protocol.js";
@@ -44,7 +44,9 @@ export type AuthorizeResult<TContext = unknown> = void | {
    * signed URL where the adapter supports it
    * (`capabilities.signedUrl.contentType`); otherwise `download` proxies the
    * bytes and sets the header itself, and `url` fails with `Unsupported`.
-   * Must be exactly one media type. The client can't choose it: only this
+   * Like `disposition`, it describes the response, so other operations
+   * ignore it (it doesn't restrict what an upload may store). Must be
+   * exactly one media type, in ASCII. The client can't choose it: only this
    * hook can, since a caller-chosen `text/html` would render stored bytes as
    * a page.
    */
@@ -108,14 +110,15 @@ export const runAuthorize = async <TContext>(
   }
   const patch = result ?? {};
   // It becomes a response header (proxied) or a signed override (redirected),
-  // so a list or a control character is refused on both paths alike.
+  // so a list, a control character, or a non-string from a plain-JS hook is
+  // refused on both paths alike.
   if (
     patch.contentType !== undefined &&
-    mediaTypeEssence(patch.contentType) === undefined
+    !isSingleMediaType(patch.contentType)
   ) {
     throw new FilesError(
       "Invalid",
-      `authorize: contentType must be exactly one media type, got ${JSON.stringify(patch.contentType)}`
+      `authorize: contentType must be exactly one media type, in ASCII; got ${JSON.stringify(patch.contentType)}`
     );
   }
   return {

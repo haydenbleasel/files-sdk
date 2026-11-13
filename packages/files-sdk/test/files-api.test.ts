@@ -3295,6 +3295,53 @@ describe("createFilesRouter — authorize contentType", () => {
     expect(error.message).toContain("Use download");
   });
 
+  test("url explains a plugin's refusal of authorize's contentType the same way", async () => {
+    const adapter = typeBinding([]);
+    await seedTyped(adapter, "a.pdf", "application/octet-stream");
+    const files = createFiles({
+      adapter,
+      plugins: [
+        {
+          capabilities: (caps) => ({
+            ...caps,
+            signedUrl: { ...caps.signedUrl, contentType: false },
+          }),
+          name: "no-type",
+        },
+      ],
+    });
+    const res = await createFilesRouter({
+      authorize: inlinePdf,
+      files,
+      now: () => NOW,
+      secret: SECRET,
+    }).handle(post({ key: "a.pdf", op: "url" }));
+    expect(res.status).toBe(422);
+    const { error } = await readJson<{
+      error: { code: string; message: string };
+    }>(res);
+    expect(error.code).toBe("Unsupported");
+    expect(error.message).toContain("cannot set Content-Type");
+  });
+
+  test("url names contentType, not the expiry, when the adapter can't sign at all", async () => {
+    const adapter = withCapabilities(fakeAdapter(), {
+      ...NO_SIGNING,
+      publicUrl: true,
+    });
+    await seedTyped(adapter, "a.pdf", "application/octet-stream");
+    const res = await router({
+      adapter,
+      authorize: () => ({ contentType: PDF, maxExpiresIn: 600 }),
+    }).handle(post({ key: "a.pdf", op: "url" }));
+    expect(res.status).toBe(422);
+    const { error } = await readJson<{
+      error: { code: string; message: string };
+    }>(res);
+    expect(error.code).toBe("Unsupported");
+    expect(error.message).toContain("cannot set Content-Type");
+  });
+
   test("download redirects with the content type bound where the adapter can", async () => {
     const seen: (UrlOptions | undefined)[] = [];
     const adapter = typeBinding(seen);
@@ -3371,14 +3418,24 @@ describe("createFilesRouter — authorize contentType", () => {
   test("a contentType that isn't exactly one media type is refused", async () => {
     const adapter = memory();
     await seedTyped(adapter, "a.pdf", "application/pdf");
-    const res = await router({
-      adapter,
-      authorize: () => ({ contentType: "image/png, text/html" }),
-    }).handle(get("op=download&key=a.pdf"));
-    expect(res.status).toBe(422);
-    // `Invalid` travels as the wire's `Validation` code.
-    expect((await readJson<{ error: { code: string } }>(res)).error.code).toBe(
-      "Validation"
-    );
+    // A plain-JS hook can return a non-string too.
+    for (const contentType of [
+      "image/png, text/html",
+      // Fetch's `Headers` would throw on it in the proxied response.
+      "text/plain; charset=\u2603",
+      123,
+      null,
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one value per case
+      const res = await router({
+        adapter,
+        authorize: () => ({ contentType: contentType as string }),
+      }).handle(get("op=download&key=a.pdf"));
+      expect(res.status).toBe(422);
+      // oxlint-disable-next-line no-await-in-loop -- drain each body
+      const { error } = await readJson<{ error: { code: string } }>(res);
+      // `Invalid` travels as the wire's `Validation` code.
+      expect(error.code).toBe("Validation");
+    }
   });
 });

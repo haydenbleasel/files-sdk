@@ -33,7 +33,7 @@ Objects stored as `application/octet-stream` (or with no type at all) are common
 
 To store the right type in the first place, add the [`contentType()`](/docs/plugins/content-type) plugin on the server. It sniffs the bytes of each upload that goes through your `Files` instance and replaces a generic `application/octet-stream` with the detected type.
 
-When another system writes the objects and you can't change their stored type, override it per request instead: return [`contentType`](/docs/ui/server/authorization#the-constraint) from the gateway's `authorize` (for example `"application/pdf"` alongside an inline disposition), and both the signed URL and the download proxy serve that type.
+When another system writes the objects and you can't change their stored type, override it per request instead: return [`contentType`](/docs/ui/server/authorization#the-constraint) from the gateway's `authorize` (for example `"application/pdf"` alongside an inline disposition), and both the signed URL and the download proxy serve that type. That changes what the browser receives, not what `head()` reports, so `FilePreview` still picks its renderer from the stored type, the extension, or the PDF signature above. The override matters with `pdfSource="url"`, below, where the browser loads the URL itself and would download a PDF served as `application/octet-stream`.
 
 ## Why PDFs use a `blob:` URL
 

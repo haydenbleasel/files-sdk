@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { mediaTypeEssence } from "../src/internal/media-type.js";
+import {
+  isSingleMediaType,
+  mediaTypeEssence,
+} from "../src/internal/media-type.js";
 
 describe("mediaTypeEssence", () => {
   test.each([
@@ -27,5 +30,25 @@ describe("mediaTypeEssence", () => {
     [""],
   ])("refuses %p", (value) => {
     expect(mediaTypeEssence(value)).toBeUndefined();
+  });
+});
+
+describe("isSingleMediaType", () => {
+  test.each([["application/pdf"], ["text/plain; charset=utf-8"]])(
+    "accepts %p",
+    (value) => {
+      expect(isSingleMediaType(value)).toBe(true);
+    }
+  );
+
+  test.each([
+    ["image/png, text/html"],
+    ["text/plain; charset=\u2603"],
+    ["text/plain; charset=caf\u00E9"],
+    [123],
+    [null],
+    [undefined],
+  ])("refuses %p", (value) => {
+    expect(isSingleMediaType(value)).toBe(false);
   });
 });

@@ -8,7 +8,11 @@
 
 import type { BulkOptions, FileInfo, Files, SearchMatch } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
-import { FilesError, isDispositionUnsupported } from "../errors.js";
+import {
+  FilesError,
+  isContentTypeUnsupported,
+  isDispositionUnsupported,
+} from "../errors.js";
 import { globPrefix } from "../glob.js";
 import { isBoolean, isFunction, isNumber, isString } from "../is.js";
 import type { JsonObject, JsonValue } from "../json.js";
@@ -167,7 +171,8 @@ const URL_DISPOSITION_REFUSED =
   'url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment". Return { disposition: "inline" } from authorize for routes where inline URLs are acceptable, or use download, which proxies the bytes and sets Content-Disposition itself.';
 
 // The `url` op when `authorize` overrides the content type on an adapter that
-// can't bind one into its URLs: the link would serve the stored type.
+// can't bind one into its URLs (`Files` refuses it, see
+// `isContentTypeUnsupported`): the link would serve the stored type.
 const URL_CONTENT_TYPE_REFUSED =
   "url: this adapter cannot set Content-Type on its URLs, so the gateway cannot apply the contentType returned from authorize. Use download, which proxies the bytes and sets Content-Type itself, or drop contentType for this route.";
 
@@ -717,12 +722,6 @@ const dispatchJson = async (
         optStr(body, "responseContentDisposition"),
         scope.disposition
       );
-      if (
-        scope.contentType !== undefined &&
-        !ctx.files.capabilities.signedUrl.contentType
-      ) {
-        throw new FilesError("Unsupported", URL_CONTENT_TYPE_REFUSED);
-      }
       // The link always carries a disposition, so it's signed whenever the
       // adapter can sign (with the default expiry unless the client asked for
       // one). An adapter that only hands out permanent links gets no
@@ -758,6 +757,9 @@ const dispatchJson = async (
       } catch (error) {
         if (isDispositionUnsupported(error)) {
           throw new FilesError("Unsupported", URL_DISPOSITION_REFUSED, error);
+        }
+        if (isContentTypeUnsupported(error)) {
+          throw new FilesError("Unsupported", URL_CONTENT_TYPE_REFUSED, error);
         }
         throw error;
       }

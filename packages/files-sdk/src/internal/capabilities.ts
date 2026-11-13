@@ -59,7 +59,7 @@ const intersectSignedUrl = (
     };
   }
   return {
-    contentType: a.contentType && b.contentType,
+    contentType: a.contentType === true && b.contentType === true,
     disposition: a.disposition && b.disposition,
     expiry: weakestExpiry(a.expiry, b.expiry),
     ...tighterCap(a.maxExpiresIn, b.maxExpiresIn),
