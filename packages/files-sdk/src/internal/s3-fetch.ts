@@ -629,8 +629,10 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         supported: true,
       },
       // SigV4 caps presigned lifetimes at one week; `presign()` throws above it.
-      // `responseContentDisposition` is signed in as `response-content-disposition`.
+      // `responseContentDisposition` is signed in as `response-content-disposition`
+      // and `responseContentType` as `response-content-type`.
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
@@ -836,16 +838,21 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
         ...(urlOpts?.responseContentDisposition && {
           responseContentDisposition: urlOpts.responseContentDisposition,
         }),
+        responseContentType: urlOpts?.responseContentType,
       });
       if (strategy === "public" && publicBaseUrl) {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
       }
-      return presign("GET", key, urlOpts?.expiresIn ?? defaultUrlExpiresIn, {
+      const query = {
         ...(urlOpts?.responseContentDisposition && {
-          query: {
-            "response-content-disposition": urlOpts.responseContentDisposition,
-          },
+          "response-content-disposition": urlOpts.responseContentDisposition,
         }),
+        ...(urlOpts?.responseContentType && {
+          "response-content-type": urlOpts.responseContentType,
+        }),
+      };
+      return presign("GET", key, urlOpts?.expiresIn ?? defaultUrlExpiresIn, {
+        query,
       });
     },
   };

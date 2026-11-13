@@ -59,6 +59,7 @@ export const joinPublicUrl = (base: string, key: string): string => {
 export interface UrlStrategyInput {
   publicBaseUrl?: string;
   responseContentDisposition?: string;
+  responseContentType?: string;
   /** The caller's explicit `expiresIn`, if any — not the adapter default. */
   expiresIn?: number;
 }
@@ -74,6 +75,8 @@ export interface UrlStrategyInput {
  * `publicBaseUrl` is configured: a permanent CDN URL has no signature in
  * which to bind the override, and silently dropping the override is a
  * stored-XSS regression on user-uploaded HTML/SVG. The override wins.
+ * `responseContentType` forces `"sign"` for the same reason: only a
+ * signature can carry it.
  *
  * An explicit `expiresIn` forces `"sign"` too: a caller who asks for a link
  * that expires gets one, rather than a permanent CDN URL that silently
@@ -89,6 +92,7 @@ export const resolveUrlStrategy = (
   if (
     input.publicBaseUrl &&
     !input.responseContentDisposition &&
+    input.responseContentType === undefined &&
     input.expiresIn === undefined
   ) {
     return "public";

@@ -33,6 +33,8 @@ Objects stored as `application/octet-stream` (or with no type at all) are common
 
 To store the right type in the first place, add the [`contentType()`](/docs/plugins/content-type) plugin on the server. It sniffs the bytes of each upload that goes through your `Files` instance and replaces a generic `application/octet-stream` with the detected type.
 
+When another system writes the objects and you can't change their stored type, override it per request instead: return [`contentType`](/docs/ui/server/authorization#the-constraint) from the gateway's `authorize` (for example `"application/pdf"` alongside an inline disposition), and both the signed URL and the download proxy serve that type.
+
 ## Why PDFs use a `blob:` URL
 
 The [gateway](/docs/ui/server/gateway) forces `Content-Disposition: attachment` on both `url()` and the download proxy — its stored-XSS guard against user-uploaded HTML and script-bearing SVGs. Browsers honor that header even for a document loaded inside an `<object>` tag, so a gateway URL would trigger a download instead of an inline PDF render. `FilePreview` sidesteps this by fetching the bytes through `download()` and previewing a `blob:` URL, which carries no headers — no server configuration needed, and the XSS guard stays intact. If you'd rather serve PDFs inline directly (to name the file the viewer saves, say), return an inline disposition from [`authorize`](/docs/ui/server/authorization) and set `pdfSource="url"`, below.

@@ -109,6 +109,7 @@ const generateUserDelegationSasUrlMock = mock(
     key: string,
     opts: {
       contentDisposition?: string;
+      contentType?: string;
       expiresOn: Date;
       permissions: { toString: () => string };
     },
@@ -121,6 +122,9 @@ const generateUserDelegationSasUrlMock = mock(
     });
     if (opts.contentDisposition) {
       params.set("rscd", opts.contentDisposition);
+    }
+    if (opts.contentType) {
+      params.set("rsct", opts.contentType);
     }
     return Promise.resolve(`${blobUrlOf(key)}?${params.toString()}`);
   }
@@ -341,6 +345,7 @@ const generateBlobSASQueryParametersMock = mock(
       permissions: { toString: () => string };
       expiresOn: Date;
       contentDisposition?: string;
+      contentType?: string;
     },
     _credential: unknown
   ) => {
@@ -352,6 +357,9 @@ const generateBlobSASQueryParametersMock = mock(
     });
     if (opts.contentDisposition) {
       params.set("rscd", opts.contentDisposition);
+    }
+    if (opts.contentType) {
+      params.set("rsct", opts.contentType);
     }
     return {
       toString: () => params.toString(),
@@ -1904,6 +1912,44 @@ describe("azure adapter", () => {
       expect(opts.contentDisposition).toBe("attachment");
     });
 
+    test("responseContentType binds rsct and forces signing even with publicBaseUrl set", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        publicBaseUrl: "https://cdn.example.com",
+      });
+      const url = await adapter.url("a.pdf", {
+        responseContentDisposition: "inline",
+        responseContentType: "application/pdf",
+      });
+      expect(url).toContain(`${BLOB_BASE}/a.pdf?`);
+      expect(new URL(url).searchParams.get("rsct")).toBe("application/pdf");
+      expect(new URL(url).searchParams.get("rscd")).toBe("inline");
+      const [signCall] = generateBlobSASQueryParametersMock.mock.calls;
+      expect(signCall?.[0].contentType).toBe("application/pdf");
+    });
+
+    test("TokenCredential mode binds responseContentType into the user delegation SAS", async () => {
+      const adapter = azure({
+        accountName: ACCOUNT,
+        container: CONTAINER,
+        credential: {
+          getToken: mock(() =>
+            Promise.resolve({
+              expiresOnTimestamp: Date.now() + 60_000,
+              token: "t",
+            })
+          ),
+        },
+      });
+      const url = await adapter.url("a.pdf", {
+        responseContentType: "application/pdf",
+      });
+      expect(new URL(url).searchParams.get("rsct")).toBe("application/pdf");
+      expect(new URL(url).searchParams.has("rscd")).toBe(false);
+    });
+
     test("throws when no shared key is available (sas-only mode)", async () => {
       const adapter = azure({
         accountName: ACCOUNT,
@@ -2137,6 +2183,7 @@ describe("azure adapter", () => {
         }),
       });
       expect(capabilities.signedUrl).toEqual({
+        contentType: true,
         disposition: true,
         expiry: "exact",
         supported: true,
@@ -2157,6 +2204,7 @@ describe("azure adapter", () => {
         }),
       });
       expect(capabilities.signedUrl).toEqual({
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: SEVEN_DAYS_S,
@@ -2186,6 +2234,7 @@ describe("azure adapter", () => {
       for (const adapter of [sasOnly, anonymous, tokenNoSas]) {
         const { capabilities } = new Files({ adapter });
         expect(capabilities.signedUrl).toEqual({
+          contentType: false,
           disposition: false,
           expiry: "none",
           supported: false,

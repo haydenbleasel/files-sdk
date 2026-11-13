@@ -154,7 +154,12 @@ export const signedUrlPolicy = (
         // adapter can't bind one (its `url()` throws).
         publicUrl = false;
         if (!signedUrl.disposition) {
-          signedUrl = { disposition: false, expiry: "none", supported: false };
+          signedUrl = {
+            contentType: false,
+            disposition: false,
+            expiry: "none",
+            supported: false,
+          };
         }
       }
       if (maxExpiresIn !== undefined && signedUrl.supported) {

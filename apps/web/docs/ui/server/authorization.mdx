@@ -52,6 +52,7 @@ return {
   keyPrefix?: string;     // prepended to every key/from/to; stripped from results
   maxExpiresIn?: number;  // ceiling on url()/download/upload-URL expiry (seconds)
   disposition?: "attachment" | "inline" | string; // download/url Content-Disposition
+  contentType?: string;   // download/url Content-Type override (e.g. "application/pdf")
   filterKeys?: (key: string) => boolean;           // narrow a bulk op; hide keys from versions / restoreVersion / restoreTrashed / complete
   maxResults?: number;    // clamp a list/search page
   context?: TContext;     // per-request data for onUploadComplete (the user, the tenant)
@@ -71,6 +72,8 @@ The storage prefixes that [`versioning()`](/docs/plugins/versioning), [`softDele
 `disposition` is the server-side override for both proxy downloads and URL minting. The gateway defaults untrusted URLs to `attachment`; return `"inline"` only when that operation is safe for the current user, key, and content type. The value can carry a filename (`inline; filename="BATCH-123.pdf"`): the proxy sends it as given and signed URLs bind it, so a browser's PDF viewer saves the file under that name ([File Preview](/docs/ui/components/file-preview#naming-the-viewers-download) shows the pattern).
 
 Some adapters can't bind a `Content-Disposition` into their URLs at all (Vercel Blob, Box, Dropbox, the local `fs` adapter, …; see [provider gaps](/docs/provider-gaps#responsecontentdisposition)). On those, an `"inline"` disposition from `authorize` makes the gateway mint the URL without one, since inline rendering is already your policy; any filename it carried is dropped with it, so use `downloadMode: "proxy"` where the name matters. Without it, `download` proxies the bytes to apply `attachment` (unless `downloadMode` is `"redirect"`), and the `url` operation fails with a `422` `Unsupported` error rather than hand out a URL that may render inline.
+
+`contentType` overrides the `Content-Type` a `download` or `url` is served with, for objects stored under the wrong type. A PDF written as `application/octet-stream` downloads even under an `"inline"` disposition; return `{ contentType: "application/pdf", disposition: "inline" }` and it previews. Where the adapter can bind it into a signed URL ([`capabilities.signedUrl.contentType`](/docs/capabilities#signedurl): S3 and the S3-compatible catalog, Bun's S3, GCS, Firebase Storage, Azure with a signer), `download` redirects with it bound. Otherwise `download` proxies the bytes and sends the header itself (unless `downloadMode` is `"redirect"`, which surfaces the `Unsupported` refusal), and the `url` operation fails with a `422` `Unsupported` error rather than hand out a URL that serves the stored type. It must be exactly one media type, or the request fails with `422`. Browsers can't ask for a content type: only `authorize` sets it, because a client-chosen `text/html` would render any stored bytes as a page. The proxy's [sandbox](/docs/ui/server/gateway#how-downloads-flow) judges the type it actually sends, so overriding to `text/html` still gets `Content-Security-Policy: sandbox`.
 
 ## Recipes
 

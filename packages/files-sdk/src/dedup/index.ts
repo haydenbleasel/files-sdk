@@ -484,7 +484,12 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
       conditional: NO_CONDITIONAL,
       publicUrl: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { disposition: false, expiry: "none", supported: false },
+      signedUrl: {
+        contentType: false,
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      },
     }),
     // Provider events: the content-addressed blobs are internal, so drop them.
     // A logical key this plugin wrote holds an empty pointer, whose size and

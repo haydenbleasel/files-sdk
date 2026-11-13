@@ -1,9 +1,11 @@
 // The deny-by-default authorization gate. Two layers: a declarative `operations`
 // allow-list (a hard gate) and the `authorize` hook (throw to deny, return a
 // patch to constrain). With neither configured, only `capabilities` answers. The
-// resolved `Scope` carries the key prefix, expiry clamp, disposition, and bulk
-// filter the handler applies to the actual `Files` call.
+// resolved `Scope` carries the key prefix, expiry clamp, disposition, content
+// type override, and bulk filter the handler applies to the actual `Files` call.
 
+import { FilesError } from "../errors.js";
+import { mediaTypeEssence } from "../media-type.js";
 import { RouterError, markClientFacing } from "../router-core/envelope.js";
 import { normalizePrefix } from "./keys.js";
 import type { FilesOperation } from "./protocol.js";
@@ -35,6 +37,18 @@ export type AuthorizeResult<TContext = unknown> = void | {
   maxExpiresIn?: number;
   /** Allow inline disposition for download/url (default forces attachment). */
   disposition?: "attachment" | "inline" | string;
+  /**
+   * Override the response `Content-Type` for `url` and `download` — for
+   * example to preview a PDF stored as `application/octet-stream`, which a
+   * browser downloads even under an `inline` disposition. Bound into the
+   * signed URL where the adapter supports it
+   * (`capabilities.signedUrl.contentType`); otherwise `download` proxies the
+   * bytes and sets the header itself, and `url` fails with `Unsupported`.
+   * Must be exactly one media type. The client can't choose it: only this
+   * hook can, since a caller-chosen `text/html` would render stored bytes as
+   * a page.
+   */
+  contentType?: string;
   /** Narrow which keys a bulk op may touch (filter, don't reject the batch). */
   filterKeys?: (key: string) => boolean;
   /** Clamp list/search page size below the router default. */
@@ -55,6 +69,7 @@ export interface Scope {
   prefix: string;
   maxExpiresIn?: number;
   disposition?: string;
+  contentType?: string;
   filterKeys?: (key: string) => boolean;
   maxResults?: number;
   context?: unknown;
@@ -92,7 +107,19 @@ export const runAuthorize = async <TContext>(
     throw markClientFacing(error);
   }
   const patch = result ?? {};
+  // It becomes a response header (proxied) or a signed override (redirected),
+  // so a list or a control character is refused on both paths alike.
+  if (
+    patch.contentType !== undefined &&
+    mediaTypeEssence(patch.contentType) === undefined
+  ) {
+    throw new FilesError(
+      "Invalid",
+      `authorize: contentType must be exactly one media type, got ${JSON.stringify(patch.contentType)}`
+    );
+  }
   return {
+    contentType: patch.contentType,
     context: patch.context,
     disposition: patch.disposition,
     filterKeys: patch.filterKeys,

@@ -255,10 +255,12 @@ const signedLifetimeMs = (url: string): number | undefined => {
 const urlSignature = (options?: {
   expiresIn?: number;
   responseContentDisposition?: string;
+  responseContentType?: string;
 }): string =>
   JSON.stringify([
     options?.expiresIn ?? null,
     options?.responseContentDisposition ?? null,
+    options?.responseContentType ?? null,
   ]);
 
 /** Stable signature for a download's byte range (empty string = whole object). */

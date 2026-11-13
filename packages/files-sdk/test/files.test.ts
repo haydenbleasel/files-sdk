@@ -1656,7 +1656,12 @@ describe("Files class", () => {
       resumable: false,
       serverSideCopy: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { disposition: true, expiry: "exact", supported: true },
+      signedUrl: {
+        contentType: false,
+        disposition: true,
+        expiry: "exact",
+        supported: true,
+      },
       uploadProgress: false,
     });
   });
@@ -1709,6 +1714,7 @@ describe("Files class", () => {
       serverSideCopy: true,
       signedUpload: { contentType: false, maxSize: true, supported: true },
       signedUrl: {
+        contentType: false,
         disposition: false,
         expiry: "exact",
         maxExpiresIn: 604_800,
@@ -2469,7 +2475,12 @@ const narrowing = (name: string, seen: string[]): FilesPlugin => ({
     return {
       ...caps,
       rangeRead: false,
-      signedUrl: { disposition: false, expiry: "none", supported: false },
+      signedUrl: {
+        contentType: false,
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      },
     };
   },
   name,
@@ -2557,7 +2568,12 @@ describe("capability gates run before plugins", () => {
         metadata: false,
         rangeRead: false,
         resumable: false,
-        signedUrl: { disposition: false, expiry: "none", supported: false },
+        signedUrl: {
+          contentType: false,
+          disposition: false,
+          expiry: "none",
+          supported: false,
+        },
       }),
       name: "narrow-all",
     };
@@ -2671,7 +2687,12 @@ describe("capability gates run before plugins", () => {
     const noSigning: FilesPlugin = {
       capabilities: (caps) => ({
         ...caps,
-        signedUrl: { disposition: false, expiry: "none", supported: false },
+        signedUrl: {
+          contentType: false,
+          disposition: false,
+          expiry: "none",
+          supported: false,
+        },
       }),
       name: "no-signing",
     };
@@ -2686,6 +2707,94 @@ describe("capability gates run before plugins", () => {
         'an expiring url() (`expiresIn`) is not supported by the "no-signing" plugin',
     });
     expect(seen).toEqual([]);
+  });
+
+  test("a responseContentType is refused, before any wrap, where it can't be bound", async () => {
+    const seen: string[] = [];
+    const plain = fakeAdapter();
+    await plain.upload("a.pdf", "x");
+    // The fake signs and binds a disposition, but declares no content type.
+    for (const files of [
+      new Files({ adapter: plain }),
+      new Files({ adapter: plain, plugins: [recording(seen)] }),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- each instance on its own
+      await expect(
+        files.url("a.pdf", { responseContentType: "application/pdf" })
+      ).rejects.toMatchObject({
+        code: "Unsupported",
+        message:
+          "fake: `responseContentType` (a Content-Type override bound into a signed URL) is not supported by this adapter",
+        permanent: true,
+      });
+    }
+    expect(seen).toEqual([]);
+    // One a plugin injects on the way in is caught by the inner gate.
+    const injecting: FilesPlugin = {
+      name: "injecting",
+      wrap: handlers({
+        url: (op, next) =>
+          next({
+            ...op,
+            options: { ...op.options, responseContentType: "text/plain" },
+          }),
+      }),
+    };
+    await expect(
+      new Files({ adapter: plain, plugins: [injecting] }).url("a.pdf")
+    ).rejects.toMatchObject({ code: "Unsupported" });
+
+    // Declared: the override reaches the adapter untouched.
+    const received: unknown[] = [];
+    const binding = withCapabilities(plain, {
+      signedUrl: { contentType: true, disposition: true, supported: true },
+    });
+    const capable: Adapter = {
+      ...binding,
+      url: (key, opts) => {
+        received.push(opts?.responseContentType);
+        return binding.url(key, opts);
+      },
+    };
+    await new Files({ adapter: capable }).url("a.pdf", {
+      responseContentType: "application/pdf",
+    });
+    expect(received).toEqual(["application/pdf"]);
+    // A plugin that narrows it away is named.
+    const noType: FilesPlugin = {
+      capabilities: (caps) => ({
+        ...caps,
+        signedUrl: { ...caps.signedUrl, contentType: false },
+      }),
+      name: "no-type",
+    };
+    await expect(
+      new Files({ adapter: capable, plugins: [noType] }).url("a.pdf", {
+        responseContentType: "application/pdf",
+      })
+    ).rejects.toMatchObject({
+      message:
+        '`responseContentType` (a Content-Type override bound into a signed URL) is not supported by the "no-type" plugin',
+    });
+  });
+
+  test("a responseContentType must be exactly one media type", async () => {
+    const files = new Files({
+      adapter: withCapabilities(fakeAdapter(), {
+        signedUrl: { contentType: true, supported: true },
+      }),
+    });
+    for (const bad of [
+      "",
+      "pdf",
+      "image/png, text/html",
+      "text/html\r\nx: 1",
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one value per case
+      await expect(
+        files.url("a.pdf", { responseContentType: bad })
+      ).rejects.toMatchObject({ code: "Invalid" });
+    }
   });
 
   test("a bulk item gated before plugins fails on its own", async () => {
@@ -2720,6 +2829,7 @@ describe("capability declarations", () => {
       uploadProgress: false,
     });
     expect(caps({ signedUrl: { supported: true } }).signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "exact",
       supported: true,
@@ -2728,14 +2838,24 @@ describe("capability declarations", () => {
       caps({
         signedUrl: { disposition: true, expiry: "provider", supported: true },
       }).signedUrl
-    ).toEqual({ disposition: true, expiry: "provider", supported: true });
+    ).toEqual({
+      contentType: false,
+      disposition: true,
+      expiry: "provider",
+      supported: true,
+    });
     expect(caps({ publicUrl: true }).publicUrl).toBe(true);
     // An unsupported signer is always "none", whatever else it declares.
     expect(
       caps({
         signedUrl: { expiry: "provider", maxExpiresIn: 9, supported: false },
       }).signedUrl
-    ).toEqual({ disposition: false, expiry: "none", supported: false });
+    ).toEqual({
+      contentType: false,
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
     expect(
       caps({ signedUpload: { maxExpiresIn: 60, supported: true } }).signedUpload
     ).toEqual({
@@ -2781,6 +2901,7 @@ describe("plugin capability hooks", () => {
     expect(seen).toEqual(["first", "tagging"]);
     expect(caps.rangeRead).toBe(false);
     expect(caps.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,

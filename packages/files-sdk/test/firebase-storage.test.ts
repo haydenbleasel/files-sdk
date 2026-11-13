@@ -794,6 +794,29 @@ describe("firebase-storage adapter", () => {
     expect(opts.responseDisposition).toBe("attachment");
   });
 
+  test("url binds responseContentType as responseType, forcing signing", async () => {
+    const files = new Files({
+      adapter: firebaseStorage({
+        projectId: "p",
+        publicBaseUrl: "https://cdn.example.com",
+      }),
+    });
+    const url = await files.url("a.pdf", {
+      responseContentType: "application/pdf",
+    });
+    expect(url).toContain("https://signed.example.com/read");
+    const [signCall] = getSignedUrlMock.mock.calls;
+    if (!signCall) {
+      throw new Error("expected getSignedUrl to have been called");
+    }
+    const opts = signCall[0] as {
+      responseDisposition?: string;
+      responseType: string;
+    };
+    expect(opts.responseType).toBe("application/pdf");
+    expect(opts.responseDisposition).toBeUndefined();
+  });
+
   test("signedUploadUrl without maxSize returns a PUT URL", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),
@@ -841,6 +864,7 @@ describe("firebase-storage adapter", () => {
       adapter: firebaseStorage({ projectId: "p" }),
     });
     expect(files.capabilities.signedUrl).toEqual({
+      contentType: true,
       disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,

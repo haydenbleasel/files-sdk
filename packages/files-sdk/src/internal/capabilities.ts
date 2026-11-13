@@ -51,9 +51,15 @@ const intersectSignedUrl = (
   b: SignedUrlCapability
 ): SignedUrlCapability => {
   if (!(a.supported && b.supported)) {
-    return { disposition: false, expiry: "none", supported: false };
+    return {
+      contentType: false,
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    };
   }
   return {
+    contentType: a.contentType && b.contentType,
     disposition: a.disposition && b.disposition,
     expiry: weakestExpiry(a.expiry, b.expiry),
     ...tighterCap(a.maxExpiresIn, b.maxExpiresIn),

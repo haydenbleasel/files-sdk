@@ -21,7 +21,7 @@ Gotchas:
 
 - No `credentials`? The AWS SDK's default credential chain (env, shared config, EC2/ECS/EKS metadata) runs. That's usually what you want in production.
 - `publicBaseUrl` flips a plain `url(key)` to return `${publicBaseUrl}/${key}` without signing — set this when you've put CloudFront in front of the bucket.
-- Passing `expiresIn` or `responseContentDisposition` always forces signing, even with `publicBaseUrl` set, because a permanent CDN URL can't expire and has no signature to bind the override to.
+- Passing `expiresIn`, `responseContentDisposition`, or `responseContentType` always forces signing, even with `publicBaseUrl` set, because a permanent CDN URL can't expire and has no signature to bind the override to.
 - Upload `metadata` travels as `x-amz-meta-*` headers (on `s3()`, `s3Fetch()`, and every S3-compatible wrapper): keys must be HTTP tokens and values printable ASCII without control characters (Latin-1 like `café` fails SigV4, so it's refused too), or the call throws `Invalid` before any request. `encodeURIComponent` other values. `contentType` and `cacheControl` follow the same value rule.
 - S3-family `copy()`/`move()` of a source over 5 GiB (CopyObject's ceiling) falls back to a server-side multipart copy (`UploadPartCopy`) on both engines; tags aren't carried, and a conditional copy of such a source throws `Unsupported`.
 - `signedUploadUrl()`: a positive `minSize` needs `maxSize` (the presigned POST policy enforces both); alone it throws `Unsupported`. Presigned PUT and POST both cap `expiresIn` at 7 days (`Invalid` past it). R2, Backblaze B2, Bun S3, and the `fetch` engine have no POST policy, so `maxSize` and a positive `minSize` throw there.

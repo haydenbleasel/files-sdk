@@ -466,8 +466,10 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
       },
       // `url()` presigns a GET via Bun's S3 client (or `publicBaseUrl`),
       // capped at SigV4's one-week lifetime. Bun's `presign({ contentDisposition })`
-      // signs it in as `response-content-disposition`.
+      // signs it in as `response-content-disposition`, and `presign({ type })`
+      // as `response-content-type`.
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
@@ -779,6 +781,7 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
         expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
+        responseContentType: urlOpts?.responseContentType,
       });
       if (strategy === "public" && publicBaseUrl) {
         return Promise.resolve(joinPublicUrl(publicBaseUrl, key));
@@ -795,6 +798,9 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
             method: "GET",
             ...(urlOpts?.responseContentDisposition && {
               contentDisposition: urlOpts.responseContentDisposition,
+            }),
+            ...(urlOpts?.responseContentType && {
+              type: urlOpts.responseContentType,
             }),
           })
         );

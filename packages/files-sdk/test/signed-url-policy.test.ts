@@ -263,6 +263,7 @@ describe("signedUrlPolicy — capabilities", () => {
     );
     expect(files.capabilities.publicUrl).toBe(false);
     expect(files.capabilities.signedUrl).toEqual({
+      contentType: false,
       disposition: true,
       expiry: "exact",
       supported: true,
@@ -276,6 +277,7 @@ describe("signedUrlPolicy — capabilities", () => {
       declaring({ signedUrl: { disposition: false, supported: true } })
     ).files;
     expect(signer.capabilities.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,

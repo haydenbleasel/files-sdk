@@ -1626,6 +1626,7 @@ describe("onedrive adapter", () => {
       });
       // No signed-URL primitive: the public-link mode is permanent.
       expect(caps.signedUrl).toEqual({
+        contentType: false,
         disposition: false,
         expiry: "none",
         supported: false,

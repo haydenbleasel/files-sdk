@@ -314,6 +314,41 @@ describe("bun-s3 adapter", () => {
     expect(signed).toContain("content-disposition=attachment");
   });
 
+  test("url passes responseContentType to presign as type, forcing signing", async () => {
+    const adapter = bunS3({
+      client: new FakeBunS3Client(),
+      publicBaseUrl: "https://cdn.example.com/",
+    });
+    const signed = new URL(
+      await adapter.url("a.pdf", { responseContentType: "application/pdf" })
+    );
+    expect(signed.origin).toBe("https://signed.example.com");
+    expect(signed.searchParams.get("type")).toBe("application/pdf");
+    expect(signed.searchParams.get("method")).toBe("GET");
+  });
+
+  test("Bun's own presigner signs `type` on a GET as response-content-type", async () => {
+    // Real `Bun.S3Client` (presigning is offline): pins the wire parameter the
+    // adapter relies on, not just what the fake echoes.
+    const client = new Bun.S3Client({
+      accessKeyId: "AKID",
+      bucket: "b",
+      endpoint: "https://s3.example.com",
+      region: "us-east-1",
+      secretAccessKey: "SECRET",
+    });
+    const signed = new URL(
+      // `BunS3ClientLike` types `write` more narrowly than bun-types does.
+      await bunS3({ client: client as never }).url("a.pdf", {
+        responseContentType: "application/pdf",
+      })
+    );
+    expect(signed.searchParams.get("response-content-type")).toBe(
+      "application/pdf"
+    );
+    expect(signed.searchParams.has("X-Amz-Signature")).toBe(true);
+  });
+
   test("an explicit expiresIn signs even with publicBaseUrl configured", async () => {
     const files = new Files({
       adapter: bunS3({
@@ -394,6 +429,7 @@ describe("bun-s3 adapter", () => {
     const adapter = bunS3({ client });
     const eightDays = 8 * 24 * 60 * 60;
     expect(new Files({ adapter }).capabilities.signedUrl).toEqual({
+      contentType: true,
       disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,

@@ -693,6 +693,7 @@ describe("cloudinary adapter", () => {
         }),
       });
       expect(capabilities.signedUrl).toEqual({
+        contentType: false,
         disposition: false,
         expiry: "exact",
         supported: true,

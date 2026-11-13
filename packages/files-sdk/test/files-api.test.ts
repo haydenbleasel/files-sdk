@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { createFilesRouter } from "../src/api/index.js";
 import type { Authorize, CreateFilesRouterOptions } from "../src/api/index.js";
-import type { Adapter, SignUploadOptions } from "../src/index.js";
+import type { Adapter, SignUploadOptions, UrlOptions } from "../src/index.js";
 import { createFiles } from "../src/index.js";
 import { FilesError, dispositionUnsupported } from "../src/internal/errors.js";
 import { signToken } from "../src/internal/router-core/sign-token.js";
@@ -3233,5 +3233,152 @@ describe("createFilesRouter — search page size", () => {
     );
     expect(res).toEqual({ matches: [], truncated: false });
     expect(limits).toEqual([1000]);
+  });
+});
+
+// A signer that binds both overrides and records what `url()` was asked for.
+const typeBinding = (seen: (UrlOptions | undefined)[]): Adapter => {
+  const base = withCapabilities(fakeAdapter(), {
+    signedUrl: { contentType: true, disposition: true, supported: true },
+  });
+  return {
+    ...base,
+    url: (key, opts) => {
+      seen.push(opts);
+      return base.url(key, opts);
+    },
+  };
+};
+
+const seedTyped = (adapter: Adapter, key: string, contentType: string) =>
+  createFiles({ adapter }).upload(key, "%PDF-1.7", { contentType });
+
+describe("createFilesRouter — authorize contentType", () => {
+  const PDF = "application/pdf";
+
+  const inlinePdf: Authorize = () => ({
+    contentType: PDF,
+    disposition: 'inline; filename="a.pdf"',
+  });
+
+  test("url binds authorize's contentType; the client can't choose one", async () => {
+    const seen: (UrlOptions | undefined)[] = [];
+    const adapter = typeBinding(seen);
+    await seedTyped(adapter, "a.pdf", "application/octet-stream");
+    const res = await router({ adapter, authorize: inlinePdf }).handle(
+      post({ key: "a.pdf", op: "url" })
+    );
+    expect(res.status).toBe(200);
+    expect(seen.at(-1)).toMatchObject({
+      responseContentDisposition: 'inline; filename="a.pdf"',
+      responseContentType: PDF,
+    });
+    // A body field from the browser is never forwarded.
+    await router({ adapter, operations: ["url"] }).handle(
+      post({ key: "a.pdf", op: "url", responseContentType: "text/html" })
+    );
+    expect(seen.at(-1)).not.toHaveProperty("responseContentType");
+  });
+
+  test("url refuses authorize's contentType where it can't be bound", async () => {
+    const adapter = signing();
+    await seedTyped(adapter, "a.pdf", "application/octet-stream");
+    const res = await router({ adapter, authorize: inlinePdf }).handle(
+      post({ key: "a.pdf", op: "url" })
+    );
+    expect(res.status).toBe(422);
+    const { error } = await readJson<{
+      error: { code: string; message: string };
+    }>(res);
+    expect(error.code).toBe("Unsupported");
+    expect(error.message).toContain("cannot set Content-Type");
+    expect(error.message).toContain("Use download");
+  });
+
+  test("download redirects with the content type bound where the adapter can", async () => {
+    const seen: (UrlOptions | undefined)[] = [];
+    const adapter = typeBinding(seen);
+    await seedTyped(adapter, "a.pdf", "application/octet-stream");
+    const res = await router({ adapter, authorize: inlinePdf }).handle(
+      get("op=download&key=a.pdf")
+    );
+    expect(res.status).toBe(302);
+    expect(seen.at(-1)).toMatchObject({
+      responseContentDisposition: 'inline; filename="a.pdf"',
+      responseContentType: PDF,
+    });
+  });
+
+  test("download proxies with the overridden Content-Type where it can't be bound", async () => {
+    // A signer without the capability, and a public-link-only adapter: neither
+    // URL can carry the override, so `auto` streams it.
+    for (const adapter of [
+      signing(),
+      withCapabilities(fakeAdapter(), { ...NO_SIGNING, publicUrl: true }),
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one adapter per case
+      await seedTyped(adapter, "a.pdf", "application/octet-stream");
+      // oxlint-disable-next-line no-await-in-loop -- one adapter per case
+      const res = await router({
+        adapter,
+        authorize: () => ({ contentType: PDF, disposition: "inline" }),
+      }).handle(get("op=download&key=a.pdf"));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toBe(PDF);
+      expect(res.headers.get("content-disposition")).toBe("inline");
+      // PDF is passive media: no sandbox, so the browser's viewer renders it.
+      expect(res.headers.get("content-security-policy")).toBeNull();
+      // oxlint-disable-next-line no-await-in-loop -- drain each body
+      expect(await res.text()).toBe("%PDF-1.7");
+    }
+  });
+
+  test("the proxy's sandbox judges the overridden type, not the stored one", async () => {
+    const adapter = memory();
+    await seedTyped(adapter, "a.png", "image/png");
+    const r = router({
+      adapter,
+      authorize: () => ({ contentType: "text/html", disposition: "inline" }),
+    });
+    for (const method of ["GET", "HEAD"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one method per case
+      const res = await r.handle(
+        new Request(`${ENDPOINT}?op=download&key=a.png`, { method })
+      );
+      expect(res.headers.get("content-type")).toBe("text/html");
+      expect(res.headers.get("content-security-policy")).toBe(
+        "sandbox; default-src 'none'; style-src 'unsafe-inline'"
+      );
+      // oxlint-disable-next-line no-await-in-loop -- drain each body
+      await res.text();
+    }
+  });
+
+  test("download in redirect mode surfaces the refusal instead of proxying", async () => {
+    const adapter = signing();
+    await seedTyped(adapter, "a.pdf", "application/octet-stream");
+    const res = await router({
+      adapter,
+      authorize: inlinePdf,
+      downloadMode: "redirect",
+    }).handle(get("op=download&key=a.pdf"));
+    expect(res.status).toBe(422);
+    expect((await readJson<{ error: { code: string } }>(res)).error.code).toBe(
+      "Unsupported"
+    );
+  });
+
+  test("a contentType that isn't exactly one media type is refused", async () => {
+    const adapter = memory();
+    await seedTyped(adapter, "a.pdf", "application/pdf");
+    const res = await router({
+      adapter,
+      authorize: () => ({ contentType: "image/png, text/html" }),
+    }).handle(get("op=download&key=a.pdf"));
+    expect(res.status).toBe(422);
+    // `Invalid` travels as the wire's `Validation` code.
+    expect((await readJson<{ error: { code: string } }>(res)).error.code).toBe(
+      "Validation"
+    );
   });
 });

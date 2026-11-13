@@ -895,6 +895,7 @@ describe("tiering — capabilities across tiers", () => {
     expect(caps.cacheControl).toBe(false);
     expect(caps.metadata).toBe(true);
     expect(caps.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "provider",
       supported: true,

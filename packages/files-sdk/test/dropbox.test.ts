@@ -953,6 +953,7 @@ describe("dropbox adapter", () => {
       const caps = new Files({ adapter: dropbox({ ...baseOpts, ...opts }) })
         .capabilities;
       expect(caps.signedUrl).toEqual({
+        contentType: false,
         disposition: false,
         expiry: "provider",
         maxExpiresIn: 14_400,

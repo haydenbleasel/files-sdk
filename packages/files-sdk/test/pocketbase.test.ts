@@ -812,6 +812,7 @@ describe("pocketbase adapter", () => {
       }),
     });
     expect(pub.capabilities.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,
