@@ -2793,6 +2793,25 @@ describe("capability gates run before plugins", () => {
       message:
         '`responseContentType` (a Content-Type override bound into a signed URL) is not supported by the "omits-type" plugin',
     });
+    // So does one that turns signing off but spreads the rest of `signedUrl`.
+    const noSigning: FilesPlugin = {
+      capabilities: (caps) => ({
+        ...caps,
+        signedUrl: { ...caps.signedUrl, supported: false },
+      }),
+      name: "no-signing",
+    };
+    received.length = 0;
+    await expect(
+      new Files({ adapter: capable, plugins: [noSigning] }).url("a.pdf", {
+        responseContentType: "application/pdf",
+      })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message:
+        '`responseContentType` (a Content-Type override bound into a signed URL) is not supported by the "no-signing" plugin',
+    });
+    expect(received).toEqual([]);
   });
 
   test("a responseContentType is refused ahead of expiresIn, folding plugins once", async () => {

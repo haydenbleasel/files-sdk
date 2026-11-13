@@ -43,7 +43,8 @@ export type AuthorizeResult<TContext = unknown> = void | {
    * browser downloads even under an `inline` disposition. Bound into the
    * signed URL where the adapter supports it
    * (`capabilities.signedUrl.contentType`); otherwise `download` proxies the
-   * bytes and sets the header itself, and `url` fails with `Unsupported`.
+   * bytes and sets the header itself (under `downloadMode: "redirect"` it
+   * fails with `Unsupported` instead), and `url` fails with `Unsupported`.
    * Like `disposition`, it describes the response, so other operations
    * ignore it (it doesn't restrict what an upload may store). Must be
    * exactly one media type, in ASCII. The client can't choose it: only this

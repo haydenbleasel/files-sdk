@@ -2989,7 +2989,10 @@ export class Files<A extends Adapter = Adapter> {
     const checks: CapabilityCheck[] = [];
     if (opts?.responseContentType !== undefined) {
       checks.push({
-        allows: (caps) => caps.signedUrl.contentType === true,
+        // A hook that turns signing off but spreads the rest of `signedUrl`
+        // keeps `contentType: true`; signing is what binds the override.
+        allows: (caps) =>
+          caps.signedUrl.supported && caps.signedUrl.contentType === true,
         refuse: contentTypeUnsupported,
         unsupported: URL_CONTENT_TYPE_UNSUPPORTED,
       });
