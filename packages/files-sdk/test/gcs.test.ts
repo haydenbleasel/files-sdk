@@ -804,6 +804,26 @@ describe("gcs adapter", () => {
     expect(opts.fields?.["content-type"]).toBe("image/png");
   });
 
+  test("signedUploadUrl refuses a positive minSize without maxSize", async () => {
+    // Only the POST policy `maxSize` selects carries a size range; the signed
+    // PUT returned otherwise would accept the small upload it was told to
+    // refuse.
+    const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1024 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining("gcs: `minSize`"),
+    });
+    expect(getSignedUrlMock).not.toHaveBeenCalled();
+    // `minSize: 0` asks for nothing, so the PUT is still signed.
+    const out = await files.signedUploadUrl("a.txt", {
+      expiresIn: 60,
+      minSize: 0,
+    });
+    expect(out.method).toBe("PUT");
+  });
+
   test("signedUploadUrl with minSize: 0 allows empty uploads through the policy", async () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     await files.signedUploadUrl("a.txt", {

@@ -53,4 +53,4 @@ const files = new Files({
 | `exists` | ✅ |  |
 | `copy` | ✅ |  |
 | `url` | ✅ | V4 signed URL, or your `publicBaseUrl` (no expiry). V4 signing caps `expiresIn` at 7 days (604800 seconds), so a longer one (or `defaultUrlExpiresIn`) throws `Invalid` before any request; `capabilities.signedUrl.maxExpiresIn` reports the cap, and the gateway clamps to it. |
-| `signedUploadUrl` | ✅ | V4 signed PUT URL, or a V4 POST policy when `maxSize` is set - same 7-day `expiresIn` cap. |
+| `signedUploadUrl` | ✅ | V4 signed PUT URL, or a V4 POST policy when `maxSize` is set - same 7-day `expiresIn` cap. A positive `minSize` needs `maxSize`, which selects the POST policy that enforces both; on its own it throws `Unsupported`. |

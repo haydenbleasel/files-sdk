@@ -117,11 +117,11 @@ For these, upload through `files.upload()` on the server, or put the [UI gateway
 
 `maxSize` flips `signedUploadUrl()` from PUT to POST-with-policy to enforce the cap at the bucket via `content-length-range`, and a positive `minSize` rides on the same policy. Some adapters can't honor that contract, so they throw `Unsupported` rather than hand back an uncapped URL (`minSize: 0` asks for nothing and is always fine):
 
-- **Azure**, **Supabase**, **Cloudinary**, and **UploadThing** throw on `maxSize` - none exposes a URL-level `content-length-range` equivalent. Cloudinary and UploadThing also throw on a positive `minSize` (`minSize: 0` is fine), and Cloudinary throws on `contentType`, since it detects the format from the uploaded bytes.
+- **Azure**, **Supabase**, **Cloudinary**, and **UploadThing** throw on `maxSize` - none exposes a URL-level `content-length-range` equivalent. All four also throw on a positive `minSize` (`minSize: 0` is fine). Azure and Supabase throw on `contentType` too, as does Cloudinary, since it detects the format from the uploaded bytes.
 - **R2** throws on `maxSize` and a positive `minSize` - it doesn't implement the S3 POST Object API.
 - **Backblaze B2** throws on `maxSize` and a positive `minSize` - its [S3-compatible API](https://www.backblaze.com/docs/cloud-storage-s3-compatible-api) doesn't support presigned POST uploads. Plain presigned PUT URLs still work.
 - **Bun S3** and the **`fetch` S3 engine** ([`s3Fetch()`](/docs/adapters/s3-fetch), and R2 / MinIO / RustFS with `client: "fetch"`) throw on `maxSize` and a positive `minSize` - they mint presigned PUT URLs only, never POST policies.
-- **`s3()`** and its S3-compatible wrappers throw on a positive `minSize` without `maxSize` - a presigned PUT has no size condition. Add `maxSize` and the call is accepted, because that routes to the POST policy, which enforces both.
+- **`s3()`** and its S3-compatible wrappers, **GCS**, and **Firebase Storage** throw on a positive `minSize` without `maxSize` - a presigned PUT has no size condition. Add `maxSize` and the call is accepted, because that routes to the POST policy, which enforces both.
 - **Google Drive**, **OneDrive**, and **SharePoint** throw on `maxSize`/`minSize` - their upload sessions enforce no size range.
 - **Vercel Blob** enforces `maxSize` at the CDN but has no minimum, so a positive `minSize` throws.
 

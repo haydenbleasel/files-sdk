@@ -857,6 +857,26 @@ describe("firebase-storage adapter", () => {
     expect(out.headers).toEqual({ "Content-Type": "image/png" });
   });
 
+  test("signedUploadUrl refuses a positive minSize without maxSize", async () => {
+    // Only the POST policy `maxSize` selects carries a size range; the signed
+    // PUT returned otherwise would accept the small upload it was told to
+    // refuse.
+    const files = new Files({ adapter: firebaseStorage({ projectId: "p" }) });
+    await expect(
+      files.signedUploadUrl("a.txt", { expiresIn: 60, minSize: 1024 })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining("firebase-storage: `minSize`"),
+    });
+    expect(getSignedUrlMock).not.toHaveBeenCalled();
+    // `minSize: 0` asks for nothing, so the PUT is still signed.
+    const out = await files.signedUploadUrl("a.txt", {
+      expiresIn: 60,
+      minSize: 0,
+    });
+    expect(out.method).toBe("PUT");
+  });
+
   test("signedUploadUrl with maxSize returns a POST policy with content-length-range", async () => {
     const files = new Files({
       adapter: firebaseStorage({ projectId: "p" }),

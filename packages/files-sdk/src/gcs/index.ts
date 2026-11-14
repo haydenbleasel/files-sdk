@@ -396,6 +396,20 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
     },
     async signedUploadUrl(key, signOpts): Promise<SignedUpload> {
       assertV4ExpiresIn(signOpts.expiresIn);
+      // A size floor rides on the POST policy's `content-length-range`, which
+      // only `maxSize` selects. A signed PUT has no size condition at all, so
+      // a positive `minSize` on its own can't be enforced. (`0` asks for
+      // nothing, so it holds trivially.)
+      if (
+        signOpts.maxSize === undefined &&
+        signOpts.minSize !== undefined &&
+        signOpts.minSize > 0
+      ) {
+        throw new FilesError(
+          "Unsupported",
+          "gcs: `minSize` is enforced only by the signed POST policy that `maxSize` selects; a signed PUT has no size condition. Pass `maxSize` as well, or omit `minSize`."
+        );
+      }
       try {
         const file = bucket.file(key);
         if (signOpts.maxSize !== undefined) {
