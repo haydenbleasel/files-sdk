@@ -958,8 +958,16 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
             throw mapFsError(error);
           }
         },
-        discard() {
-          return bestEffortRm(tempPath);
+        async discard() {
+          // Same guard as `begin` and `uploadAt`: an adopted token skips
+          // both, and removing the partial through a folder symlinked out of
+          // the root would delete a file outside it.
+          try {
+            await writePathUnderRoot(root, tempPath, key);
+          } catch (error) {
+            throw mapFsError(error);
+          }
+          await bestEffortRm(tempPath);
         },
         mode: "offset",
         partSize:

@@ -2061,6 +2061,28 @@ describe("fs resumable uploads", () => {
     await expect(fsp.lstat(path.join(root, "c.bin"))).rejects.toThrow();
   });
 
+  test("abortUpload never removes a partial through a folder symlinked outside the root", async () => {
+    const root = await makeRoot();
+    const outside = await makeRoot();
+    const victim = path.join(outside, "x.bin.fls-part");
+    await fsp.writeFile(victim, "someone else's partial");
+    if (!(await plantSymlink(outside, path.join(root, "link")))) {
+      return;
+    }
+    const files = new Files({ adapter: fsAdapter({ root }) });
+    // A persisted token is outside the trust boundary; its key resolves
+    // through the link, like the writes that are already refused.
+    await expect(
+      files.abortUpload("link/x.bin", {
+        contentType: "application/octet-stream",
+        key: "link/x.bin",
+        provider: "fs",
+        tempPath: path.join(root, "link", "x.bin.fls-part"),
+      })
+    ).rejects.toMatchObject({ code: "Invalid" });
+    expect(await fsp.readFile(victim, "utf-8")).toBe("someone else's partial");
+  });
+
   test("an O_NOFOLLOW refusal (ELOOP) is a permanent Conflict", () => {
     const loop = Object.assign(new Error("ELOOP: too many symbolic links"), {
       code: "ELOOP",
