@@ -3442,6 +3442,7 @@ describe("createFilesRouter — authorize responseContentType", () => {
     }
   });
 });
+
 describe("createFilesRouter — header values a response can't carry", () => {
   // Past U+00FF: Fetch's `Headers` throws on it.
   const UNSENDABLE_TYPE = "image/png; name=日本";
@@ -3611,3 +3612,39 @@ describe("createFilesRouter — presign expiresIn", () => {
   });
 });
 
+describe("createFilesRouter — empty key under a keyPrefix", () => {
+  test("an empty key never resolves to the prefix itself", async () => {
+    const base = memory();
+    await seed(base, "users/1/a.txt", "hello");
+    const touched: string[] = [];
+    const adapter: Adapter = {
+      ...base,
+      delete: (key, opts) => {
+        touched.push(key);
+        return base.delete(key, opts);
+      },
+      head: (key, opts) => {
+        touched.push(key);
+        return base.head(key, opts);
+      },
+    };
+    const r = router({ adapter, authorize: () => ({ keyPrefix: "users/1/" }) });
+    for (const body of [
+      { key: "", op: "head" },
+      { key: "", op: "delete" },
+      { keys: ["a.txt", ""], op: "head-many" },
+      { from: "", op: "move", to: "b.txt" },
+    ]) {
+      // oxlint-disable-next-line no-await-in-loop -- one request per case
+      const res = await r.handle(post(body));
+      expect(res.status).toBe(422);
+      // oxlint-disable-next-line no-await-in-loop -- drain each body
+      expect((await readJson<Envelope>(res)).error).toMatchObject({
+        code: "Validation",
+        message: "unsafe key: ",
+        reason: "key",
+      });
+    }
+    expect(touched).toEqual([]);
+  });
+});

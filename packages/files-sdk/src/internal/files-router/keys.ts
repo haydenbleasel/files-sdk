@@ -40,7 +40,9 @@ export const normalizePrefix = (prefix?: string): string => {
 
 /**
  * Prepend the authorize prefix and validate the resolved key: unsafe → 422,
- * inside a plugin's `reserved` storage → 403. The messages name the key the
+ * inside a plugin's `reserved` storage → 403. An empty client key is unsafe
+ * whatever the prefix: under one it would resolve to the prefix itself (the
+ * caller's whole folder), not to an object. The messages name the key the
  * client sent, never the resolved storage key.
  */
 export const scopeKey = (
@@ -49,7 +51,7 @@ export const scopeKey = (
   reserved: readonly string[] = []
 ): string => {
   const scoped = prefix + key;
-  if (scoped === "" || isUnsafePath(scoped)) {
+  if (key === "" || isUnsafePath(scoped)) {
     throw new RouterError("Validation", `unsafe key: ${key}`, "key");
   }
   if (isReservedKey(scoped, reserved)) {
