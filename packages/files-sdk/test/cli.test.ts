@@ -175,6 +175,20 @@ describe("cli/io filesystem helpers", () => {
       writeBodyToDir(fakeStoredFile("../escape.txt", "no"), dir)
     ).rejects.toThrow(FilesError);
   });
+
+  test("writeBodyToDir accepts a filesystem root as the directory", async () => {
+    // `path.resolve("/")` keeps its trailing separator, so a containment
+    // check that appends another one ("//") refused every key.
+    const dir = await mkroot();
+    const { root } = path.parse(dir);
+    const key = path
+      .relative(root, path.join(dir, "at-root.txt"))
+      .split(path.sep)
+      .join("/");
+    const dest = await writeBodyToDir(fakeStoredFile(key, "rooted"), root);
+    expect(dest).toBe(path.join(dir, "at-root.txt"));
+    expect(await readFile(dest, "utf-8")).toBe("rooted");
+  });
 });
 
 describe("cli/registry", () => {

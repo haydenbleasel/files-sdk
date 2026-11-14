@@ -284,7 +284,10 @@ export const writeBodyToDir = async (
 ): Promise<string> => {
   const root = path.resolve(dir);
   const dest = path.resolve(root, file.key);
-  if (dest !== root && !dest.startsWith(root + path.sep)) {
+  // A filesystem root (`/`, `C:\`) resolves with its separator already on the
+  // end; appending another would refuse every key.
+  const base = root.endsWith(path.sep) ? root : root + path.sep;
+  if (dest !== root && !dest.startsWith(base)) {
     throw new FilesError(
       "Invalid",
       `refusing to write key outside --out-dir: ${file.key}`
