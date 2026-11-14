@@ -13,7 +13,17 @@ interface StoredEntry {
 
 const backing = new Map<string, StoredEntry>();
 
-const stripPath = (path: string): string => path.replace(/^\/+/u, "");
+// The object a request path addresses. Mirrors the real SDK, which appends the
+// path to the zone URL's `pathname` (the URL parser leaves a `%` as written,
+// turns `\` into `/` and drops tabs), and the server, which percent-decodes it.
+const stripPath = (path: string): string => {
+  const url = new URL("https://storage.bunnycdn.com/zone/");
+  url.pathname = `${url.pathname}${path}`;
+  return decodeURIComponent(url.pathname.slice("/zone/".length)).replace(
+    /^\/+/u,
+    ""
+  );
+};
 
 const bytesFromStream = async (
   stream: ReadableStream<Uint8Array>
@@ -67,7 +77,8 @@ const makeStorageFile = (
   key: string,
   entry: StoredEntry,
   isDirectory = false,
-  fromListing = false
+  fromListing = false,
+  requestPath = `/${key}`
 ) => {
   // Mirror real Bunny semantics:
   //   Path        = "/<StorageZoneName>/<parent-dir>/"   (always trailing /)
@@ -83,7 +94,7 @@ const makeStorageFile = (
     contentType: entry.contentType,
     // `file.get` builds `data` from the requested path; `file.list` builds
     // it from the entry's `Path` (its directory) — see the SDK source.
-    data: () => downloadMock(undefined, fromListing ? path : `/${key}`),
+    data: () => downloadMock(undefined, fromListing ? path : requestPath),
     dateCreated: entry.lastChanged,
     guid: `guid-${key}`,
     isDirectory,
@@ -114,7 +125,7 @@ const getMock = mock((_storageZone: unknown, path: string) => {
   if (!entry) {
     return Promise.reject(new Error(`File not found: ${path}`));
   }
-  return Promise.resolve(makeStorageFile(key, entry));
+  return Promise.resolve(makeStorageFile(key, entry, false, false, path));
 });
 
 const listMock = mock((_storageZone: unknown, path: string) => {
@@ -418,7 +429,7 @@ describe("bunnyStorage adapter", () => {
       if (!entry) {
         return Promise.reject(new Error(`File not found: ${path}`));
       }
-      return Promise.resolve(makeStorageFile(key, entry));
+      return Promise.resolve(makeStorageFile(key, entry, false, false, path));
     };
     let getCalls = 0;
     getMock.mockImplementation((zone: unknown, path: string) => {
@@ -685,6 +696,45 @@ describe("bunnyStorage adapter", () => {
     // Dots inside a segment are ordinary characters.
     await files.upload("a/.hidden/..x", "ok");
     expect(backing.has("a/.hidden/..x")).toBe(true);
+  });
+
+  test("keys with %, \\ or tabs address the object they name", async () => {
+    const files = new Files({
+      adapter: bunnyStorage({
+        accessKey: "key",
+        region: "de",
+        zone: "uploads",
+      }),
+    });
+    // The SDK puts the path into a URL unencoded: `%20` was sent as an
+    // escaped space, `\` as a `/` and a tab dropped, so each of these keys
+    // was written under (and read back as) another name.
+    const keys = [
+      "docs/a%20b.txt",
+      "docs/50%.txt",
+      "docs/a\\b.txt",
+      "docs/a\tb",
+    ];
+    for (const key of keys) {
+      // eslint-disable-next-line no-await-in-loop -- each key's round trip is asserted in turn
+      await files.upload(key, key);
+      expect(backing.has(key)).toBe(true);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      const info = await files.head(key);
+      expect(info.key).toBe(key);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      const file = await files.download(key);
+      // eslint-disable-next-line no-await-in-loop -- see above
+      expect(await file.text()).toBe(key);
+    }
+    const listed = await files.list({ prefix: "docs/" });
+    expect(listed.items.map((item) => item.key).toSorted()).toEqual(
+      keys.toSorted()
+    );
+    await files.copy("docs/a%20b.txt", "docs/c%2Fd.txt");
+    expect(backing.has("docs/c%2Fd.txt")).toBe(true);
+    await files.delete("docs/50%.txt");
+    expect(backing.has("docs/50%.txt")).toBe(false);
   });
 
   test("url requires publicBaseUrl and rejects content-disposition overrides", async () => {

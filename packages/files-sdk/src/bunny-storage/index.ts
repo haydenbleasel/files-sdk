@@ -89,7 +89,11 @@ const toBunnyPath = (key: string): string => {
       `bunnyStorage: key must not contain . or .. path segments: ${JSON.stringify(key)}`
     );
   }
-  return `/${trimmed}`;
+  // The SDK also leaves the path unencoded, and the URL parser keeps a `%` as
+  // written (`a%20b` would address `a b`), turns `\` into `/` and drops tabs
+  // and newlines. Percent-encode each segment so the server decodes it back
+  // to exactly this key; the parser doesn't re-encode a `%` escape.
+  return `/${trimmed.split("/").map(encodeURIComponent).join("/")}`;
 };
 
 const fromBunnyPath = (path: string): string => path.replace(/^\/+/u, "");
