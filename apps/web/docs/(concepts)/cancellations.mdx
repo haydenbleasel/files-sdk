@@ -44,7 +44,7 @@ const files = new Files({
 });
 ```
 
-The array forms (`upload([…])`, `delete([…])`, …) don't take a per-call `signal`; they manage work through `concurrency` / `stopOnError` instead. A constructor `signal` still reaches them: once it aborts, every item that hasn't finished fails fast and lands in the result's `errors`. A native bulk `delete` (S3 `DeleteObjects`, the R2 binding, …) goes out in slices of up to 1000 keys while a constructor `signal` or [`timeout`](/docs/timeouts) is set, so an abort stops it between slices and the keys of the slices it cut off are reported the same way.
+The array forms (`upload([…])`, `delete([…])`, …) don't take a per-call `signal`; they manage work through `concurrency` / `stopOnError` instead. A constructor `signal` still reaches them: once it aborts, every item that hasn't finished fails fast and lands in the result's `errors`. A native bulk `delete` (S3 `DeleteObjects`, the R2 binding, …) goes out in slices of up to 1000 keys while a constructor `signal` or [`timeout`](/docs/timeouts) is set, so an abort stops it between slices and the keys of the slices it cut off are reported the same way, the first slice's included. The adapter gets the slice's abort signal too, so FTP and SFTP stop before their next key, and S3 and Azure cancel the batch request in flight.
 
 ## What the adapter does downstream
 

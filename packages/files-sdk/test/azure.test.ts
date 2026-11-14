@@ -246,36 +246,49 @@ const getContainerClientMock = mock((_name: string) => ({
   listBlobsFlat: listBlobsFlatMock,
 }));
 
-// Blob Batch API: deleteBlobs returns one sub-response per blob client, in
-// request order. Status is keyed off the blob URL so a test can mix outcomes:
-// "missing" → 404 (idempotent), "denied" → 403 (per-key error), "batchboom" in
-// any key → a batch-level throw. Everything else → 202 (deleted).
-const deleteBlobsMock = mock((blobClients: { url: string }[]) => {
-  if (blobClients.some((c) => c.url.includes("batchboom"))) {
-    return Promise.reject(
-      Object.assign(new Error("batch rejected"), {
-        details: { errorCode: "AuthorizationFailure" },
-        statusCode: 403,
-      })
-    );
+// Blob Batch API: a BlobBatch collects one delete sub-request per blob client,
+// and submitBatch returns one sub-response per sub-request, in request order.
+// Status is keyed off the blob URL so a test can mix outcomes: "missing" → 404
+// (idempotent), "denied" → 403 (per-key error), "batchboom" in any key → a
+// batch-level throw. Everything else → 202 (deleted).
+class BlobBatchStub {
+  readonly blobClients: { url: string }[] = [];
+
+  deleteBlob(blobClient: { url: string }) {
+    this.blobClients.push(blobClient);
+    return Promise.resolve();
   }
-  const subResponses = blobClients.map((c) => {
-    if (c.url.includes("missing")) {
-      return { errorCode: "BlobNotFound", status: 404 };
+}
+const submitBatchMock = mock(
+  (batch: BlobBatchStub, _options?: { abortSignal?: AbortSignal }) => {
+    const { blobClients } = batch;
+    if (blobClients.some((c) => c.url.includes("batchboom"))) {
+      return Promise.reject(
+        Object.assign(new Error("batch rejected"), {
+          details: { errorCode: "AuthorizationFailure" },
+          statusCode: 403,
+        })
+      );
     }
-    if (c.url.includes("denied")) {
-      return { errorCode: "AuthorizationFailure", status: 403 };
-    }
-    return { status: 202 };
-  });
-  return Promise.resolve({
-    subResponses,
-    subResponsesFailedCount: subResponses.filter((s) => s.status >= 300).length,
-    subResponsesSucceededCount: subResponses.filter((s) => s.status < 300)
-      .length,
-  });
-});
-const getBlobBatchClientMock = mock(() => ({ deleteBlobs: deleteBlobsMock }));
+    const subResponses = blobClients.map((c) => {
+      if (c.url.includes("missing")) {
+        return { errorCode: "BlobNotFound", status: 404 };
+      }
+      if (c.url.includes("denied")) {
+        return { errorCode: "AuthorizationFailure", status: 403 };
+      }
+      return { status: 202 };
+    });
+    return Promise.resolve({
+      subResponses,
+      subResponsesFailedCount: subResponses.filter((s) => s.status >= 300)
+        .length,
+      subResponsesSucceededCount: subResponses.filter((s) => s.status < 300)
+        .length,
+    });
+  }
+);
+const getBlobBatchClientMock = mock(() => ({ submitBatch: submitBatchMock }));
 
 const sharedKeyInstances: { accountName: string; accountKey: string }[] = [];
 
@@ -360,6 +373,7 @@ const generateBlobSASQueryParametersMock = mock(
 );
 
 mock.module("@azure/storage-blob", () => ({
+  BlobBatch: BlobBatchStub,
   BlobSASPermissions: {
     parse: (s: string) => ({ toString: () => s }),
   },
@@ -435,7 +449,7 @@ beforeEach(() => {
   existsMock.mockClear();
   getPropertiesMock.mockClear();
   deleteIfExistsMock.mockClear();
-  deleteBlobsMock.mockClear();
+  submitBatchMock.mockClear();
   getBlobBatchClientMock.mockClear();
   syncCopyFromURLMock.mockClear();
   getBlobClientMock.mockClear();
@@ -1361,7 +1375,7 @@ describe("azure adapter", () => {
     test("uses the Blob Batch API; 2xx and 404 both count as deleted", async () => {
       const files = batchFiles();
       const result = await files.delete(["a.txt", "missing.txt", "b.txt"]);
-      expect(deleteBlobsMock).toHaveBeenCalledTimes(1);
+      expect(submitBatchMock).toHaveBeenCalledTimes(1);
       expect(result.results).toEqual(["a.txt", "missing.txt", "b.txt"]);
       expect(result.errors).toBeUndefined();
     });
@@ -1391,7 +1405,7 @@ describe("azure adapter", () => {
       const result = await files.delete(["a.txt", "b.txt"], {
         stopOnError: true,
       });
-      expect(deleteBlobsMock).not.toHaveBeenCalled();
+      expect(submitBatchMock).not.toHaveBeenCalled();
       expect(deleteIfExistsMock).toHaveBeenCalledTimes(2);
       expect(result.results).toEqual(["a.txt", "b.txt"]);
     });
@@ -1408,7 +1422,7 @@ describe("azure adapter", () => {
       const result = await adapter.deleteMany?.(["a.txt", "b.txt"], {
         stopOnError: true,
       });
-      expect(deleteBlobsMock).not.toHaveBeenCalled();
+      expect(submitBatchMock).not.toHaveBeenCalled();
       expect(deleteIfExistsMock).toHaveBeenCalledTimes(1);
       expect(result?.results).toEqual([]);
       expect(result?.errors).toEqual([
@@ -1422,8 +1436,38 @@ describe("azure adapter", () => {
     test("empty key list is a no-op", async () => {
       const files = batchFiles();
       const result = await files.delete([]);
-      expect(deleteBlobsMock).not.toHaveBeenCalled();
+      expect(submitBatchMock).not.toHaveBeenCalled();
       expect(result.results).toEqual([]);
+    });
+
+    test("submits each batch under the signal and sends no further batch once it aborts", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      const controller = new AbortController();
+      const keys = Array.from({ length: 300 }, (_, i) => `k${i}.txt`);
+      submitBatchMock.mockImplementationOnce(({ blobClients }) => {
+        // The core's slice timeout fires while the first batch is in flight.
+        controller.abort(new Error("timed out"));
+        return Promise.resolve({
+          subResponses: blobClients.map(() => ({ status: 202 })),
+          subResponsesFailedCount: 0,
+          subResponsesSucceededCount: blobClients.length,
+        });
+      });
+      await expect(
+        adapter.deleteMany?.(keys, { signal: controller.signal })
+      ).rejects.toMatchObject({ aborted: true });
+      expect(submitBatchMock).toHaveBeenCalledTimes(1);
+      const [batch, options] = submitBatchMock.mock.calls[0] ?? [];
+      // The first 256 keys went out in order, with the signal that can cancel
+      // the request in flight.
+      expect(batch?.blobClients.map((c) => c.url)).toEqual(
+        keys.slice(0, 256).map((key) => expect.stringContaining(key))
+      );
+      expect(options).toEqual({ abortSignal: controller.signal });
     });
   });
 

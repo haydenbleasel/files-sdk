@@ -6,12 +6,12 @@ import type * as RequestPresigner from "@aws-sdk/s3-request-presigner";
 
 import type {
   Adapter,
+  AdapterDeleteManyOptions,
   AdapterDownloadOptions,
   AdapterUploadOptions,
   Body,
   ConditionalUploadResult,
   CopyCondition,
-  DeleteManyOptions,
   DeleteManyResult,
   FileInfo,
   MultipartOptions,
@@ -1475,7 +1475,7 @@ export const createS3Adapter = (
     // oxlint-disable-next-line sonarjs/cognitive-complexity -- two well-separated paths (stopOnError sequential vs chunked batch merge), each test-covered; splitting would obscure the shared result shape
     async deleteMany(
       keys: string[],
-      deleteOpts?: DeleteManyOptions
+      deleteOpts?: AdapterDeleteManyOptions
     ): Promise<DeleteManyResult> {
       if (keys.length === 0) {
         return { results: [] };
@@ -1509,7 +1509,9 @@ export const createS3Adapter = (
             new DeleteObjectsCommand({
               Bucket: bucket,
               Delete: { Objects: batch.map((key) => ({ Key: key })) },
-            })
+            }),
+            // Cancels the request in flight once the core's slice is cut off.
+            abortOptions(deleteOpts?.signal)
           );
           for (const item of result.Deleted ?? []) {
             if (item.Key !== undefined) {

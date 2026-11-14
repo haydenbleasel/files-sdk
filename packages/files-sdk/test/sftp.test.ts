@@ -759,6 +759,40 @@ describe("sftp edge cases (injected client)", () => {
     expect(store.has("after.txt")).toBe(true);
   });
 
+  test("a bulk delete cut off by the timeout deletes no further key behind the result", async () => {
+    const client = makeFakeClient();
+    const remove = client.delete.bind(client);
+    Object.assign(client, {
+      async delete(remote: string, noErrorOK?: boolean) {
+        if (remote.includes("slow")) {
+          // Outlives the instance's timeout.
+          await sleep(60);
+        }
+        return remove(remote, noErrorOK);
+      },
+    });
+    const files = new Files({ adapter: sftp({ client }), timeout: 20 });
+    await files.upload("a.txt", "1");
+    await files.upload("slow.txt", "2");
+    await files.upload("c.txt", "3");
+    const result = await files.delete(["a.txt", "slow.txt", "c.txt"]);
+    // The timeout cut the only slice off, so every key is reported with it.
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual([
+      "a.txt",
+      "slow.txt",
+      "c.txt",
+    ]);
+    for (const entry of result.errors ?? []) {
+      expect(entry.error.timedOut).toBe(true);
+    }
+    // Once the in-flight delete settles, the adapter stops instead of moving
+    // on to keys the caller was told weren't deleted.
+    await sleep(100);
+    expect(store.has("a.txt")).toBe(false);
+    expect(store.has("c.txt")).toBe(true);
+  });
+
   test("stream download of a missing key releases and throws NotFound", async () => {
     const files = newFiles();
     await expect(

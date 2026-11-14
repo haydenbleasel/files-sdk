@@ -160,6 +160,17 @@ export const abortError = (cause?: unknown): FilesError => {
 };
 
 /**
+ * Throw {@link abortError} for `signal`'s reason once it has aborted: the
+ * check made before starting work under a signal, such as an adapter's
+ * sequential loop before its next request.
+ */
+export const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) {
+    throw abortError(signal.reason);
+  }
+};
+
+/**
  * Run `fn`, rejecting early if `signal` aborts before it settles. When no
  * signal is given, just runs `fn`. The abort listener is detached once `fn`
  * settles so a long-lived signal doesn't accumulate listeners.
@@ -171,9 +182,7 @@ export const runWithSignal = async <T>(
   if (!signal) {
     return await fn();
   }
-  if (signal.aborted) {
-    throw abortError(signal.reason);
-  }
+  throwIfAborted(signal);
 
   // oxlint-disable-next-line promise/avoid-new -- AbortSignal needs callback interop.
   return await new Promise<T>((resolve, reject) => {
@@ -202,9 +211,7 @@ export const sleep = async (
   if (ms <= 0) {
     return;
   }
-  if (signal?.aborted) {
-    throw abortError(signal.reason);
-  }
+  throwIfAborted(signal);
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;

@@ -3,6 +3,7 @@ import type { Readable } from "node:stream";
 
 import type { TokenCredential } from "@azure/core-auth";
 import {
+  BlobBatch,
   BlobSASPermissions,
   BlobServiceClient,
   generateBlobSASQueryParameters,
@@ -10,6 +11,9 @@ import {
   StorageSharedKeyCredential,
 } from "@azure/storage-blob";
 import type {
+  BlobBatchClient,
+  BlobBatchSubmitBatchResponse,
+  BlobClient,
   BlockBlobClient,
   BlockBlobParallelUploadOptions,
   ContainerListBlobFlatSegmentResponse,
@@ -20,8 +24,8 @@ import type {
 
 import type {
   Adapter,
+  AdapterDeleteManyOptions,
   BulkError,
-  DeleteManyOptions,
   DeleteManyResult,
   FileInfo,
   ListResult,
@@ -44,7 +48,7 @@ import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import { isObject, isString } from "../internal/is.js";
 import { toNodeReadable, toWebStream } from "../internal/node-stream";
-import { sleep } from "../internal/retry.js";
+import { sleep, throwIfAborted } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
 const DEFAULT_CONTENT_TYPE = "application/octet-stream";
@@ -243,6 +247,22 @@ const abortOpts = (
   signal: AbortSignal | undefined
 ): { abortSignal: AbortSignal } | undefined =>
   signal ? { abortSignal: signal } : undefined;
+
+// `deleteBlobs` builds this same batch but submits it without an abort signal,
+// so a batch the caller has given up on still runs to completion. Build it
+// here and submit it under the signal instead.
+const submitDeleteBatch = async (
+  batchClient: BlobBatchClient,
+  blobClients: BlobClient[],
+  signal: AbortSignal | undefined
+): Promise<BlobBatchSubmitBatchResponse> => {
+  const batch = new BlobBatch();
+  for (const blobClient of blobClients) {
+    // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- sub-requests go in one at a time, in order: the batch response's sub-responses come back in request order
+    await batch.deleteBlob(blobClient);
+  }
+  return batchClient.submitBatch(batch, abortOpts(signal));
+};
 
 const uint8ToBuffer = (u8: Uint8Array): Buffer =>
   Buffer.from(u8.buffer, u8.byteOffset, u8.byteLength);
@@ -1010,7 +1030,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     },
     async deleteMany(
       keys,
-      deleteOpts?: DeleteManyOptions
+      deleteOpts?: AdapterDeleteManyOptions
     ): Promise<DeleteManyResult> {
       if (keys.length === 0) {
         return { results: [] };
@@ -1031,15 +1051,20 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
       const batchClient = client.getBlobBatchClient();
       const deleted: string[] = [];
       const errors: BulkError[] = [];
+      const signal = deleteOpts?.signal;
       for (let i = 0; i < keys.length; i += AZURE_BATCH_DELETE_MAX) {
+        // Once the signal aborts the core has already reported these keys,
+        // so send no further batch behind its result (and cancel the one in
+        // flight, below).
+        throwIfAborted(signal);
         const chunk = keys.slice(i, i + AZURE_BATCH_DELETE_MAX);
         const blobClients = chunk.map((key) =>
           containerClient.getBlobClient(key)
         );
-        let response: Awaited<ReturnType<typeof batchClient.deleteBlobs>>;
+        let response: BlobBatchSubmitBatchResponse;
         try {
           // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- chunked batch deletes merged into shared result accumulators in request order
-          response = await batchClient.deleteBlobs(blobClients);
+          response = await submitDeleteBatch(batchClient, blobClients, signal);
         } catch (error) {
           // A batch-level failure (auth, transport, malformed batch) fails
           // every key in this chunk.

@@ -10,7 +10,9 @@ import {
 import type {
   Adapter,
   AdapterCapabilities,
+  AdapterDeleteManyOptions,
   Body,
+  DeleteManyOptions,
   DownloadOptions,
   FilesPlugin,
   ListOptions,
@@ -1310,6 +1312,62 @@ describe("Files class", () => {
     for (const entry of result.errors ?? []) {
       expect(entry.error.aborted).toBe(true);
     }
+  });
+
+  test("a native bulk delete hands each slice the signal its timeout aborts", async () => {
+    const keys = Array.from({ length: 2500 }, (_, i) => `k${i}`);
+    const calls: (AdapterDeleteManyOptions | undefined)[] = [];
+    const files = new Files({
+      adapter: {
+        ...fakeAdapter(),
+        deleteMany(sliceKeys: string[], opts?: AdapterDeleteManyOptions) {
+          calls.push(opts);
+          // The second slice hangs past the timeout; the first settles.
+          return calls.length === 2
+            ? // oxlint-disable-next-line promise/avoid-new -- test needs a pending adapter call.
+              new Promise<never>(() => {})
+            : Promise.resolve({ results: sliceKeys });
+        },
+      },
+      timeout: 20,
+    });
+
+    const result = await files.delete(keys, { concurrency: 2 });
+    expect(result.errors?.map((entry) => entry.key)).toEqual(keys.slice(1000));
+    expect(calls).toHaveLength(2);
+    // The caller's options still reach the adapter alongside the signal.
+    expect(calls.map((opts) => opts?.concurrency)).toEqual([2, 2]);
+    const [first, second] = calls.map((opts) => opts?.signal);
+    // Each slice gets its own attempt's signal: the first settled before its
+    // timeout, and the hung one was told to stop.
+    expect(first).toBeInstanceOf(AbortSignal);
+    expect(first).not.toBe(second);
+    expect(first?.aborted).toBe(false);
+    expect(second?.aborted).toBe(true);
+  });
+
+  test("a native bulk delete never hands the adapter a signal from the caller's options", async () => {
+    const foreign = new AbortController();
+    // A wider-typed variable skips the excess-property check, so a signal can
+    // reach the bulk form even though it takes none.
+    const widened = { concurrency: 4, signal: foreign.signal };
+    const opts: DeleteManyOptions = widened;
+    const seen: (AdapterDeleteManyOptions | undefined)[] = [];
+    const adapter = {
+      ...fakeAdapter(),
+      deleteMany(sliceKeys: string[], adapterOpts?: AdapterDeleteManyOptions) {
+        seen.push(adapterOpts);
+        return Promise.resolve({ results: sliceKeys });
+      },
+    };
+
+    await new Files({ adapter }).delete(["a.txt"], opts);
+    await new Files({ adapter, timeout: 1000 }).delete(["a.txt"], opts);
+    expect(seen.map((adapterOpts) => adapterOpts?.concurrency)).toEqual([4, 4]);
+    // Unbounded: no signal at all. Bounded: the slice's own, not the caller's.
+    expect(seen[0]?.signal).toBeUndefined();
+    expect(seen[1]?.signal).toBeInstanceOf(AbortSignal);
+    expect(seen[1]?.signal).not.toBe(foreign.signal);
   });
 
   test("a native bulk delete with no constructor signal or timeout is one adapter call", async () => {
