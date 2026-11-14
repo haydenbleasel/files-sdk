@@ -31,7 +31,7 @@ import {
   contentTypeUnsupported,
   dispositionUnsupported,
 } from "../internal/errors.js";
-import { isString } from "../internal/is.js";
+import { isNumber, isString } from "../internal/is.js";
 import { lazyS3Adapter, resolveS3Engine } from "../internal/s3-engine.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
 import { s3FetchAdapter } from "../internal/s3-fetch.js";
@@ -280,10 +280,15 @@ const r2ObjectToStoredFile = (
   return createStoredFile(meta, { data: new Uint8Array(), kind: "buffer" });
 };
 
-// R2 binding errors throw with `name` (string) and `code` (number) fields.
+// R2 binding errors are classified by their numeric R2 code. workerd throws a
+// plain `Error` whose message ends with it ("get: The requested range is not
+// satisfiable (10039)"); the `R2Error` shape workers-types declares carries
+// it as a `code` property (and a `name`) instead, so both are read.
 // See https://developers.cloudflare.com/r2/api/error-codes/ for the published
 // code list. We classify the common ones; unknowns fall through to "Provider"
 // so callers can still distinguish failures from success.
+const R2_MESSAGE_CODE = /\((?<code>\d+)\)$/u;
+
 /** The fields an R2 binding error carries (see the published code list). */
 interface R2BindingErrorFields {
   code?: number;
@@ -305,6 +310,14 @@ const R2_CONFLICT_CODES: ReadonlySet<number> = new Set([10_008, 10_031]);
 // 10039 InvalidRange (416): a range that starts past the end of the object.
 const R2_INVALID_RANGE_CODE = 10_039;
 
+const r2ErrorCode = (
+  e: R2BindingErrorFields | null | undefined,
+  message: string
+): number =>
+  isNumber(e?.code)
+    ? e.code
+    : Number(R2_MESSAGE_CODE.exec(message)?.groups?.code ?? 0);
+
 const mapR2Error = (cause: unknown): FilesError => {
   if (cause instanceof FilesError) {
     return cause;
@@ -314,9 +327,9 @@ const mapR2Error = (cause: unknown): FilesError => {
   // to its own Error message.
   const e = cause as R2BindingErrorFields | null | undefined;
   const name = e?.name ?? "";
-  const code = e?.code ?? 0;
   const message =
     e?.message ?? (cause instanceof Error ? cause.message : String(cause));
+  const code = r2ErrorCode(e, message);
 
   if (
     name.includes("NotFound") ||

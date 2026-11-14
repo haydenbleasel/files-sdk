@@ -1521,6 +1521,46 @@ describe("r2 adapter — Workers binding path", () => {
     }
   );
 
+  // workerd throws a plain `Error` for a failed binding call: the R2 code
+  // is only at the end of the message ("<action>: <text> (<code>)"), as
+  // Cloudflare's error-codes page documents, with no `code` property.
+  test.each([
+    ["get: The specified bucket does not exist. (10006)", "NotFound"],
+    ["put: A pre-condition was not met. (10031)", "Conflict"],
+    ["get: Access Denied (10003)", "Unauthorized"],
+    ["put: We encountered an internal error. (10001)", "Provider"],
+    ["put: no code at the end (10003) here", "Provider"],
+  ] as const)(
+    "mapR2Error reads the R2 code from the end of a plain Error's message: %s",
+    async (message, expected) => {
+      const { bucket } = fakeBinding();
+      const files = new Files({ adapter: r2({ binding: bucket as never }) });
+      bucket.delete = (() => Promise.reject(new Error(message))) as never;
+      await expect(files.delete("a.txt", { retries: 0 })).rejects.toMatchObject(
+        { code: expected, message }
+      );
+    }
+  );
+
+  test("a range past the end reported only in the message (10039) is permanent, not retried", async () => {
+    const { bucket } = fakeBinding();
+    let gets = 0;
+    bucket.get = (() => {
+      gets += 1;
+      return Promise.reject(
+        new Error("get: The requested range is not satisfiable (10039)")
+      );
+    }) as never;
+    const files = new Files({
+      adapter: r2({ binding: bucket as never }),
+      retries: 3,
+    });
+    await expect(
+      files.download("small.txt", { range: { start: 20 } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(gets).toBe(1);
+  });
+
   test("a range past the end of the object (10039 InvalidRange) is a permanent Provider error, not retried", async () => {
     const { bucket } = fakeBinding();
     let gets = 0;
