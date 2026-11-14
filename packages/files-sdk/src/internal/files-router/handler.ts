@@ -37,6 +37,7 @@ import type { DownloadConfig } from "./download.js";
 import { handleDownload, urlWithDisposition } from "./download.js";
 import {
   assertSafePrefix,
+  isUnsafePath,
   outsideScope,
   scopeKey,
   unscopeKey,
@@ -353,8 +354,11 @@ const searchWalk = (
     isString(q.pattern) && q.match === "glob" && !q.caseInsensitive
       ? globPrefix(q.pattern)
       : "";
+  // A head that isn't a safe prefix (`../other/*`, `/etc/*`) is never pushed
+  // down: joined to the scope it would name a path outside it. No key the
+  // gateway serves matches such a pattern, so the scope's own walk finds none.
   const walkPrefix =
-    q.clientPrefix || globHead === ""
+    q.clientPrefix || globHead === "" || isUnsafePath(globHead)
       ? q.searchPrefix
       : scope.prefix + globHead;
   // Always the largest page the router allows: `maxSearchScan` counts keys,

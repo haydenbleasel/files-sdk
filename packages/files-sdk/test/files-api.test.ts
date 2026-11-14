@@ -3544,3 +3544,38 @@ describe("createFilesRouter — header values a response can't carry", () => {
   });
 });
 
+describe("createFilesRouter — search glob head stays inside the scope", () => {
+  test("an unsafe glob head is never pushed down as a list prefix", async () => {
+    const base = memory();
+    await seed(base, "u1/a.png", "mine");
+    await seed(base, "u2/b.png", "theirs");
+    const prefixes: (string | undefined)[] = [];
+    const adapter: Adapter = {
+      ...base,
+      list: (opts) => {
+        prefixes.push(opts?.prefix);
+        return base.list(opts);
+      },
+    };
+    const r = router({ adapter, authorize: () => ({ keyPrefix: "u1/" }) });
+    for (const pattern of ["../u2/*", "/u2/*", "x/../../u2/*"]) {
+      // oxlint-disable-next-line no-await-in-loop -- one pattern per case
+      const res = await r.handle(post({ op: "search", pattern }));
+      expect(res.status).toBe(200);
+      // oxlint-disable-next-line no-await-in-loop -- drain each body
+      expect(await readJson<{ matches: unknown[] }>(res)).toMatchObject({
+        matches: [],
+      });
+    }
+    // Every walk stayed on the caller's own prefix.
+    expect(prefixes).toEqual(["u1/", "u1/", "u1/"]);
+    // A safe head is still pushed down.
+    prefixes.length = 0;
+    const scoped = await readJson<{ matches: { key: string }[] }>(
+      await r.handle(post({ op: "search", pattern: "sub/*.png" }))
+    );
+    expect(scoped.matches).toEqual([]);
+    expect(prefixes).toEqual(["u1/sub"]);
+  });
+});
+

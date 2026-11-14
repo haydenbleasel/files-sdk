@@ -11,7 +11,8 @@ import { isReservedKey } from "./reserved.js";
 
 const RELATIVE_SEGMENT = /(?:^|[/\\])\.\.?(?:[/\\]|$)/u;
 
-const isUnsafePath = (value: string): boolean =>
+/** Whether `value` is unsafe as a key or a list/search prefix. */
+export const isUnsafePath = (value: string): boolean =>
   value.includes("\0") ||
   value.startsWith("/") ||
   value.startsWith("\\") ||
