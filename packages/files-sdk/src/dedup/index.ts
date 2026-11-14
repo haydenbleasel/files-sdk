@@ -93,6 +93,20 @@ const stripInternalMeta = (
   return Object.keys(out).length > 0 ? out : undefined;
 };
 
+/**
+ * Release a followed pointer's body. The caller reads the blob, never the
+ * pointer, and an `as: "stream"` download hands back a live body (an open
+ * provider response on S3) — left unread, it would hold that connection for
+ * as long as the process keeps the pointer alive.
+ */
+const discardBody = async (pointer: StoredFile): Promise<void> => {
+  try {
+    await pointer.stream().cancel();
+  } catch {
+    // Best-effort: the read that matters is the blob's.
+  }
+};
+
 /** Refuse a caller write that would land in the blob store. */
 const rejectStoreWrite = (verb: string, key: string): never => {
   throw new FilesError(
@@ -270,6 +284,7 @@ export const dedup = (options: DedupOptions = {}): FilesPlugin => {
     if (ref === undefined) {
       return pointer;
     }
+    await discardBody(pointer);
     const blob = await next({
       key: blobKeyOf(ref),
       kind: "download",

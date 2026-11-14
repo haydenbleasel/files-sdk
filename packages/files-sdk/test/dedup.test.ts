@@ -5,7 +5,13 @@ import { dedup } from "../src/dedup/index.js";
 import type { DedupOptions } from "../src/dedup/index.js";
 import { encryption, generateEncryptionKey } from "../src/encryption/index.js";
 import { failover } from "../src/failover/index.js";
-import { createFiles, FilesError, sync, UploadControl } from "../src/index.js";
+import {
+  createFiles,
+  createStoredFile,
+  FilesError,
+  sync,
+  UploadControl,
+} from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
@@ -370,6 +376,97 @@ describe("dedup plugin — ranged downloads", () => {
       range: { end: 2, start: 0 },
     });
     expect(await file.text()).toBe("012");
+  });
+});
+
+// An adapter whose `as: "stream"` download hands back a live body (an open
+// HTTP response on S3), recording which keys had theirs released.
+const liveStreams = (
+  onCancel: () => void = () => {
+    // released cleanly
+  }
+): { adapter: Adapter; released: () => string[] } => {
+  const inner = fakeAdapter();
+  const released: string[] = [];
+  return {
+    adapter: {
+      ...inner,
+      async download(key, opts) {
+        const file = await inner.download(key, opts);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        // Nothing is pulled until a consumer reads, like a response body.
+        const body = new ReadableStream<Uint8Array>(
+          {
+            cancel() {
+              released.push(key);
+              onCancel();
+            },
+            pull(controller) {
+              if (bytes.byteLength > 0) {
+                controller.enqueue(bytes);
+              }
+              controller.close();
+              released.push(key);
+            },
+          },
+          { highWaterMark: 0 }
+        );
+        return createStoredFile(
+          {
+            contentType: file.contentType,
+            key,
+            metadata: file.metadata,
+            size: file.size,
+          },
+          { factory: () => body, kind: "stream" }
+        );
+      },
+    },
+    released: () => released,
+  };
+};
+
+describe("dedup plugin — pointer body", () => {
+  test("releases the pointer's unread body when following it to the blob", async () => {
+    const { adapter, released } = liveStreams();
+    const files = withDedup({}, adapter);
+    await files.upload("a.txt", "hello");
+    const file = await files.download("a.txt", { as: "stream" });
+    // The pointer's body is never the caller's: left open, it would pin the
+    // provider connection it arrived on.
+    expect(released()).toEqual(["a.txt"]);
+    expect(await file.text()).toBe("hello");
+    expect(released()).toHaveLength(2);
+  });
+
+  test("releases the pointer's body when the blob is gone", async () => {
+    const { adapter, released } = liveStreams();
+    const files = withDedup({}, adapter);
+    await files.upload("a.txt", "hello");
+    const [blob] = await Array.fromAsync(files.listAll({ prefix: ".dedup/" }));
+    await files.delete(blob?.key ?? "");
+    await expect(files.download("a.txt")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(released()).toEqual(["a.txt"]);
+  });
+
+  test("a body that fails to release doesn't fail the read", async () => {
+    const { adapter } = liveStreams(() => {
+      throw new Error("socket already closed");
+    });
+    const files = withDedup({}, adapter);
+    await files.upload("a.txt", "hello");
+    expect(await bodyText(files, "a.txt")).toBe("hello");
+  });
+
+  test("leaves a foreign object's body for the caller", async () => {
+    const { adapter, released } = liveStreams();
+    const files = withDedup({}, adapter);
+    await adapter.upload("legacy.txt", ascii("plain"));
+    const file = await files.download("legacy.txt");
+    expect(released()).toEqual([]);
+    expect(await file.text()).toBe("plain");
   });
 });
 
