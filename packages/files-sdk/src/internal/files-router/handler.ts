@@ -17,7 +17,7 @@ import { globPrefix } from "../glob.js";
 import { isBoolean, isFunction, isNumber, isString } from "../is.js";
 import type { JsonObject, JsonValue } from "../json.js";
 import { isJsonArray, isJsonObject } from "../json.js";
-import { mediaTypeEssence } from "../media-type.js";
+import { isSingleMediaType } from "../media-type.js";
 import { abortError } from "../retry.js";
 import { RouterError, isReportedError } from "../router-core/envelope.js";
 import type { AllowedOrigins } from "../router-core/origin.js";
@@ -208,14 +208,16 @@ const bulkConcurrency = (
 
 /**
  * Refuse (422, reason `type`) a client-supplied content type that isn't
- * exactly one well-formed media type. A browser resolves a comma-separated
- * list (`image/png, text/html`) to its last entry, so storing one would let
- * a check that reads the first entry — the download sandbox, an `authorize`
- * type gate — see an image while the browser renders HTML. An absent (or
- * empty) type is fine: the adapter infers one.
+ * exactly one well-formed media type, in ASCII. A browser resolves a
+ * comma-separated list (`image/png, text/html`) to its last entry, so storing
+ * one would let a check that reads the first entry — the download sandbox, an
+ * `authorize` type gate — see an image while the browser renders HTML. A
+ * character past U+00FF (reachable through the JSON ops) can't be sent as a
+ * header at all: stored, it would make every proxied download of the object
+ * fail. An absent (or empty) type is fine: the adapter infers one.
  */
 const assertMediaType = (contentType: string | null | undefined): void => {
-  if (contentType && mediaTypeEssence(contentType) === undefined) {
+  if (contentType && !isSingleMediaType(contentType)) {
     throw new RouterError(
       "Validation",
       `invalid content type: ${JSON.stringify(contentType)}`,

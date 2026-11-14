@@ -3442,3 +3442,105 @@ describe("createFilesRouter — authorize responseContentType", () => {
     }
   });
 });
+describe("createFilesRouter — header values a response can't carry", () => {
+  // Past U+00FF: Fetch's `Headers` throws on it.
+  const UNSENDABLE_TYPE = "image/png; name=日本";
+
+  test("a non-ASCII client content type is refused at every JSON entry", async () => {
+    const adapter = memory();
+    const r = router({
+      adapter,
+      allowedOrigins: () => true,
+      operations: ["upload", "signedUploadUrl"],
+    });
+    const refusals = [
+      await r.handle(
+        post({
+          files: [{ name: "x.png", size: 8, type: UNSENDABLE_TYPE }],
+          op: "presign",
+        })
+      ),
+      await r.handle(
+        post({
+          contentType: UNSENDABLE_TYPE,
+          expiresIn: 60,
+          key: "x.png",
+          op: "signed-upload-url",
+        })
+      ),
+    ];
+    for (const res of refusals) {
+      expect(res.status).toBe(422);
+      // oxlint-disable-next-line no-await-in-loop -- one response per entry
+      expect((await readJson<Envelope>(res)).error).toMatchObject({
+        code: "Validation",
+        reason: "type",
+      });
+    }
+  });
+
+  test("a stored content type no header can carry is proxied as octet-stream", async () => {
+    const adapter = memory();
+    // Written outside the gateway, which would have refused the type.
+    await createFiles({ adapter }).upload("a.png", "bytes", {
+      contentType: UNSENDABLE_TYPE,
+    });
+    const errors: unknown[] = [];
+    const r = router({
+      adapter,
+      downloadMode: "proxy",
+      onError: (error) => errors.push(error),
+      operations: ["download"],
+    });
+    const res = await r.handle(get("op=download&key=a.png"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("application/octet-stream");
+    expect(await res.text()).toBe("bytes");
+    expect(errors).toEqual([]);
+  });
+
+  test("an authorize disposition no header can carry is a 422 before the object is opened", async () => {
+    const base = memory();
+    await seed(base, "a.pdf", "pdf");
+    let opened = 0;
+    const adapter: Adapter = {
+      ...base,
+      download: (key, opts) => {
+        opened += 1;
+        return base.download(key, opts);
+      },
+    };
+    for (const disposition of [
+      'inline; filename="日本.pdf"',
+      "inline\r\nx-injected: 1",
+    ]) {
+      const errors: unknown[] = [];
+      // oxlint-disable-next-line no-await-in-loop -- one value per case
+      const res = await router({
+        adapter,
+        authorize: () => ({ disposition }),
+        downloadMode: "proxy",
+        onError: (error) => errors.push(error),
+      }).handle(get("op=download&key=a.pdf"));
+      expect(res.status).toBe(422);
+      // oxlint-disable-next-line no-await-in-loop -- drain each body
+      const { error } = await readJson<Envelope>(res);
+      expect(error.code).toBe("Validation");
+      expect(error.message).toContain("Content-Disposition");
+      expect(errors).toEqual([]);
+    }
+    expect(opened).toBe(0);
+    // A Latin-1 name and an RFC 6266 `filename*` are both sendable.
+    const ok = await router({
+      adapter,
+      authorize: () => ({
+        disposition:
+          "inline; filename=\"résumé.pdf\"; filename*=UTF-8''%E6%97%A5.pdf",
+      }),
+      downloadMode: "proxy",
+    }).handle(get("op=download&key=a.pdf"));
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe("pdf");
+  });
+});
+

@@ -204,6 +204,21 @@ const isWholeObjectRange = (header: string): boolean =>
   /^bytes=0+-$/u.test(header.trim());
 
 /**
+ * Whether `value` can be sent as a response header: Latin-1, with no control
+ * character but a tab. Fetch's `Headers` throws on anything else.
+ */
+const isHeaderValue = (value: string): boolean =>
+  /^[\t\u0020-\u007E\u0080-\u00FF]*$/u.test(value);
+
+/**
+ * The stored content type as the proxy sends it. An object written outside the
+ * gateway can carry a type no header can (`text/plain; name=日本`); it is served
+ * as `application/octet-stream` rather than failing the whole download.
+ */
+const sendableType = (stored: string): string =>
+  stored && isHeaderValue(stored) ? stored : "application/octet-stream";
+
+/**
  * The `ETag` response header in RFC 9110 entity-tag form. Adapters report
  * etags as the provider gave them — the S3 family strips the quotes — so a
  * bare value is quoted, and an already-quoted or weak one is left alone.
@@ -459,6 +474,17 @@ export const handleDownload = async (
     return redirect;
   }
 
+  // `authorize`'s disposition is sent as given, so one a header can't carry
+  // is refused here, before the object is opened, rather than failing while
+  // the response is built (a 500, with the body stream left open).
+  const sentDisposition = proxyDisposition(disposition, scope, unscopedKey);
+  if (sentDisposition !== undefined && !isHeaderValue(sentDisposition)) {
+    throw new FilesError(
+      "Invalid",
+      `authorize: disposition can't be sent as a Content-Disposition header (control or non-Latin-1 characters); encode a non-ASCII filename as filename*=UTF-8''…; got ${JSON.stringify(sentDisposition)}`
+    );
+  }
+
   const meta = await cfg.files.head(storageKey, { signal });
   // Range is defined for GET alone (RFC 9110 §14.2): a HEAD describes the
   // whole representation.
@@ -486,13 +512,9 @@ export const handleDownload = async (
   const headers = proxyHeaders(
     cfg,
     meta,
-    scope.responseContentType ??
-      ((file ?? meta).contentType || "application/octet-stream"),
+    scope.responseContentType ?? sendableType((file ?? meta).contentType),
     served,
-    {
-      disposition: proxyDisposition(disposition, scope, unscopedKey),
-      key: unscopedKey,
-    }
+    { disposition: sentDisposition, key: unscopedKey }
   );
   return {
     headers,
