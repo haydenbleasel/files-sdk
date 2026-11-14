@@ -1328,7 +1328,7 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
             uploadId,
           });
         },
-        complete(): Promise<UploadResult> {
+        async complete(): Promise<UploadResult> {
           const entry = requirePending();
           const bytes = new Uint8Array(entry.received);
           let offset = 0;
@@ -1336,10 +1336,13 @@ export const box = (opts: BoxAdapterOptions = {}): BoxAdapter => {
             bytes.set(chunk, offset);
             offset += chunk.byteLength;
           }
+          // The buffered body is only dropped once the upload lands: the
+          // orchestrator retries a failed complete(), which needs it again.
+          const result = await runUpload(key, bytes, { contentType });
           // SAFETY: `requirePending()` above throws unless `uploadId` is set
           // and names a live entry.
           pending.delete(uploadId as string);
-          return runUpload(key, bytes, { contentType });
+          return result;
         },
         discard() {
           if (uploadId !== undefined) {

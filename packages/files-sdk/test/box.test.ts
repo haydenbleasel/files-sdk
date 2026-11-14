@@ -11,7 +11,10 @@ import { NetworkSession } from "box-typescript-sdk-gen/networking/network.genera
 
 import { box, mapBoxError } from "../src/box/index.js";
 import { Files, FilesError, UploadControl } from "../src/index.js";
-import type { ResumableUploadSession } from "../src/index.js";
+import type {
+  OffsetResumableDriver,
+  ResumableUploadSession,
+} from "../src/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 // Read helpers (an `await` result is never dereferenced inline).
@@ -2205,6 +2208,36 @@ describe("box resumable uploads (in-process)", () => {
     await aborting;
     expect(control.status).toBe("aborted");
     expect(uploadFileMock).not.toHaveBeenCalled();
+  });
+
+  test("a failed final upload keeps the buffered body so the retry can finish it", async () => {
+    // The orchestrator retries complete(); the first attempt's transient
+    // failure must not drop the buffered chunks.
+    const driver = box(baseOpts).resumableUpload?.(
+      "retry.bin",
+      {}
+    ) as OffsetResumableDriver;
+    await driver.begin({ contentType: "text/plain", total: 5 });
+    await driver.uploadAt({
+      data: new TextEncoder().encode("hello"),
+      isLast: true,
+      offset: 0,
+      total: 5,
+    });
+    uploadFileMock.mockImplementationOnce(() =>
+      Promise.reject(apiError(503, "unavailable", "try again"))
+    );
+    await expect(driver.complete([])).rejects.toMatchObject({
+      code: "Provider",
+    });
+    await expect(driver.complete([])).resolves.toMatchObject({
+      key: "retry.bin",
+      size: 5,
+    });
+    // Once it lands the session is gone.
+    await expect(
+      Promise.resolve().then(() => driver.probe())
+    ).rejects.toMatchObject({ code: "Invalid" });
   });
 
   test("a token can't be resumed in a different instance", async () => {
