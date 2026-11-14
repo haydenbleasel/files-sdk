@@ -793,6 +793,20 @@ describe("google-drive adapter", () => {
     ]);
   });
 
+  test("list caps the page size at Drive's 1000-file maximum", async () => {
+    // `files.list` rejects a `pageSize` above 1000 with a 400; `limit` is a
+    // per-page cap, so a larger request is clamped rather than refused.
+    const files = new Files({ adapter: googleDrive(baseOpts) });
+    await files.list({ limit: 5000 });
+    expect(filesListMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      pageSize: 1000,
+    });
+    await files.list({ limit: 50 });
+    expect(filesListMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      pageSize: 50,
+    });
+  });
+
   test("list with a delimiter synthesizes common prefixes from fsdkKeys", async () => {
     const files = new Files({ adapter: googleDrive(baseOpts) });
     await files.upload("photos/cover.jpg", "x");

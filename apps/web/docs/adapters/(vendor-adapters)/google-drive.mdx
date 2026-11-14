@@ -60,7 +60,7 @@ Drive caps each `appProperties` entry at 124 bytes of UTF-8, key and value toget
 | `upload` | ⚠️ | `cacheControl` throws `Unsupported` (`capabilities.cacheControl` is `false`): Drive never serves a stored Cache-Control. Pause/resume via `control` needs an auth handle to mint access tokens, so with a pre-built `client`, `capabilities.resumable` is `false`. |
 | `download` | ✅ |  |
 | `delete` | ✅ |  |
-| `list` | ⚠️ | Drive has no native key field. The adapter scopes by parent folder and filters client-side to files carrying its `fsdkKey` appProperty - files written into the same folder out-of-band are excluded. `prefix` is filtered page-local and can under-return when the prefix isn't satisfied within a single page. |
+| `list` | ⚠️ | Drive has no native key field. The adapter scopes by parent folder and filters client-side to files carrying its `fsdkKey` appProperty - files written into the same folder out-of-band are excluded. `prefix` is filtered page-local and can under-return when the prefix isn't satisfied within a single page. `limit` is capped at 1000, the most Drive returns per page. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
 | `head` | ✅ |  |
 | `exists` | ⚠️ | Drive has no native key field. The adapter resolves by parent folder + `fsdkKey` appProperty, so files written into the same folder out-of-band return `false` even if a file with that name exists. |

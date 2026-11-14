@@ -112,6 +112,8 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const OCTET_STREAM = "application/octet-stream";
 const PROVIDER = "google-drive";
 const DEFAULT_CACHE_SIZE = 1024;
+// `files.list` rejects a `pageSize` above this with a 400.
+const MAX_LIST_PAGE_SIZE = 1000;
 const RESUMABLE_INITIATE_URL =
   "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true";
 /**
@@ -1119,7 +1121,11 @@ export const googleDrive = (
           {
             ...sharedDriveParams,
             fields: `nextPageToken, files(${FILE_FIELDS})`,
-            ...(options?.limit !== undefined && { pageSize: options.limit }),
+            // A per-page cap, so a larger request is clamped to what Drive
+            // accepts rather than refused.
+            ...(options?.limit !== undefined && {
+              pageSize: Math.min(options.limit, MAX_LIST_PAGE_SIZE),
+            }),
             ...(options?.cursor && { pageToken: options.cursor }),
             q,
           },
