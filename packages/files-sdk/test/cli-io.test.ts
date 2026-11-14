@@ -188,6 +188,19 @@ describe("cli/io fail", () => {
     expect(payload.error.code).toBe("Invalid");
   });
 
+  test("reading a directory as a file (EISDIR, no path) is Invalid, exits 2", async () => {
+    // `events parse <dir>`: Node raises EISDIR from the read, after the open,
+    // so the error names no path. It is still the command that's wrong.
+    const eisdir = await fsp
+      .readFile(os.tmpdir(), "utf-8")
+      .catch((error: unknown) => error);
+    expect(eisdir).toMatchObject({ code: "EISDIR" });
+    expect(eisdir).not.toHaveProperty("path");
+    expect(() => fail(eisdir, out)).toThrow("__exit:2");
+    const payload = JSON.parse(cap.stderr.join(""));
+    expect(payload.error.code).toBe("Invalid");
+  });
+
   test("non-Error thrown value is stringified", () => {
     expect(() => fail("scalar", out)).toThrow("__exit:5");
     const payload = JSON.parse(cap.stderr.join(""));
