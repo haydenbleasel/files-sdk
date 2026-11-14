@@ -255,7 +255,20 @@ const transferAcross = async (
     ...(file.metadata &&
       Object.keys(file.metadata).length > 0 && { metadata: file.metadata }),
   };
-  await dst.upload(to, file.stream(), uploadOpts);
+  const body = file.stream();
+  try {
+    await dst.upload(to, body, uploadOpts);
+  } catch (error) {
+    // Release the source: a destination that failed before (or without)
+    // draining it would otherwise leave the source tier's response open for
+    // as long as the process lives.
+    try {
+      await body.cancel(error);
+    } catch {
+      // Locked by the destination adapter, which then owns releasing it.
+    }
+    throw error;
+  }
 };
 
 /**

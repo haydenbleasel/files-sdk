@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFiles, FilesError } from "../src/index.js";
+import { createFiles, createStoredFile, FilesError } from "../src/index.js";
 import type {
   Adapter,
   ConditionalFilesOperation,
@@ -772,6 +772,79 @@ describe("tiering — per-call options reach a cross-tier copy", () => {
     await files.copy("cold/a.txt", "cold/b.txt", { timeout: 5000 });
     // The stale-copy eviction on the hot tier ran under the call's timeout.
     expect(seen).toEqual([1]);
+  });
+});
+
+// A hot tier whose `as: "stream"` download is a live body (an open provider
+// response), recording when it's cancelled.
+const liveHot = (): { adapter: Adapter; cancelled: () => number } => {
+  const inner = fakeAdapter();
+  let cancelled = 0;
+  return {
+    adapter: {
+      ...inner,
+      async download(key, opts) {
+        const file = await inner.download(key, opts);
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const body = new ReadableStream<Uint8Array>(
+          {
+            cancel() {
+              cancelled += 1;
+            },
+            pull(controller) {
+              controller.enqueue(bytes);
+            },
+          },
+          { highWaterMark: 0 }
+        );
+        return createStoredFile(
+          { contentType: file.contentType, key, size: file.size },
+          { factory: () => body, kind: "stream" }
+        );
+      },
+    },
+    cancelled: () => cancelled,
+  };
+};
+
+describe("tiering — a failed cross-tier transfer releases the source", () => {
+  test("the source body is cancelled when the destination refuses the upload", async () => {
+    const hot = liveHot();
+    const cold: Adapter = {
+      ...fakeAdapter(),
+      upload: () => Promise.reject(new FilesError("Provider", "cold is down")),
+    };
+    const files = createFiles({
+      adapter: hot.adapter,
+      plugins: [tiering({ cold, route: prefixRoute })],
+    });
+    await files.upload("a.txt", "hot bytes");
+    await expect(
+      files.copy("a.txt", "cold/a.txt", { retries: 0 })
+    ).rejects.toThrow(/cold is down/u);
+    // Left open, the unread source would pin its hot-tier connection.
+    expect(hot.cancelled()).toBe(1);
+  });
+
+  test("a source the destination still holds is left to it", async () => {
+    const hot = liveHot();
+    const cold: Adapter = {
+      ...fakeAdapter(),
+      upload: (_key, body) => {
+        // The adapter took the stream (and its lock) before failing.
+        (body as ReadableStream<Uint8Array>).getReader();
+        return Promise.reject(new FilesError("Provider", "cold is down"));
+      },
+    };
+    const files = createFiles({
+      adapter: hot.adapter,
+      plugins: [tiering({ cold, route: prefixRoute })],
+    });
+    await files.upload("a.txt", "hot bytes");
+    await expect(
+      files.copy("a.txt", "cold/a.txt", { retries: 0 })
+    ).rejects.toThrow(/cold is down/u);
+    expect(hot.cancelled()).toBe(0);
   });
 });
 
