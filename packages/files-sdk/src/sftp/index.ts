@@ -203,6 +203,25 @@ const assertNotDirectory = (stat: SftpClient.FileStats, key: string): void => {
   }
 };
 
+// Idempotent unlink: a missing file is not an error (`notFoundOK`). Neither is
+// a directory — it is not an object, so deleting its key is the same no-op —
+// but `unlink` on one is refused with an SFTP status (FAILURE on Linux,
+// PERMISSION_DENIED on BSD). Only such a status reply is checked against the
+// path; a transport failure, and a refusal to unlink a file, propagate.
+const removeIfPresent = async (
+  client: SftpClient,
+  remote: string
+): Promise<void> => {
+  try {
+    await client.delete(remote, true);
+  } catch (error) {
+    const refused = isObject(error) && "code" in error && isNumber(error.code);
+    if (!refused || (await client.exists(remote)) !== "d") {
+      throw error;
+    }
+  }
+};
+
 type Resolved =
   | { injected: SftpClient }
   | { connectConfig: SftpClient.ConnectOptions };
@@ -377,8 +396,9 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
     async delete(key, opts2) {
       const remote = keyToRemote(key);
       await run(opts2?.signal, async (client) => {
-        // noErrorOK=true → idempotent: a missing file is not an error.
-        await client.delete(remote, true);
+        // Idempotent for a missing file or a directory key; see
+        // `removeIfPresent`.
+        await removeIfPresent(client, remote);
       });
     },
     async deleteMany(
@@ -400,7 +420,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
           throwIfAborted(signal);
           try {
             // oxlint-disable-next-line no-await-in-loop, react-doctor/async-await-in-loop -- single SFTP connection: concurrent deletes would trip server session limits, and stopOnError early-exits
-            await client.delete(keyToRemote(key), true);
+            await removeIfPresent(client, keyToRemote(key));
             deleted.push(key);
           } catch (error) {
             errors.push({ error: mapSftpError(error), key });

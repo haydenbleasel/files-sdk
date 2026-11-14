@@ -357,6 +357,29 @@ describe("sftp adapter", () => {
     expect(store.get("b.txt")?.bytes.toString()).toBe("A");
   });
 
+  test("delete of a directory key is a no-op, like a missing key", async () => {
+    // `unlink` on a directory is refused (FAILURE on Linux, permission denied
+    // on BSD); a directory is not an object, so there is nothing to delete.
+    const client = makeFakeClient();
+    client.delete = () => Promise.reject(sftpError(4, "Failure"));
+    const files = new Files({ adapter: sftp({ client }), retries: 0 });
+    await files.upload("dir/a.txt", "A");
+    await files.delete("dir");
+    const bulk = await files.delete(["dir"]);
+    expect(bulk.errors).toBeUndefined();
+    expect(store.get("dir/a.txt")?.bytes.toString()).toBe("A");
+  });
+
+  test("delete still throws when the server refuses to unlink a file", async () => {
+    const client = makeFakeClient();
+    client.delete = () => Promise.reject(sftpError(3, "Permission denied"));
+    const files = new Files({ adapter: sftp({ client }), retries: 0 });
+    await files.upload("locked.txt", "A");
+    await expect(files.delete("locked.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
   test("move never deletes the source through a case-only rename", async () => {
     // On a case-insensitive server `A.txt` and `a.txt` are one file: the
     // delete-then-rename fallback would delete the source itself.
