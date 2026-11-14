@@ -158,6 +158,36 @@ describe("token verification", () => {
     expect(seen).toEqual([]);
   });
 
+  test("an unauthenticated delivery is refused without reading its body", async () => {
+    const { hook, seen } = setup();
+    // A sender with no credential and a body that never ends: the token is
+    // in the headers, so the endpoint must answer before buffering any of it.
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulled += 1;
+          if (pulled > 1000) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array(1024));
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    const res = await hook.handle(
+      new Request(URL_, {
+        body: endless,
+        headers: { authorization: "Bearer nope" },
+        method: "POST",
+      })
+    );
+    expect(res.status).toBe(401);
+    expect(pulled).toBe(0);
+    expect(seen).toEqual([]);
+  });
+
   test("timingSafeEqual", () => {
     expect(timingSafeEqual("abc", "abc")).toBe(true);
     expect(timingSafeEqual("abc", "abd")).toBe(false);

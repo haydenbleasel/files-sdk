@@ -93,10 +93,14 @@ export interface WebhookDeps {
  */
 type Authenticated = { answer: Response } | { verified: string } | undefined;
 
-/** Checks a delivery (see {@link Authenticated}). */
+/**
+ * Checks a delivery (see {@link Authenticated}). `body` reads the raw body,
+ * once: a scheme whose credential rides in the headers or the URL never calls
+ * it, so a sender without one is refused before any of its body is buffered.
+ */
 type Authenticate = (
   req: Request,
-  body: string
+  body: () => Promise<string>
 ) => Promise<Authenticated> | Authenticated;
 
 const errorResponse = (status: number, message: string): Response =>
@@ -146,7 +150,7 @@ const authenticator = (
     return async (req, body) => {
       // Only the signed fields: an unsigned `Records`, `EventSource` or `Sns`
       // riding alongside a genuine message must never reach the parser.
-      const signed = await check(req, body);
+      const signed = await check(req, await body());
       const answer = await snsHandshake(signed, verify.sns);
       return answer ? { answer } : { verified: JSON.stringify(signed) };
     };
@@ -168,7 +172,7 @@ const authenticator = (
   const now = verify.now ?? Date.now;
   return async (req, body) => {
     await verifySignature({
-      body,
+      body: await body(),
       headers: req.headers,
       now: now(),
       secret: verify.secret,
@@ -232,18 +236,22 @@ export const createWebhook = (
     if (req.method !== "POST" && req.method !== "OPTIONS") {
       return new Response(null, { headers: { Allow: "POST" }, status: 405 });
     }
-    let body = req.method === "POST" ? await req.text() : "";
+    let raw: Promise<string> | undefined;
+    const readBody = (): Promise<string> => {
+      raw ??= req.method === "POST" ? req.text() : Promise.resolve("");
+      return raw;
+    };
+    let verified: string | undefined;
     try {
-      const authenticated = await authenticate(req, body);
+      const authenticated = await authenticate(req, readBody);
       if (authenticated && "answer" in authenticated) {
         return authenticated.answer;
       }
-      if (authenticated) {
-        body = authenticated.verified;
-      }
+      verified = authenticated?.verified;
     } catch (error) {
       return authFailure(error, req);
     }
+    const body = verified === undefined ? await readBody() : verified;
     if (req.method === "OPTIONS") {
       return (
         parser.handshake?.(req, []) ??
