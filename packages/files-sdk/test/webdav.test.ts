@@ -391,6 +391,32 @@ describe("webdav adapter", () => {
     ).rejects.toMatchObject({ code: "Provider" });
   });
 
+  test("a server that ignores Range has its full-object response cancelled (stream path)", async () => {
+    let cancelled = false;
+    const client = {
+      ...makeFakeClient(),
+      customRequest: () =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream<Uint8Array>({
+              cancel() {
+                cancelled = true;
+              },
+              pull(controller) {
+                controller.enqueue(new Uint8Array(1024));
+              },
+            }),
+            { headers: { "content-length": "1048576" }, status: 200 }
+          )
+        ),
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }) });
+    await expect(
+      files.download("big.bin", { as: "stream", range: { start: 0 } })
+    ).rejects.toMatchObject({ code: "Provider", permanent: true });
+    expect(cancelled).toBe(true);
+  });
+
   test("a stream response without a body throws", async () => {
     const files = newFiles();
     await files.upload("empty-body.txt", "x");

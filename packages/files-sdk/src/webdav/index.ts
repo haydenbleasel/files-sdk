@@ -433,9 +433,6 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
             ...(rangeHeaders && { headers: rangeHeaders }),
             ...(downloadOpts.signal && { signal: downloadOpts.signal }),
           });
-          if (range) {
-            assertRangeHonored(res.status, "webdav");
-          }
           const body = readBody(res);
           if (!body) {
             throw new FilesError(
@@ -446,6 +443,11 @@ export const webdav = (opts: WebdavAdapterOptions = {}): WebdavAdapter => {
           const stream = toWebStream(body);
           let size: number;
           try {
+            // Checked with the body in hand: a server that ignores Range is
+            // already sending the whole object, which the catch cancels.
+            if (range) {
+              assertRangeHonored(res.status, "webdav");
+            }
             size = await streamedSize(
               res.headers.get("content-length"),
               remote,
