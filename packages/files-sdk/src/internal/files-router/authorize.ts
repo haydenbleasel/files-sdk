@@ -46,12 +46,12 @@ export type AuthorizeResult<TContext = unknown> = void | {
    * bytes and sets the header itself (under `downloadMode: "redirect"` it
    * fails with `Unsupported` instead), and `url` fails with `Unsupported`.
    * Like `disposition`, it describes the response, so other operations
-   * ignore it (it doesn't restrict what an upload may store). Must be
-   * exactly one media type, in ASCII. The client can't choose it: only this
-   * hook can, since a caller-chosen `text/html` would render stored bytes as
-   * a page.
+   * ignore it: it doesn't set or restrict the type an upload stores (that's
+   * the upload's `params.contentType`). Must be exactly one media type, in
+   * ASCII. The client can't choose it: only this hook can, since a
+   * caller-chosen `text/html` would render stored bytes as a page.
    */
-  contentType?: string;
+  responseContentType?: string;
   /** Narrow which keys a bulk op may touch (filter, don't reject the batch). */
   filterKeys?: (key: string) => boolean;
   /** Clamp list/search page size below the router default. */
@@ -72,7 +72,7 @@ export interface Scope {
   prefix: string;
   maxExpiresIn?: number;
   disposition?: string;
-  contentType?: string;
+  responseContentType?: string;
   filterKeys?: (key: string) => boolean;
   maxResults?: number;
   context?: unknown;
@@ -114,21 +114,21 @@ export const runAuthorize = async <TContext>(
   // so a list, a control character, or a non-string from a plain-JS hook is
   // refused on both paths alike.
   if (
-    patch.contentType !== undefined &&
-    !isSingleMediaType(patch.contentType)
+    patch.responseContentType !== undefined &&
+    !isSingleMediaType(patch.responseContentType)
   ) {
     throw new FilesError(
       "Invalid",
-      `authorize: contentType must be exactly one media type, in ASCII; got ${JSON.stringify(patch.contentType)}`
+      `authorize: responseContentType must be exactly one media type, in ASCII; got ${JSON.stringify(patch.responseContentType)}`
     );
   }
   return {
-    contentType: patch.contentType,
     context: patch.context,
     disposition: patch.disposition,
     filterKeys: patch.filterKeys,
     maxExpiresIn: patch.maxExpiresIn,
     maxResults: patch.maxResults,
     prefix: normalizePrefix(patch.keyPrefix),
+    responseContentType: patch.responseContentType,
   };
 };

@@ -3253,15 +3253,15 @@ const typeBinding = (seen: (UrlOptions | undefined)[]): Adapter => {
 const seedTyped = (adapter: Adapter, key: string, contentType: string) =>
   createFiles({ adapter }).upload(key, "%PDF-1.7", { contentType });
 
-describe("createFilesRouter — authorize contentType", () => {
+describe("createFilesRouter — authorize responseContentType", () => {
   const PDF = "application/pdf";
 
   const inlinePdf: Authorize = () => ({
-    contentType: PDF,
     disposition: 'inline; filename="a.pdf"',
+    responseContentType: PDF,
   });
 
-  test("url binds authorize's contentType; the client can't choose one", async () => {
+  test("url binds authorize's responseContentType; the client can't choose one", async () => {
     const seen: (UrlOptions | undefined)[] = [];
     const adapter = typeBinding(seen);
     await seedTyped(adapter, "a.pdf", "application/octet-stream");
@@ -3280,7 +3280,7 @@ describe("createFilesRouter — authorize contentType", () => {
     expect(seen.at(-1)).not.toHaveProperty("responseContentType");
   });
 
-  test("url refuses authorize's contentType where it can't be bound", async () => {
+  test("url refuses authorize's responseContentType where it can't be bound", async () => {
     const adapter = signing();
     await seedTyped(adapter, "a.pdf", "application/octet-stream");
     const res = await router({ adapter, authorize: inlinePdf }).handle(
@@ -3295,7 +3295,7 @@ describe("createFilesRouter — authorize contentType", () => {
     expect(error.message).toContain("Use download");
   });
 
-  test("url explains a plugin's refusal of authorize's contentType the same way", async () => {
+  test("url explains a plugin's refusal of authorize's responseContentType the same way", async () => {
     const adapter = typeBinding([]);
     await seedTyped(adapter, "a.pdf", "application/octet-stream");
     const files = createFiles({
@@ -3324,7 +3324,7 @@ describe("createFilesRouter — authorize contentType", () => {
     expect(error.message).toContain("cannot set Content-Type");
   });
 
-  test("url names contentType, not the expiry, when the adapter can't sign at all", async () => {
+  test("url names the content type, not the expiry, when the adapter can't sign at all", async () => {
     const adapter = withCapabilities(fakeAdapter(), {
       ...NO_SIGNING,
       publicUrl: true,
@@ -3332,7 +3332,7 @@ describe("createFilesRouter — authorize contentType", () => {
     await seedTyped(adapter, "a.pdf", "application/octet-stream");
     const res = await router({
       adapter,
-      authorize: () => ({ contentType: PDF, maxExpiresIn: 600 }),
+      authorize: () => ({ maxExpiresIn: 600, responseContentType: PDF }),
     }).handle(post({ key: "a.pdf", op: "url" }));
     expect(res.status).toBe(422);
     const { error } = await readJson<{
@@ -3368,7 +3368,7 @@ describe("createFilesRouter — authorize contentType", () => {
       // oxlint-disable-next-line no-await-in-loop -- one adapter per case
       const res = await router({
         adapter,
-        authorize: () => ({ contentType: PDF, disposition: "inline" }),
+        authorize: () => ({ disposition: "inline", responseContentType: PDF }),
       }).handle(get("op=download&key=a.pdf"));
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toBe(PDF);
@@ -3385,7 +3385,10 @@ describe("createFilesRouter — authorize contentType", () => {
     await seedTyped(adapter, "a.png", "image/png");
     const r = router({
       adapter,
-      authorize: () => ({ contentType: "text/html", disposition: "inline" }),
+      authorize: () => ({
+        disposition: "inline",
+        responseContentType: "text/html",
+      }),
     });
     for (const method of ["GET", "HEAD"]) {
       // oxlint-disable-next-line no-await-in-loop -- one method per case
@@ -3415,7 +3418,7 @@ describe("createFilesRouter — authorize contentType", () => {
     );
   });
 
-  test("a contentType that isn't exactly one media type is refused", async () => {
+  test("a responseContentType that isn't exactly one media type is refused", async () => {
     const adapter = memory();
     await seedTyped(adapter, "a.pdf", "application/pdf");
     // A plain-JS hook can return a non-string too.
@@ -3429,7 +3432,7 @@ describe("createFilesRouter — authorize contentType", () => {
       // oxlint-disable-next-line no-await-in-loop -- one value per case
       const res = await router({
         adapter,
-        authorize: () => ({ contentType: contentType as string }),
+        authorize: () => ({ responseContentType: contentType as string }),
       }).handle(get("op=download&key=a.pdf"));
       expect(res.status).toBe(422);
       // oxlint-disable-next-line no-await-in-loop -- drain each body

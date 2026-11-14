@@ -258,7 +258,7 @@ const redirectPaths = (
   // An inline policy is satisfied by a URL with no disposition at all.
   const mustBind = disposition !== undefined && !isInlinePolicy(disposition);
   // A content type override always has to ride in the signature.
-  const bindsType = scope.contentType !== undefined;
+  const bindsType = scope.responseContentType !== undefined;
   return {
     canLinkPublic:
       caps.publicUrl &&
@@ -278,9 +278,9 @@ const redirectPaths = (
  * signed one binds the expiry and — when the adapter declares
  * `signedUrl.disposition` — the forced disposition, while `authorize`'s inline
  * policy needs no binding (a bare URL renders inline). An `authorize`
- * `contentType` needs `signedUrl.contentType`. The permanent public link binds
- * none of these, so it serves only when nothing must be bound and `authorize`
- * doesn't cap the lifetime. Anything else streams through the
+ * `responseContentType` needs `signedUrl.contentType`. The permanent public
+ * link binds none of these, so it serves only when nothing must be bound and
+ * `authorize` doesn't cap the lifetime. Anything else streams through the
  * proxy, which sets them itself. An adapter refusal the declarations didn't
  * predict still falls back to the proxy in `auto` mode.
  */
@@ -327,8 +327,8 @@ const redirectTarget = async (
       {
         expiresIn,
         signal,
-        ...(scope.contentType !== undefined && {
-          responseContentType: scope.contentType,
+        ...(scope.responseContentType !== undefined && {
+          responseContentType: scope.responseContentType,
         }),
       },
       disposition,
@@ -486,7 +486,7 @@ export const handleDownload = async (
   const headers = proxyHeaders(
     cfg,
     meta,
-    scope.contentType ??
+    scope.responseContentType ??
       ((file ?? meta).contentType || "application/octet-stream"),
     served,
     {

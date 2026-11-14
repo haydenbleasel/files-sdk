@@ -174,7 +174,7 @@ const URL_DISPOSITION_REFUSED =
 // can't bind one into its URLs (`Files` refuses it, see
 // `isContentTypeUnsupported`): the link would serve the stored type.
 const URL_CONTENT_TYPE_REFUSED =
-  "url: this adapter cannot set Content-Type on its URLs, so the gateway cannot apply the contentType returned from authorize. Use download, which proxies the bytes and sets Content-Type itself, or drop contentType for this route.";
+  "url: this adapter cannot set Content-Type on its URLs, so the gateway cannot apply the responseContentType returned from authorize. Use download, which proxies the bytes and sets Content-Type itself, or drop responseContentType for this route.";
 
 // A bulk request's array length is client-controlled work (one provider call
 // per entry), so cap it before touching storage: 413 with reason `count`.
@@ -745,8 +745,8 @@ const dispatchJson = async (
                 "signedUrl"
               ),
             }),
-            ...(scope.contentType !== undefined && {
-              responseContentType: scope.contentType,
+            ...(scope.responseContentType !== undefined && {
+              responseContentType: scope.responseContentType,
             }),
             signal,
           },
