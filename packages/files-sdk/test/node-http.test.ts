@@ -60,6 +60,17 @@ describe("toWebRequest", () => {
     );
     expect(new URL(req.url).host).toBe("host.test");
   });
+
+  test("a TLS socket makes the request https", () => {
+    const req = toWebRequest(
+      {
+        ...http2Request(["host", "secure.test"], { host: "secure.test" }),
+        socket: { encrypted: true },
+      } as unknown as NodeLikeRequest,
+      new AbortController().signal
+    );
+    expect(new URL(req.url).protocol).toBe("https:");
+  });
 });
 
 describe("handleNodeRequest over node:http2", () => {

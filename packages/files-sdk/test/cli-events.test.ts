@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 
 import { runEventsParse } from "../src/cli/commands.js";
 import { buildProgram } from "../src/cli/program.js";
@@ -183,6 +184,37 @@ describe("files events parse", () => {
         verbose: false,
       })
     ).rejects.toMatchObject({ code: "Invalid" });
+  });
+
+  test("with no file and a pipe on stdin, it reads the delivery from stdin", async () => {
+    const delivery = await fsp.readFile(
+      path.join(FIXTURES, "s3/sqs-body.json"),
+      "utf-8"
+    );
+    const original = process.stdin;
+    // A piped stdin isn't a TTY; stand in a readable carrying the delivery.
+    Object.defineProperty(process, "stdin", {
+      configurable: true,
+      value: Readable.from([delivery]),
+    });
+    try {
+      await runEventsParse({
+        dryRun: false,
+        format: "s3",
+        global: {},
+        json: true,
+        pretty: false,
+        verbose: false,
+      });
+    } finally {
+      Object.defineProperty(process, "stdin", {
+        configurable: true,
+        value: original,
+      });
+    }
+    expect(printed()).toMatchObject([
+      { key: "test.pdf", source: "provider", type: "created" },
+    ]);
   });
 
   test("with no file and a terminal on stdin, it fails instead of waiting", async () => {

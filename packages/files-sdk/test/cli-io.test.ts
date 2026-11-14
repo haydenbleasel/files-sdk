@@ -7,6 +7,7 @@ import {
   emit,
   fail,
   fileInfoToJson,
+  parseProviderOptions,
   readBody,
   writeBody,
 } from "../src/cli/io.js";
@@ -369,5 +370,19 @@ describe("cli/io fileInfoToJson", () => {
       "metadata",
       "size",
     ]);
+  });
+});
+
+describe("cli/io parseProviderOptions", () => {
+  test("an empty flag value is rejected, naming the flag", () => {
+    expect(() => parseProviderOptions("", "--to")).toThrow(
+      /--to must be a JSON object/u
+    );
+  });
+
+  test("a JSON object decodes to provider options", () => {
+    expect(parseProviderOptions('{"provider":"fs"}', "--to")).toEqual({
+      provider: "fs",
+    });
   });
 });

@@ -216,7 +216,11 @@ const listBlobsByHierarchyMock = mock(
     listBlobsByHierarchyMock.lastDelimiter = delimiter;
     listBlobsByHierarchyMock.lastOpts = opts;
     return {
-      byPage() {
+      byPage(byPageOpts?: {
+        continuationToken?: string;
+        maxPageSize?: number;
+      }) {
+        listBlobsByHierarchyMock.lastByPageOpts = byPageOpts;
         return {
           next: () =>
             Promise.resolve({
@@ -239,6 +243,7 @@ const listBlobsByHierarchyMock = mock(
     };
   }
 ) as ReturnType<typeof mock> & {
+  lastByPageOpts?: { continuationToken?: string; maxPageSize?: number };
   lastDelimiter?: string;
   lastOpts?: ListOptsFixture;
 };
@@ -818,6 +823,15 @@ describe("azure adapter", () => {
       expect(sharedKeyInstances[0]?.accountName).toBe(ACCOUNT);
     });
 
+    test("a trailing `;` in the connection string still recovers the shared key", () => {
+      azure({
+        connectionString: `${CONNECTION_STRING};`,
+        container: CONTAINER,
+      });
+      expect(sharedKeyInstances).toHaveLength(1);
+      expect(sharedKeyInstances[0]?.accountName).toBe(ACCOUNT);
+    });
+
     test("accountName + accountKey constructs StorageSharedKeyCredential", () => {
       azure({
         accountKey: "secret",
@@ -1077,6 +1091,38 @@ describe("azure adapter", () => {
       expect(uploadDataMock).not.toHaveBeenCalled();
       expect(result.size).toBe(5);
       expect(result.etag).toBe("etag-stream");
+    });
+
+    test("ReadableStream progress has no total, and a failed size lookup reports 0", async () => {
+      uploadStreamMock.mockImplementationOnce(
+        async (stream, _bufferSize, _maxConcurrency, opts) => {
+          await drainStream(stream);
+          (
+            opts as { onProgress?: (e: { loadedBytes: number }) => void }
+          ).onProgress?.({ loadedBytes: 5 });
+          return uploadStreamResponse();
+        }
+      );
+      getPropertiesMock.mockImplementationOnce(() =>
+        Promise.reject(Object.assign(new Error("gone"), { statusCode: 404 }))
+      );
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode("hello"));
+          c.close();
+        },
+      });
+      const events: { loaded: number; total?: number }[] = [];
+      const result = await adapter.upload("s.txt", stream, {
+        onProgress: (p) => events.push(p),
+      });
+      expect(events).toEqual([{ loaded: 5 }]);
+      expect(result.size).toBe(0);
     });
   });
 
@@ -1397,6 +1443,25 @@ describe("azure adapter", () => {
           error: expect.objectContaining({ code: "Unauthorized" }),
           key: "denied.txt",
         },
+      ]);
+    });
+
+    test("a sub-response without an error code, or a missing one, names its HTTP status", async () => {
+      submitBatchMock.mockImplementationOnce(() =>
+        Promise.resolve({
+          subResponses: [{ status: 500 }],
+          subResponsesFailedCount: 1,
+          subResponsesSucceededCount: 0,
+        })
+      );
+      const files = batchFiles();
+      const result = await files.delete(["a.txt", "b.txt"]);
+      expect(result.results).toEqual([]);
+      expect(
+        result.errors?.map((e) => [e.key, e.error.code, e.error.message])
+      ).toEqual([
+        ["a.txt", "Provider", expect.stringContaining("(HTTP 500)")],
+        ["b.txt", "Provider", expect.stringContaining("(HTTP unknown)")],
       ]);
     });
 
@@ -1788,6 +1853,19 @@ describe("azure adapter", () => {
       expect(listBlobsByHierarchyMock.lastOpts?.prefix).toBe("a/");
       expect(listBlobsByHierarchyMock.lastOpts?.includeMetadata).toBe(true);
       expect(out.items[0]?.metadata).toEqual({ foo: "bar" });
+    });
+
+    test("a delimiter listing forwards limit and cursor to the page request", async () => {
+      const adapter = azure({
+        accountKey: "k",
+        accountName: ACCOUNT,
+        container: CONTAINER,
+      });
+      await adapter.list({ cursor: "tok", delimiter: "/", limit: 2 });
+      expect(listBlobsByHierarchyMock.lastByPageOpts).toEqual({
+        continuationToken: "tok",
+        maxPageSize: 2,
+      });
     });
 
     test("returns continuationToken as cursor when more pages exist", async () => {
@@ -2734,6 +2812,33 @@ describe("azure resumable uploads", () => {
     });
     expect(result.size).toBe(12);
     // Block 1 already staged → only blocks 2 and 3 staged on resume.
+    expect(stageBlockMock).toHaveBeenCalledTimes(2);
+  });
+
+  test("resume skips staged blocks with no name or a non-positive part number", async () => {
+    getBlockListMock.mockImplementation(() =>
+      Promise.resolve({
+        uncommittedBlocks: [
+          { name: blockId(1), size: 4 },
+          { name: undefined, size: 4 },
+          { name: Buffer.from("fls-00000000").toString("base64"), size: 4 },
+          { name: Buffer.from("fls-notanumber").toString("base64"), size: 4 },
+        ],
+      } as unknown as { uncommittedBlocks: { name: string; size: number }[] })
+    );
+    const files = new Files({ adapter: adapter() });
+    const token: ResumableUploadSession = {
+      blob: "big.bin",
+      blockSize: 4,
+      container: CONTAINER,
+      contentType: "application/octet-stream",
+      provider: "azure",
+    };
+    await files.upload("big.bin", new Uint8Array(12), {
+      control: UploadControl.from(token),
+      multipart: { partSize: 4 },
+    });
+    // Only block 1 decodes, so blocks 2 and 3 are staged.
     expect(stageBlockMock).toHaveBeenCalledTimes(2);
   });
 

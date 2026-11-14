@@ -71,6 +71,18 @@ const pagedAdapter = (config?: { supportsDelimiter?: boolean }): Adapter => {
   };
 };
 
+// Caps list pages at two entries, so a delimiter page can hold both a file
+// and a folder.
+const twoPerPage = (): Adapter => {
+  const inner = fakeAdapter({ supportsDelimiter: true });
+  return {
+    ...inner,
+    list(o?: ListOptions): Promise<ListResult> {
+      return inner.list({ ...o, limit: 2 });
+    },
+  };
+};
+
 /** A fake that presigns like S3: `url()` never checks the object exists. */
 const presigning = (name: string, base: FakeAdapter): Adapter => ({
   ...base,
@@ -267,6 +279,15 @@ describe("tiering — merged listing", () => {
     expect(items.map((f) => f.key)).toEqual(["a.txt", "b.txt", "cold/z.txt"]);
   });
 
+  test("a cold key that sorts before a hot one is interleaved into place", async () => {
+    const { files } = harness(prefixRoute);
+    await files.upload("d.txt", "1");
+    await files.upload("cold/a.txt", "2");
+
+    const { items } = await files.list();
+    expect(items.map((f) => f.key)).toEqual(["cold/a.txt", "d.txt"]);
+  });
+
   test("paginates the two tiers independently to exhaustion", async () => {
     const hot = pagedAdapter();
     const cold = pagedAdapter();
@@ -376,6 +397,40 @@ describe("tiering — merged listing", () => {
     } while (cursor !== undefined);
     expect(prefixes).toEqual(["docs/", "pics/"]);
     expect(keys).toEqual(["zzz.txt"]);
+  });
+
+  test("pages mixing files and folders bound the merge by their highest entry", async () => {
+    // Two-entry pages: one tier's first page ends on a folder (`docs/` after
+    // `a.txt`), the other's on a file (`e.txt` after `d/`), so the merge bound
+    // comes from whichever entry sorts last on each page.
+    const hot = twoPerPage();
+    const cold = twoPerPage();
+    const files = createFiles({
+      adapter: hot,
+      plugins: [tiering({ cold, fallback: true, route: prefixRoute })],
+    });
+    await hot.upload("a.txt", "1");
+    await hot.upload("docs/x.txt", "2");
+    await hot.upload("zz.txt", "3");
+    await cold.upload("d/y.txt", "4");
+    await cold.upload("e.txt", "5");
+    await cold.upload("zzz.txt", "6");
+
+    const prefixes: string[] = [];
+    const keys: string[] = [];
+    let cursor: string | undefined;
+    do {
+      // eslint-disable-next-line no-await-in-loop -- pagination follows the previous page's cursor
+      const page = await files.list({
+        delimiter: "/",
+        ...(cursor !== undefined && { cursor }),
+      });
+      prefixes.push(...(page.prefixes ?? []));
+      keys.push(...page.items.map((f) => f.key));
+      ({ cursor } = page);
+    } while (cursor !== undefined);
+    expect(prefixes.toSorted()).toEqual(["d/", "docs/"]);
+    expect(keys.toSorted()).toEqual(["a.txt", "e.txt", "zz.txt", "zzz.txt"]);
   });
 
   test("an empty page with a continuation holds the merge until it advances", async () => {

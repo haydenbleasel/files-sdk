@@ -437,7 +437,7 @@ export const s3FetchAdapter = (opts: S3FetchAdapterOptions): S3FetchAdapter => {
     extras: {
       query?: Record<string, string>;
       headers?: Record<string, string>;
-    } = {}
+    }
   ): Promise<string> => {
     // Covers a per-call `expiresIn` and `defaultUrlExpiresIn` alike.
     assertSigV4ExpiresIn(providerLabel, expiresIn);

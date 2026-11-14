@@ -115,11 +115,11 @@ const SIMPLE_UPLOAD_LIMIT_BYTES = 150 * 1024 * 1024;
 
 // dropbox 10.47's `uploadFile` drives a concurrent upload session: chunks
 // append in parallel, then the session closes and commits. Older peers don't
-// export it and keep the sequential session loop.
-const sdkUploadFile =
-  "uploadFile" in dropboxSdk && "bytesUpload" in dropboxSdk
-    ? { bytesUpload: dropboxSdk.bytesUpload, uploadFile: dropboxSdk.uploadFile }
-    : undefined;
+// export it (both members read `undefined` off the namespace) and keep the
+// sequential session loop.
+const sdkUploadFile: Partial<
+  Pick<typeof dropboxSdk, "bytesUpload" | "uploadFile">
+> = dropboxSdk;
 
 // Chunks in flight for a concurrent session, mirroring the S3 adapter's
 // multipart default.
@@ -948,10 +948,11 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
     concurrency: number,
     signal?: AbortSignal
   ): Promise<files.FileMetadata> => {
-    if (sdkUploadFile && concurrency > 1) {
-      const { metadata } = await sdkUploadFile.uploadFile(
+    const { bytesUpload, uploadFile } = sdkUploadFile;
+    if (uploadFile && bytesUpload && concurrency > 1) {
+      const { metadata } = await uploadFile(
         client,
-        sdkUploadFile.bytesUpload(data),
+        bytesUpload(data),
         { mode: { ".tag": "overwrite" }, mute: true, path },
         {
           chunkSize: chunkBytes,

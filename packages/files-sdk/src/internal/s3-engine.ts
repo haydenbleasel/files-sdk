@@ -7,7 +7,6 @@ import type {
 } from "../index.js";
 import type { S3Adapter, S3AdapterOptions, S3Sdk } from "../s3/core.js";
 import { SIGV4_MAX_EXPIRES_IN } from "../s3/shared.js";
-import { deleteManyWithFallback } from "./core.js";
 import { FilesError } from "./errors.js";
 import type { EventCapability } from "./events.js";
 import { isFunction } from "./is.js";
@@ -218,12 +217,12 @@ export const lazyS3Adapter = (
     },
     async deleteMany(keys, deleteOpts) {
       const adapter = await ensure();
-      // The s3 engine always implements `deleteMany` (batched DeleteObjects);
-      // the fallback only satisfies the optional type.
+      // SAFETY: `createS3Adapter` always defines `deleteMany` (batched
+      // DeleteObjects); the `Adapter` type leaves it optional only for the
+      // adapters that lack it.
       return (
-        adapter.deleteMany?.(keys, deleteOpts) ??
-        deleteManyWithFallback(keys, adapter.delete.bind(adapter), deleteOpts)
-      );
+        adapter.deleteMany as NonNullable<typeof adapter.deleteMany>
+      ).call(adapter, keys, deleteOpts);
     },
     async download(key, downloadOpts) {
       const adapter = await ensure();

@@ -27,7 +27,7 @@ import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { toWebStream } from "../internal/node-stream";
 import { createStoredFile } from "../internal/stored-file.js";
-import { pageKeyList } from "../internal/walk-paginate.js";
+import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
 
 export interface FsAdapterOptions {
   /**
@@ -518,11 +518,7 @@ const writeStagedThenCommit = async (
 // user-visible objects.
 const walk = async function* walk(root: string): AsyncIterable<string> {
   const stack: string[] = [root];
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    if (dir === undefined) {
-      continue;
-    }
+  for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
     let entries: Dirent[];
     try {
       // eslint-disable-next-line no-await-in-loop -- stack-based tree walk reads one directory per iteration.
@@ -563,16 +559,6 @@ const walk = async function* walk(root: string): AsyncIterable<string> {
       yield rel;
     }
   }
-};
-
-const compareKeys = (a: string, b: string): number => {
-  if (a < b) {
-    return -1;
-  }
-  if (a > b) {
-    return 1;
-  }
-  return 0;
 };
 
 export const fs = (opts: FsAdapterOptions): FsAdapter => {

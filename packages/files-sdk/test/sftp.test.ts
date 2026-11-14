@@ -231,6 +231,8 @@ let sftpConnectConfigs: unknown[] = [];
 let sftpEndCount = 0;
 // When set, connect() rejects with this error.
 let sftpConnectError: Error | undefined;
+// When set, end() (closing the connection) rejects with this error.
+let sftpEndError: Error | undefined;
 // oxlint-disable-next-line typescript/no-extraneous-class -- the adapter does `new SftpClient()`, so the stub must be constructable.
 class MockSftpClient {
   constructor() {
@@ -243,7 +245,9 @@ class MockSftpClient {
       },
       end: () => {
         sftpEndCount += 1;
-        return Promise.resolve(true);
+        return sftpEndError
+          ? Promise.reject(sftpEndError)
+          : Promise.resolve(true);
       },
     });
   }
@@ -619,6 +623,16 @@ describe("sftp connect-per-op (mocked ssh2-sftp-client)", () => {
     sftpConnectConfigs = [];
     sftpEndCount = 0;
     sftpConnectError = undefined;
+    sftpEndError = undefined;
+  });
+
+  test("a failed close does not mask the operation's result", async () => {
+    sftpEndError = new Error("socket already closed");
+    const files = new Files({ adapter: sftp({ host: "h", username: "u" }) });
+    await files.upload("a.txt", "hello");
+    const got = await files.download("a.txt");
+    expect(await got.text()).toBe("hello");
+    expect(sftpEndCount).toBe(2);
   });
 
   test("a rejected login is Unauthorized, not a retryable Provider", async () => {
@@ -1130,6 +1144,12 @@ describe("sftp resumable uploads", () => {
     }
     return adapter.resumableUpload(key, {}) as OffsetResumableDriver;
   };
+
+  test("probe starts from zero when no partial is staged", async () => {
+    await expect(driverFor(makeFakeClient(), "t.bin").probe()).resolves.toEqual(
+      { nextOffset: 0 }
+    );
+  });
 
   test("complete leaves the target alone when the staged partial is gone", async () => {
     store.set("t.bin", { bytes: Buffer.from("old") });

@@ -265,6 +265,43 @@ describe("sync", () => {
     expect(cancelled).toBe(1);
   });
 
+  test("a source stream whose cancel throws still reports the upload error", async () => {
+    const sourceAdapter = fakeAdapter();
+    const original = sourceAdapter.download.bind(sourceAdapter);
+    const source = new Files({
+      adapter: {
+        ...sourceAdapter,
+        async download(key: string, opts?: unknown): Promise<StoredFile> {
+          const file = await original(key, opts as never);
+          return {
+            ...file,
+            stream: () =>
+              new ReadableStream<Uint8Array>({
+                cancel() {
+                  throw new Error("cancel failed");
+                },
+                start() {
+                  // Never enqueue: the destination fails before reading.
+                },
+              }),
+          };
+        },
+      },
+    });
+    const destAdapter = fakeAdapter();
+    const dest = new Files({
+      adapter: {
+        ...destAdapter,
+        upload: () => Promise.reject(new FilesError("Unauthorized", "denied")),
+      },
+    });
+    await source.upload("a.txt", "alpha");
+
+    const result = await sync(source, dest);
+    expect(result.uploaded).toEqual([]);
+    expect(result.errors?.[0]?.error).toMatchObject({ code: "Unauthorized" });
+  });
+
   test("collects prune failures without throwing", async () => {
     const source = newFiles();
     const dest = newFiles();

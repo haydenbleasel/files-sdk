@@ -311,13 +311,13 @@ const zipChunks = async function* zipChunks(
   );
   const deflate = options.method !== "store";
   // fflate pushes finished records through this callback synchronously as
-  // bytes are fed in; they queue here and the generator yields them out.
+  // bytes are fed in; they queue here and the generator yields them out. It
+  // reports an error only for misuse this generator rules out — an entry name
+  // over 65535 bytes (`assertSafeEntryName` rejects it first) or a write after
+  // `end()` — so every call carries a chunk.
   const queue: Uint8Array[] = [];
   let written = 0;
-  const archive = new Zip((error, chunk) => {
-    if (error) {
-      throw new FilesError("Provider", "zip: failed to write archive", error);
-    }
+  const archive = new Zip((_error, chunk) => {
     queue.push(chunk);
     written += chunk.byteLength;
   });

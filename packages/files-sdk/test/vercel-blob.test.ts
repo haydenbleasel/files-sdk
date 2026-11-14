@@ -472,6 +472,30 @@ describe("vercel-blob adapter", () => {
     expect(delArg).toBe("a.txt");
   });
 
+  test("delete forwards signals to blob.del", async () => {
+    const { signal } = new AbortController();
+    const files = new Files({ adapter: vercelBlob() });
+
+    await files.delete("a.txt", { signal });
+
+    const opts = delMock.mock.calls[0]?.[1] as
+      | { abortSignal?: AbortSignal }
+      | undefined;
+    expect(opts?.abortSignal).toBe(signal);
+  });
+
+  test("copy forwards signals to blob.copy", async () => {
+    const { signal } = new AbortController();
+    const files = new Files({ adapter: vercelBlob() });
+
+    await files.copy("a.txt", "b.txt", { signal });
+
+    const opts = copyMock.mock.calls[0]?.[2] as
+      | { abortSignal?: AbortSignal }
+      | undefined;
+    expect(opts?.abortSignal).toBe(signal);
+  });
+
   test("copy delegates to blob.copy", async () => {
     const files = new Files({ adapter: vercelBlob() });
     await files.copy("a.txt", "b.txt");
@@ -1048,6 +1072,18 @@ describe("vercel-blob adapter", () => {
       expect((error as FilesError).code).toBe("Provider");
       expect((error as FilesError).message).toBe("oops");
     }
+  });
+
+  test("a non-Error rejection maps to a Provider error with the default message", async () => {
+    const files = new Files({ adapter: vercelBlob() });
+    putMock.mockImplementationOnce(() =>
+      // oxlint-disable-next-line prefer-promise-reject-errors -- models a transport that rejects with a bare value.
+      Promise.reject("socket hang up")
+    );
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Provider",
+      message: "vercel-blob error",
+    });
   });
 
   test("real SDK errors carry no status and a generic name", () => {
@@ -2299,6 +2335,47 @@ describe("vercel-blob resumable uploads", () => {
         multipart: { partSize: FIVE_MIB },
       })
     ).rejects.toBeInstanceOf(FilesError);
+  });
+
+  test("driver calls before begin/adopt fail as Invalid", () => {
+    const driver = vercelBlob().resumableUpload?.("big.bin", {});
+    if (driver?.mode !== "parts") {
+      throw new Error("expected a parts driver");
+    }
+    expect(() => driver.probe()).toThrow(
+      expect.objectContaining({
+        code: "Invalid",
+        message: "vercel-blob: resumable upload not started.",
+      })
+    );
+  });
+
+  test("complete falls back to octet-stream when neither the token nor the blob names a type", async () => {
+    completeMultipartUploadMock.mockImplementationOnce((pathname: string) =>
+      Promise.resolve({
+        etag: "mpu-final",
+        pathname,
+        url: `https://blob.example.com/${pathname}`,
+      } as unknown as Awaited<ReturnType<typeof completeMultipartUploadMock>>)
+    );
+    const driver = vercelBlob().resumableUpload?.("big.bin", {});
+    if (driver?.mode !== "parts") {
+      throw new Error("expected a parts driver");
+    }
+    // A hand-built (or older) token without a content type.
+    driver.adopt({
+      key: "big.bin",
+      partSize: FIVE_MIB,
+      parts: [],
+      provider: "vercel-blob",
+      storageKey: "big.bin",
+      uploadId: "mpu-1",
+    } as unknown as ResumableUploadSession);
+    const result = await driver.complete([
+      { etag: "etag-1", partNumber: 1, size: 3 },
+    ]);
+    expect(result.contentType).toBe("application/octet-stream");
+    expect(result.size).toBe(3);
   });
 
   test("resuming a token for a different key throws", async () => {

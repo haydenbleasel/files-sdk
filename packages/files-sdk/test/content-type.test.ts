@@ -428,6 +428,23 @@ describe("contentType plugin — streams", () => {
     ).rejects.toThrow(/declared "image\/png"/u);
     expect(sourceCancelled).toBe(true);
   });
+
+  test("a source whose cancel fails still reports the rejection", async () => {
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error("cancel failed");
+      },
+      start(controller) {
+        const chunk = new Uint8Array(600);
+        chunk.set(ascii("<html><body>hi</body></html>"), 0);
+        controller.enqueue(chunk);
+      },
+    });
+    const files = withContentType({ onMismatch: "reject" });
+    await expect(
+      files.upload("avatar.png", source, { contentType: "image/png" })
+    ).rejects.toThrow(/declared "image\/png"/u);
+  });
 });
 
 describe("contentType plugin — pass-through verbs", () => {

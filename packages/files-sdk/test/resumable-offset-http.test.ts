@@ -56,6 +56,34 @@ describe("offset-http driver", () => {
     await expect(driver.discard()).resolves.toBeUndefined();
   });
 
+  test("probing or uploading before a session is opened fails without a request", async () => {
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = (() => {
+      calls += 1;
+      return Promise.resolve(new Response(null, { status: 200 }));
+    }) as unknown as typeof fetch;
+    try {
+      const driver = createOffsetHttpDriver({
+        open: () => Promise.reject(new Error("unused")),
+        parseResult: () => Promise.reject(new Error("unused")),
+        partSize: 4,
+        resume: () => "uri",
+        wrapErr: (error) => FilesError.wrap(error),
+      });
+      await expect(driver.probe()).rejects.toMatchObject({
+        code: "Provider",
+        message: "resumable upload has no session.",
+      });
+      await expect(
+        driver.uploadAt({ ...chunk, isLast: false })
+      ).rejects.toMatchObject({ message: "resumable upload has no session." });
+      expect(calls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("a mid-chunk 308 without a Range header throws instead of skipping the chunk", async () => {
     // The protocol's 308-without-Range means "nothing persisted" (probe maps
     // it to offset 0); advancing past the chunk would silently drop its bytes.

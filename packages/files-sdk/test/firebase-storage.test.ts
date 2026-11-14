@@ -501,6 +501,30 @@ describe("firebase-storage adapter", () => {
     expect(events).toEqual([{ loaded: 5, total: 5 }]);
   });
 
+  test("stream-body progress carries no total", async () => {
+    createWriteStreamMock.mockImplementationOnce(() => {
+      const pt = new PassThrough();
+      let written = 0;
+      pt.on("data", (chunk: Buffer) => {
+        written += chunk.length;
+        pt.emit("progress", { bytesWritten: written });
+      });
+      return pt;
+    });
+    const adapter = firebaseStorage({ projectId: "p" });
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("hello"));
+        c.close();
+      },
+    });
+    const events: { loaded: number; total?: number }[] = [];
+    await adapter.upload("s.txt", stream, {
+      onProgress: (p) => events.push(p),
+    });
+    expect(events).toEqual([{ loaded: 5 }]);
+  });
+
   test("multipart: true uploads via a resumable createWriteStream", async () => {
     const adapter = firebaseStorage({ projectId: "p" });
     const result = await adapter.upload("a.txt", "hello", { multipart: true });

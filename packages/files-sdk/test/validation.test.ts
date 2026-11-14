@@ -54,6 +54,15 @@ describe("validation plugin — size", () => {
     expect(await file.text()).toBe("hello");
   });
 
+  test("measures byte bodies in place", async () => {
+    const files = withValidation({ maxSize: 10 });
+    await expect(files.upload("big.bin", new Uint8Array(20))).rejects.toThrow(
+      /over the 10-byte limit/u
+    );
+    const result = await files.upload("ok.bin", new ArrayBuffer(4));
+    expect(result.size).toBe(4);
+  });
+
   test("rejects an upload under minSize", async () => {
     const files = withValidation({ minSize: 5 });
     await expect(files.upload("tiny.txt", "hi")).rejects.toThrow(

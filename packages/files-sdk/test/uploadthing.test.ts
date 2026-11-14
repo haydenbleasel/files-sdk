@@ -213,6 +213,17 @@ describe("uploadthing adapter", () => {
     process.env.UPLOADTHING_TOKEN = TEST_TOKEN;
   });
 
+  test("token decodes through Buffer when the runtime has no atob", () => {
+    const { atob } = globalThis;
+    // Simulate a runtime without the global.
+    globalThis.atob = undefined as unknown as typeof globalThis.atob;
+    try {
+      expect(uploadthing().name).toBe("uploadthing");
+    } finally {
+      globalThis.atob = atob;
+    }
+  });
+
   test("token decoding to non-JSON throws at construction", () => {
     process.env.UPLOADTHING_TOKEN = btoa("not json");
     expect(() => uploadthing()).toThrow(/JSON/u);
@@ -1066,6 +1077,38 @@ describe("uploadthing adapter", () => {
     });
     await files.download("a.txt");
     expect(observedSignal).toBeUndefined();
+  });
+
+  test("an error without a string message gets a generic one", async () => {
+    // A rejection whose `message` isn't a string still classifies by status.
+    deleteFilesMock.mockImplementationOnce(() =>
+      Promise.reject(
+        Object.assign(new Error("replaced"), { message: 403, status: 403 })
+      )
+    );
+    const files = new Files({ adapter: uploadthing(), retries: 0 });
+    await expect(files.delete("a.txt")).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "uploadthing error (Unauthorized)",
+    });
+  });
+
+  test("download reads last-modified when the CDN sends it", async () => {
+    let lastModified = "Wed, 21 Oct 2020 07:28:00 GMT";
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response("hello", {
+          headers: { "content-length": "5", "last-modified": lastModified },
+          status: 200,
+        })
+      )) as unknown as typeof fetch;
+    const files = new Files({ adapter: uploadthing() });
+    const dated = await files.download("a.txt");
+    expect(dated.lastModified).toBe(Date.parse(lastModified));
+    // An unparseable date is dropped rather than reported as NaN.
+    lastModified = "not a date";
+    const undated = await files.download("a.txt");
+    expect(undated.lastModified).toBeUndefined();
   });
 
   test("mapUploadThingError preserves an already-wrapped FilesError without re-wrapping", async () => {

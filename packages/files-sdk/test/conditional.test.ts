@@ -1240,3 +1240,197 @@ describe("conditional hooks, retries, receipts, and policy", () => {
     expect(sawSignal).toBe(true);
   });
 });
+
+describe("conditional edge cases", () => {
+  test("malformed predicate shapes from untyped callers fail before I/O", async () => {
+    const harness = conditionalHarness();
+    const files = new Files({ adapter: harness.adapter });
+
+    const numericEtag = {};
+    Reflect.set(numericEtag, "condition", { etag: 42, type: "replace" });
+    await expect(files.upload("a", "v", numericEtag)).rejects.toMatchObject({
+      code: "Invalid",
+      message: "etag must be a canonical bare strong ETag",
+    });
+
+    const unknownType = {};
+    Reflect.set(unknownType, "condition", { type: "upsert" });
+    await expect(files.upload("a", "v", unknownType)).rejects.toMatchObject({
+      code: "Invalid",
+      message: "upload condition is malformed",
+    });
+
+    const scalarCopy = {};
+    Reflect.set(scalarCopy, "condition", "if-match");
+    await expect(files.copy("a", "b", scalarCopy)).rejects.toMatchObject({
+      code: "Invalid",
+      message: "copy condition is malformed",
+    });
+
+    const unknownDestination = {};
+    Reflect.set(unknownDestination, "condition", {
+      destination: { type: "upsert" },
+      source: { etag: "source" },
+    });
+    await expect(
+      files.copy("a", "b", unknownDestination)
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: "copy condition is malformed",
+    });
+
+    expect(harness.calls.replace).toHaveLength(0);
+    expect(harness.calls.copy).toHaveLength(0);
+  });
+
+  test("conditional copy can replace a destination at its current ETag", async () => {
+    const harness = conditionalHarness();
+    const files = new Files({ adapter: harness.adapter });
+    const source = await files.upload("source", "new", {
+      condition: { type: "create" },
+    });
+    const destination = await files.upload("destination", "old", {
+      condition: { type: "create" },
+    });
+
+    await files.copy("source", "destination", {
+      condition: {
+        destination: { etag: destination.etag, type: "replace" },
+        source: { etag: source.etag },
+      },
+    });
+    const copied = await files.download("destination");
+    expect(await copied.text()).toBe("new");
+    expect(harness.calls.copy).toEqual([
+      {
+        destination: { etag: destination.etag, type: "replace" },
+        source: { etag: source.etag },
+      },
+    ]);
+  });
+
+  test("a plugin may drop a conditional upload's options without losing the predicate", async () => {
+    const harness = conditionalHarness();
+    const dropOptions: FilesPlugin = {
+      name: "drop-options",
+      wrap: handlers({
+        upload: (op, next) => next({ ...op, options: undefined }),
+      }),
+    };
+    const files = new Files({
+      adapter: harness.adapter,
+      plugins: [dropOptions],
+    });
+    const created = await files.upload("a", "v", {
+      condition: { type: "create" },
+      metadata: { dropped: "true" },
+    });
+    expect(created.etag).toBeString();
+    expect(harness.calls.create).toEqual(["a"]);
+    expect(harness.calls.uploadMetadata).toEqual([undefined]);
+  });
+
+  test("a plugin cannot add multipart or resumable controls to a conditional upload", async () => {
+    const harness = conditionalHarness();
+    const addMultipart: FilesPlugin = {
+      name: "add-multipart",
+      wrap: handlers({
+        upload: (op, next) => {
+          const options = { ...op.options };
+          Reflect.set(options, "multipart", true);
+          return next({ ...op, options });
+        },
+      }),
+    };
+    await expect(
+      new Files({
+        adapter: harness.adapter,
+        plugins: [addMultipart],
+      }).upload("a", "v", { condition: { type: "create" } })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message:
+        "conditional uploads do not support multipart or resumable controls",
+    });
+    expect(harness.calls.create).toHaveLength(0);
+  });
+
+  test("a predicate a plugin malformed is rejected as invalid, not thrown raw", async () => {
+    const harness = conditionalHarness();
+    const dropDestination: FilesPlugin = {
+      name: "drop-destination",
+      wrap: handlers({
+        copy: (op, next) => {
+          const candidate = { ...op };
+          Reflect.deleteProperty(candidate, "destination");
+          return next(candidate);
+        },
+      }),
+    };
+    const files = new Files({
+      adapter: harness.adapter,
+      plugins: [dropDestination],
+    });
+    await expect(
+      files.copy("a", "b", {
+        condition: {
+          destination: { type: "create" },
+          source: { etag: "source" },
+        },
+      })
+    ).rejects.toMatchObject({
+      cause: expect.any(TypeError),
+      code: "Invalid",
+      message: "a plugin produced an invalid conditional operation predicate",
+    });
+    expect(harness.calls.copy).toHaveLength(0);
+  });
+
+  test("a swallowed predicate violation is surfaced when nothing committed", async () => {
+    const harness = conditionalHarness();
+    const swallow: FilesPlugin = {
+      name: "swallow",
+      wrap: handlers({
+        delete: async (op, next) => {
+          if (op.mode !== "match") {
+            return next(op);
+          }
+          try {
+            await next({ ...op, etag: "someone-else" });
+          } catch {
+            // the plugin hides the veto and reports success anyway
+          }
+        },
+      }),
+    };
+    const files = new Files({ adapter: harness.adapter, plugins: [swallow] });
+    await expect(
+      files.delete("a", { condition: { etag: "mine" } })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message:
+        "a plugin cannot remove or change a conditional operation predicate",
+    });
+    expect(harness.calls.delete).toHaveLength(0);
+  });
+});
+
+describe("plugin-built operations", () => {
+  test("an operation kind the core doesn't know is rejected as invalid", async () => {
+    const bogus: FilesPlugin = {
+      name: "bogus",
+      wrap: handlers({
+        head: (_op, next) => {
+          const op = { key: "a", kind: "rename" };
+          // SAFETY: an untyped plugin can hand `next()` any object at runtime.
+          return next(op as unknown as Parameters<typeof next>[0]);
+        },
+      }),
+    };
+    const files = new Files({ adapter: fakeAdapter(), plugins: [bogus] });
+    await expect(files.head("a")).rejects.toMatchObject({
+      code: "Invalid",
+      message: "unsupported Files operation",
+    });
+  });
+});

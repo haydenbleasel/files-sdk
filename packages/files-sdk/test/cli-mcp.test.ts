@@ -13,6 +13,7 @@ import {
   DEFAULT_MCP_DOWNLOAD_MAX_BYTES,
   MAX_MCP_DOWNLOAD_BYTES,
   mcpDownloadSize,
+  readMcpDownloadCapped,
   resolveMcpDownloadCap,
 } from "../src/cli/mcp.js";
 import { FilesError } from "../src/index.js";
@@ -653,6 +654,82 @@ describe("cli/mcp download byte cap", () => {
       expect(pulled).toBeLessThan(bodyBytes);
     } finally {
       await h.close();
+    }
+  });
+});
+
+describe("cli/mcp capped read cleanup", () => {
+  test("a failing cancel still reports the size error", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error("cancel failed");
+      },
+      pull(controller) {
+        controller.enqueue(new Uint8Array(8));
+      },
+    });
+    await expect(readMcpDownloadCapped(stream, "big.bin", 10)).rejects.toThrow(
+      /at least 16 bytes, exceeds maxBytes=10/u
+    );
+  });
+});
+
+// An s3-fetch server: presigning is local, so sign-upload succeeds without a
+// network call.
+const signingServer = async (): Promise<Harness> => {
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-sign-"));
+  return connect(
+    {
+      accessKeyId: "AKIATEST",
+      bucket: "bucket",
+      endpoint: "https://s3.test",
+      provider: "s3-fetch",
+      region: "us-east-1",
+      secretAccessKey: "secret",
+    },
+    true,
+    root
+  );
+};
+
+describe("cli/mcp sign-upload (signing provider)", () => {
+  test("returns the signed request alongside the key", async () => {
+    const h = await signingServer();
+    try {
+      const signed = await call(h.client, "sign-upload", {
+        expiresIn: 60,
+        key: "up.bin",
+      });
+      expect(signed.isError).toBe(false);
+      expect(signed.data.key).toBe("up.bin");
+      expect(signed.data.method).toBe("PUT");
+      expect(signed.data.url).toContain("X-Amz-Expires=60");
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe("cli/mcp transfer and sync (failing source)", () => {
+  test("a source that can't be listed reports an MCP error", async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-bad-src-"));
+    const fileRoot = path.join(dir, "not-a-dir");
+    await fsp.writeFile(fileRoot, "i am a file");
+    const destRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "mcp-dest-"));
+    const h = await connect({ provider: "fs", root: fileRoot }, true, dir, {
+      provider: "fs",
+      root: destRoot,
+    });
+    try {
+      for (const name of ["transfer", "sync"]) {
+        // eslint-disable-next-line no-await-in-loop -- each request goes through the shared MCP client sequentially
+        const res = await call(h.client, name, {});
+        expect(res.isError).toBe(true);
+        expect(res.data.error).toBeDefined();
+      }
+    } finally {
+      await h.close();
+      await fsp.rm(destRoot, { force: true, recursive: true });
     }
   });
 });

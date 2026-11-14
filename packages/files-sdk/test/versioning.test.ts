@@ -212,6 +212,32 @@ describe("versioning plugin — versions() metadata", () => {
   });
 });
 
+describe("versioning plugin — objects without an ETag or mtime", () => {
+  test("the version id tags them `x` and falls back to the snapshot time", async () => {
+    // A backend that reports neither an ETag nor a last-modified time.
+    const base = fakeAdapter();
+    const adapter: Adapter = {
+      ...base,
+      head: async (key, opts) => {
+        const {
+          etag: _etag,
+          lastModified: _modified,
+          ...info
+        } = await base.head(key, opts);
+        return info;
+      },
+    };
+    const files = withVersioning({}, adapter);
+    await files.upload("n.txt", "v1");
+    await files.upload("n.txt", "v2");
+
+    const [version] = await files.versions("n.txt");
+    const [taken, modified, tag] = version?.versionId.split("-") ?? [];
+    expect(tag).toBe("x");
+    expect(modified).toBe(taken);
+  });
+});
+
 // A native move keeps the source's older mtime, so the snapshot of the
 // moved-in bytes carries an *older* mtime than the snapshot taken before it.
 const movedOlderObject = async (limit?: number) => {

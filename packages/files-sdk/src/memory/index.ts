@@ -165,15 +165,8 @@ const bodyToBytes = async (body: Body): Promise<Uint8Array> => {
   return await collectStream(body);
 };
 
-const compareKeys = (a: string, b: string): number => {
-  if (a < b) {
-    return -1;
-  }
-  if (a > b) {
-    return 1;
-  }
-  return 0;
-};
+// Only ever compares two distinct Map keys, so there is no "equal" result.
+const compareKeys = (a: string, b: string): number => (a < b ? -1 : 1);
 
 // Every memory operation is synchronous, but the Adapter contract is
 // promise-returning. `defer` lifts a sync body into a promise so a thrown

@@ -142,6 +142,28 @@ describe("combineSignals", () => {
     expect(merged.aborted).toBe(true);
     expect(merged.reason).toBe("early");
   });
+
+  test("a runtime without AbortSignal.any folds through the manual fallback", async () => {
+    const original = AbortSignal.any;
+    // @ts-expect-error -- simulate a runtime (Node < 20) without AbortSignal.any
+    AbortSignal.any = undefined;
+    try {
+      // A query string loads a fresh module instance, which picks its
+      // combiner at evaluation time with `AbortSignal.any` missing.
+      const specifier = "../src/internal/retry.ts?no-abort-signal-any";
+      const fresh: { combineSignals: typeof combineSignals } = await import(
+        specifier
+      );
+      const a = new AbortController();
+      const b = new AbortController();
+      const merged = fresh.combineSignals([a.signal, b.signal]);
+      expect(merged?.aborted).toBe(false);
+      b.abort("b");
+      expect(merged?.reason).toBe("b");
+    } finally {
+      AbortSignal.any = original;
+    }
+  });
 });
 
 describe("abortError", () => {

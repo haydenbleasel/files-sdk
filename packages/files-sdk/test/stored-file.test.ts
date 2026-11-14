@@ -302,6 +302,20 @@ describe("bufferedReads", () => {
     expect(await file.text()).toBe("hello");
   });
 
+  test("a source that errors mid-read rejects with its own error, not as cancelled", async () => {
+    const boom = new Error("socket reset");
+    const file = createStoredFile(meta, {
+      factory: () =>
+        new ReadableStream<Uint8Array>({
+          pull: (controller) => {
+            controller.error(boom);
+          },
+        }),
+      kind: "stream",
+    });
+    await expect(file.text()).rejects.toBe(boom);
+  });
+
   test("an already-aborted signal rejects without opening the body", async () => {
     let opened = 0;
     const file = createStoredFile(meta, {

@@ -687,6 +687,48 @@ describe("resumable orchestrator (parts mode)", () => {
     expect(control.status).toBe("aborted");
   });
 
+  // A parts adapter whose discard() always fails.
+  const failingDiscardAdapter = (server: FakeServer): Adapter => ({
+    copy: unsupported,
+    delete: unsupported,
+    download: unsupported,
+    exists: unsupported,
+    head: unsupported,
+    list: unsupported,
+    name: "fake-failing-discard",
+    raw: server,
+    resumableUpload: (key, opts) => {
+      const inner = createPartsDriver(server, key, opts);
+      return {
+        ...inner,
+        discard: () => Promise.reject(new Error("discard failed")),
+      };
+    },
+    signedUploadUrl: unsupported,
+    upload: unsupported,
+    url: unsupported,
+  });
+
+  test("abort() still settles when discarding the session fails", async () => {
+    const server = newServer();
+    const files = new Files({ adapter: failingDiscardAdapter(server) });
+    const control = new UploadControl();
+    let abortDone: Promise<void> | undefined;
+    const promise = files.upload("a.bin", new Uint8Array(12), {
+      control,
+      multipart: { concurrency: 1, partSize: 4 },
+      onProgress: ({ loaded }) => {
+        if (loaded === 4 && !abortDone) {
+          abortDone = control.abort();
+        }
+      },
+    });
+    await expect(promise).rejects.toMatchObject({ aborted: true });
+    await expect(abortDone).resolves.toBeUndefined();
+    expect(control.status).toBe("aborted");
+    expect(control.session).toBeUndefined();
+  });
+
   test("session getter exposes the live token", async () => {
     const server = newServer();
     const files = makeFiles(server, "parts");
@@ -1652,6 +1694,36 @@ describe("control.abort() at any point around the session calls", () => {
         "aborted",
         undefined,
         1,
+      ]);
+    }
+  });
+
+  test("around begin(): a failing discard still leaves the control aborted", async () => {
+    for (let n = 0; n <= 16; n += 1) {
+      const control = new UploadControl();
+      const driver = offsetDriver({
+        begin: () => {
+          afterMicrotasks(n, () => {
+            void control.abort();
+          });
+          return Promise.resolve(gcsToken);
+        },
+        discard: () => Promise.reject(new FilesError("Provider", "refused")),
+        uploadAt: async ({ offset, data }) => {
+          await delay(5);
+          return { nextOffset: offset + data.byteLength };
+        },
+      });
+      // eslint-disable-next-line no-await-in-loop -- one microtask offset at a time
+      await expect(
+        filesWithDriver(driver).upload("k", new Uint8Array(8), { control })
+      ).rejects.toMatchObject({ aborted: true });
+      // eslint-disable-next-line no-await-in-loop -- let a late discard land
+      await delay(10);
+      expect([n, control.status, control.session]).toEqual([
+        n,
+        "aborted",
+        undefined,
       ]);
     }
   });

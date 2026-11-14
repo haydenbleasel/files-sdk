@@ -69,6 +69,23 @@ describe("collectStream", () => {
     ).rejects.toMatchObject({ aborted: true });
     expect(cancelled).toEqual(["early"]);
   });
+
+  test("a source that throws while cancelling still rejects with the abort", async () => {
+    const controller = new AbortController();
+    const source = new ReadableStream<Uint8Array>({
+      cancel: () => {
+        throw new Error("cancel failed");
+      },
+      pull: (streamController) => {
+        streamController.enqueue(new TextEncoder().encode("ab"));
+        return Promise.withResolvers<undefined>().promise;
+      },
+    });
+    const pending = collectStream(source, controller.signal);
+    await Bun.sleep(0);
+    controller.abort("stop");
+    await expect(pending).rejects.toMatchObject({ aborted: true });
+  });
 });
 
 describe("joinPublicUrl", () => {

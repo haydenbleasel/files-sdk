@@ -1853,6 +1853,23 @@ const assertConditionalUploadOptions = (
   );
 };
 
+/**
+ * The SHA-256 to stamp on a single `upload`'s receipt, or `undefined` when the
+ * body is a stream the SDK won't buffer, or reading/hashing it fails. This is
+ * the **only** per-call cost the receipts feature can incur; `Files#action`
+ * calls it on the success path, and only when `receipts: { sha256: true }` is
+ * set. A read or digest error degrades to no fingerprint rather than
+ * rejecting — a receipt must never break the upload it describes.
+ */
+const uploadSha256 = async (body: Body): Promise<string | undefined> => {
+  try {
+    const bytes = await bufferedBodyBytes(body);
+    return bytes === undefined ? undefined : await sha256Hex(bytes);
+  } catch {
+    return undefined;
+  }
+};
+
 const unreachableOperation = (_op: never): never => {
   throw new FilesError("Invalid", "unsupported Files operation");
 };
@@ -1879,7 +1896,9 @@ const conditionalOperationFingerprint = (
     case "delete": {
       return JSON.stringify(["delete", "match", op.etag]);
     }
-    case "copy": {
+    // `copy` is the only conditional kind left, so it needs no case of its own
+    // (and there's no unreachable arm to leave untested).
+    default: {
       return op.destination.type === "replace"
         ? JSON.stringify([
             "copy",
@@ -1889,9 +1908,6 @@ const conditionalOperationFingerprint = (
             op.destination.etag,
           ])
         : JSON.stringify(["copy", "conditional", op.source.etag, "create"]);
-    }
-    default: {
-      return unreachableOperation(op);
     }
   }
 };
@@ -3117,27 +3133,6 @@ export class Files<A extends Adapter = Adapter> {
   }
 
   /**
-   * The SHA-256 to stamp on a single `upload`'s receipt, or `undefined` when
-   * the body is a stream the SDK won't buffer, or reading/hashing it fails.
-   * This is the **only** per-call cost the receipts feature can incur; it's
-   * invoked from {@link Files.#action} on the success path, gated on
-   * `receipts: { sha256: true }`. A read or digest error degrades to no
-   * fingerprint rather than rejecting — a receipt must never break the upload
-   * it describes.
-   */
-  async #uploadSha256(body: Body): Promise<string | undefined> {
-    if (!(this.#receipts.enabled && this.#receipts.sha256)) {
-      return;
-    }
-    try {
-      const bytes = await bufferedBodyBytes(body);
-      return bytes === undefined ? undefined : await sha256Hex(bytes);
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
    * Upload one object or many.
    *
    * - `upload(key, body, opts)` stores a single object and resolves to its
@@ -3227,7 +3222,7 @@ export class Files<A extends Adapter = Adapter> {
               (op) => this.#perform(op)
             );
       },
-      () => this.#uploadSha256(body)
+      () => uploadSha256(body)
     );
   }
 

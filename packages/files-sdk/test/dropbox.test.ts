@@ -841,6 +841,32 @@ describe("dropbox adapter", () => {
     });
   });
 
+  test("list skips deleted entries and files without a server timestamp", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    filesListFolderMock.mockImplementationOnce(() =>
+      Promise.resolve(
+        wrapResult({
+          cursor: "c",
+          entries: [
+            { ".tag": "deleted", name: "gone.txt", path_display: "/gone.txt" },
+            {
+              ".tag": "file",
+              id: "id:x",
+              name: "fresh.txt",
+              path_display: "/fresh.txt",
+              rev: "rev-x",
+              size: 3,
+            },
+          ],
+          has_more: false,
+        })
+      )
+    );
+    const r = await files.list();
+    expect(r.items.map((i) => i.key)).toEqual(["fresh.txt"]);
+    expect(r.items[0]?.lastModified).toBeUndefined();
+  });
+
   test("list propagates has_more cursor", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     filesListFolderMock.mockImplementationOnce(() =>
@@ -1069,6 +1095,18 @@ describe("dropbox adapter", () => {
     expect((result as FilesError).message).toBe("boom");
   });
 
+  test("mapDropboxError falls back to the default message for a bare status", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    filesGetMetadataMock.mockImplementationOnce(() =>
+      // oxlint-disable-next-line prefer-promise-reject-errors -- a non-Error rejection (no `message`) is the shape under test
+      Promise.reject({ status: 503 })
+    );
+    const result = await files.head("a.txt").catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(FilesError);
+    expect((result as FilesError).code).toBe("Provider");
+    expect((result as FilesError).message).not.toBe("");
+  });
+
   test.each([
     [401, "Unauthorized"],
     [403, "Unauthorized"],
@@ -1250,6 +1288,23 @@ describe("dropbox adapter", () => {
     await expect(files.exists("gone.txt")).resolves.toBe(false);
   });
 
+  test("delete is a no-op when the file vanishes between the probe and the delete", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.upload("x.txt", "x");
+    filesDeleteV2Mock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, {
+          error: {
+            ".tag": "path_lookup",
+            path_lookup: { ".tag": "not_found" },
+          },
+          error_summary: "path_lookup/not_found/",
+        })
+      )
+    );
+    await expect(files.delete("x.txt")).resolves.toBeUndefined();
+  });
+
   test("delete throws non-NotFound errors instead of swallowing them", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     await files.upload("x.txt", "x");
@@ -1415,6 +1470,19 @@ describe("dropbox adapter", () => {
     );
     const url = await files.url("a.txt");
     expect(url).toBe("https://www.dropbox.com/scl/fi/bare?dl=1");
+  });
+
+  test("publicByDefault rethrows shared_link_already_exists when the body isn't an object", async () => {
+    const files = new Files({
+      adapter: dropbox({ ...baseOpts, publicByDefault: true }),
+    });
+    await files.upload("a.txt", "hi");
+    sharingCreateSharedLinkWithSettingsMock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, [{ ".tag": "shared_link_already_exists" }])
+      )
+    );
+    await expect(files.url("a.txt")).rejects.toBeInstanceOf(FilesError);
   });
 
   test("publicByDefault rewrites dl=0 to dl=1 when rlkey precedes it on /scl/fi/ links", async () => {
@@ -1770,6 +1838,19 @@ describe("dropbox adapter", () => {
       mute: true,
       path: "/big.bin",
     });
+  });
+
+  test("an empty stream uploads as a single empty file", async () => {
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.close();
+      },
+    });
+    const r = await files.upload("empty.txt", stream);
+    expect(r.size).toBe(0);
+    expect(filesUploadMock).toHaveBeenCalledTimes(1);
+    expect(filesUploadSessionStartMock).not.toHaveBeenCalled();
   });
 
   test("a small stream uses a single simple upload, not a session", async () => {

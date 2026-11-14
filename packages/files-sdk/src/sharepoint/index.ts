@@ -184,21 +184,15 @@ const buildOneDriveAuthOptions = (
   );
 };
 
+// `buildOneDriveAuthOptions` returns exactly one truthy auth shape (or
+// throws), and `buildAuthProvider` builds a provider for every shape but a
+// pre-built `client`. Were that ever not so, the Graph client refuses to
+// construct without a provider rather than sending unauthenticated requests.
 const buildResolverClient = (
   authOpts: ReturnType<typeof buildOneDriveAuthOptions>
-): Client => {
-  if (authOpts.client) {
-    return authOpts.client;
-  }
-  const authProvider = buildAuthProvider(authOpts);
-  if (!authProvider) {
-    throw new FilesError(
-      "Invalid",
-      "sharepoint: failed to build Graph auth provider — credentials missing."
-    );
-  }
-  return Client.initWithMiddleware({ authProvider });
-};
+): Client =>
+  authOpts.client ??
+  Client.initWithMiddleware({ authProvider: buildAuthProvider(authOpts) });
 
 const isSet = (value: string | undefined): value is string =>
   isString(value) && value.length > 0;

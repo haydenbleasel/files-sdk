@@ -653,6 +653,42 @@ describe("webdav collections are not objects", () => {
     expect(calls).toEqual([]);
   });
 
+  test("delete of a file removed between the stat and the DELETE is a no-op", async () => {
+    const client = {
+      deleteFile: () => Promise.reject(webdavError(404, "Not Found")),
+      stat: () => Promise.resolve({ type: "file" }),
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }) });
+    await expect(files.delete("a.txt")).resolves.toBeUndefined();
+  });
+
+  test("download reads an ArrayBuffer payload and infers a missing content type", async () => {
+    const client = {
+      getFileContents: () =>
+        Promise.resolve({
+          data: new TextEncoder().encode("{}").buffer,
+          headers: {},
+          status: 200,
+        }),
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }) });
+    const file = await files.download("data.json");
+    expect(await file.text()).toBe("{}");
+    expect(file.contentType).toBe("application/json");
+    expect(file.size).toBe(2);
+    expect(file.lastModified).toBeUndefined();
+  });
+
+  test("upload maps a rejected PUT", async () => {
+    const client = {
+      putFileContents: () => Promise.reject(webdavError(403, "Forbidden")),
+    } as unknown as WebDAVClient;
+    const files = new Files({ adapter: webdav({ client }) });
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Unauthorized",
+    });
+  });
+
   test("delete surfaces a non-NotFound stat error", async () => {
     const client = {
       stat: () => Promise.reject(webdavError(403, "Forbidden")),

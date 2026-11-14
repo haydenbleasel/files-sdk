@@ -297,6 +297,30 @@ describe("gcs adapter", () => {
     expect(events).toEqual([{ loaded: 5, total: 5 }]);
   });
 
+  test("stream-body progress carries no total", async () => {
+    createWriteStreamMock.mockImplementationOnce(() => {
+      const pt = new PassThrough();
+      let written = 0;
+      pt.on("data", (chunk: Buffer) => {
+        written += chunk.length;
+        pt.emit("progress", { bytesWritten: written });
+      });
+      return pt;
+    });
+    const adapter = gcs({ bucket: "uploads" });
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("hello"));
+        c.close();
+      },
+    });
+    const events: { loaded: number; total?: number }[] = [];
+    await adapter.upload("s.txt", stream, {
+      onProgress: (p) => events.push(p),
+    });
+    expect(events).toEqual([{ loaded: 5 }]);
+  });
+
   test("multipart: true uploads via a resumable createWriteStream", async () => {
     const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
     const result = await files.upload("a.txt", "hello", { multipart: true });
@@ -1023,6 +1047,16 @@ describe("gcs adapter", () => {
         expect(error).toBeInstanceOf(FilesError);
         expect((error as FilesError).code).toBe("Provider");
       }
+    });
+
+    test("url() signing error is wrapped as FilesError", async () => {
+      getSignedUrlMock.mockImplementationOnce(() =>
+        Promise.reject(Object.assign(new Error("denied"), { code: 403 }))
+      );
+      const files = new Files({ adapter: gcs({ bucket: "uploads" }) });
+      await expect(files.url("a.txt")).rejects.toMatchObject({
+        code: "Unauthorized",
+      });
     });
 
     test("signedUploadUrl PUT error is wrapped as FilesError", async () => {

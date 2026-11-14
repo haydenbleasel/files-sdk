@@ -1104,6 +1104,19 @@ describe("netlify-blobs adapter", () => {
     expect(typeof (adapter.raw as { set: unknown }).set).toBe("function");
   });
 
+  test("error: a non-Error rejection maps to a generic Provider error", async () => {
+    // oxlint-disable-next-line prefer-promise-reject-errors -- the SDK boundary can reject with anything; this pins the fallback.
+    setMock.mockImplementationOnce(() => Promise.reject("socket hang up"));
+    const files = new Files({
+      adapter: netlifyBlobs({ name: "s" }),
+      retries: 0,
+    });
+    await expect(files.upload("a.txt", "x")).rejects.toMatchObject({
+      code: "Provider",
+      message: "Netlify Blobs error",
+    });
+  });
+
   test("error: 'not found' in message (no status) maps to NotFound", async () => {
     // Force the message-only fallback in classifyNetlifyError — error has
     // no parseable status code in its text, only the keyword.

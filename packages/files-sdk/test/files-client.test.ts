@@ -369,6 +369,76 @@ describe("createFilesClient — bulk partial failure", () => {
   });
 });
 
+describe("createFilesClient — remaining options and responses", () => {
+  test("search forwards caseInsensitive", async () => {
+    const client = clientFor(memory());
+    await client.upload("Docs/A.txt", "1");
+    await client.upload("other/b.txt", "2");
+    expect(
+      (await drain(client.search("docs/*", { caseInsensitive: true }))).keys
+    ).toEqual(["Docs/A.txt"]);
+    expect((await drain(client.search("docs/*"))).keys).toEqual([]);
+  });
+
+  test("url forwards responseContentDisposition", async () => {
+    const base = fakeAdapter();
+    const requested: (string | undefined)[] = [];
+    const adapter: Adapter = {
+      ...base,
+      url: (key, opts) => {
+        requested.push(opts?.responseContentDisposition);
+        return base.url(key, opts);
+      },
+    };
+    const client = clientFor(adapter);
+    await client.upload("r.txt", "x");
+    await client.url("r.txt", {
+      responseContentDisposition: 'attachment; filename="report.txt"',
+    });
+    expect(requested).toEqual(['attachment; filename="report.txt"']);
+  });
+
+  test("a keyless upload whose complete returns neither a file nor an error is a Provider error", async () => {
+    const router = createFilesRouter({
+      allowedOrigins: () => true,
+      files: createFiles({ adapter: memory() }),
+      operations: ["upload"],
+      secret: "client-secret",
+    });
+    // The gateway answers every op normally except `complete`, which comes
+    // back empty: no finished file and no per-file error to revive.
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      const body = (await req.clone().json()) as { op: string };
+      if (body.op === "complete") {
+        return Response.json({ files: [] });
+      }
+      return router.handle(req);
+    }) as typeof fetch;
+    const transport: Transport = async (req: SendRequest) => {
+      const res = await router.handle(
+        new Request(req.url, {
+          body: req.body as Blob | Uint8Array<ArrayBuffer> | null,
+          headers: req.headers,
+          method: req.method,
+        })
+      );
+      return { status: res.status, text: await res.text() };
+    };
+    const client = createFilesClient({
+      endpoint: ENDPOINT,
+      fetchImpl,
+      transport,
+    });
+    await expect(
+      client.upload(new File(["x"], "k.txt", { type: "text/plain" }))
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "upload did not complete",
+    });
+  });
+});
+
 describe("transport seam", () => {
   const okXhr = () => {
     type Listener = (event: ProgressEvent) => void;

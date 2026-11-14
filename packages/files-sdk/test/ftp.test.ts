@@ -232,6 +232,8 @@ let ftpAccessConfigs: unknown[] = [];
 let ftpCloseCount = 0;
 // When set, access() (connect + login) rejects with this error.
 let ftpAccessError: Error | undefined;
+// When set, close() throws this error.
+let ftpCloseError: Error | undefined;
 // oxlint-disable-next-line typescript/no-extraneous-class -- the adapter does `new Client()`, so the stub must be constructable.
 class MockBasicFtpClient {
   constructor(_timeout?: number) {
@@ -244,6 +246,9 @@ class MockBasicFtpClient {
       },
       close: () => {
         ftpCloseCount += 1;
+        if (ftpCloseError) {
+          throw ftpCloseError;
+        }
       },
     });
   }
@@ -635,6 +640,16 @@ describe("ftp connect-per-op (mocked basic-ftp)", () => {
     ftpAccessConfigs = [];
     ftpCloseCount = 0;
     ftpAccessError = undefined;
+    ftpCloseError = undefined;
+  });
+
+  test("a failed close does not mask the operation's result", async () => {
+    ftpCloseError = new Error("socket already closed");
+    const files = new Files({ adapter: ftp({ host: "h", user: "u" }) });
+    await files.upload("a.txt", "hello");
+    const got = await files.download("a.txt");
+    expect(await got.text()).toBe("hello");
+    expect(ftpCloseCount).toBe(2);
   });
 
   test("a rejected login is Unauthorized and closes the socket", async () => {
@@ -1055,8 +1070,23 @@ describe("ftp edge cases (injected client)", () => {
         c.close();
       },
     });
-    const result = await files.upload("s.bin", stream);
+    const events: { loaded: number; total?: number }[] = [];
+    const result = await files.upload("s.bin", stream, {
+      onProgress: (p) => events.push(p),
+    });
     expect(result.size).toBe(7);
+    // An unknown-length stream reports bytes sent with no total.
+    expect(events).toEqual([{ loaded: 7 }]);
+  });
+
+  test("a relative root scopes keys and the list start dir", async () => {
+    const files = new Files({
+      adapter: ftp({ client: makeFakeClient(), root: "base" }),
+    });
+    await files.upload("a.txt", "hi");
+    expect(store.has("base/a.txt")).toBe(true);
+    const listed = await files.list();
+    expect(listed.items.map((i) => i.key)).toEqual(["a.txt"]);
   });
 
   test("deleteMany with no keys returns early", async () => {
@@ -1151,6 +1181,24 @@ describe("ftp edge cases (injected client)", () => {
       },
       lastMod() {
         return Promise.resolve();
+      },
+      size() {
+        return Promise.resolve(3);
+      },
+    } as unknown as Client;
+    const files = new Files({ adapter: ftp({ client }) });
+    const meta = await files.head("a.txt");
+    expect(meta.size).toBe(3);
+    expect(meta.lastModified).toBeUndefined();
+  });
+
+  test("head omits lastModified when the server rejects MDTM", async () => {
+    const client = {
+      close() {
+        // no-op
+      },
+      lastMod() {
+        return Promise.reject(ftpError(502, "502 Command not implemented"));
       },
       size() {
         return Promise.resolve(3);
@@ -1474,6 +1522,12 @@ describe("ftp resumable uploads", () => {
     }
     return adapter.resumableUpload(key, {}) as OffsetResumableDriver;
   };
+
+  test("probe starts from zero when no partial is staged", async () => {
+    await expect(driverFor(makeFakeClient(), "t.bin").probe()).resolves.toEqual(
+      { nextOffset: 0 }
+    );
+  });
 
   test("complete leaves the target alone when the rename fails transiently", async () => {
     const client = makeFakeClient();

@@ -201,6 +201,20 @@ describe("handler — expiry clamping", () => {
     expect((await readJson<{ url: string }>(res)).url).toContain("expires=30");
   });
 
+  test("a download redirect clamps to the adapter's signed-URL cap", async () => {
+    const adapter = withCapabilities(fakeAdapter(), {
+      signedUrl: { disposition: true, maxExpiresIn: 30, supported: true },
+    });
+    await createFiles({ adapter }).upload("a", "x");
+    const router = mk({ adapter, operations: ["download"] });
+    const res = await router.handle(
+      new Request(`${ENDPOINT}?op=download&key=a`, { method: "GET" })
+    );
+    expect(res.status).toBe(302);
+    // The gateway's 300s default is clamped to the adapter's 30s ceiling.
+    expect(res.headers.get("location")).toContain("expires=30");
+  });
+
   test("signedUploadUrl clamps to the upload cap, not the download one", async () => {
     let expiresIn: number | undefined;
     const base = withCapabilities(fakeAdapter(), {
@@ -467,6 +481,18 @@ describe("upload edges", () => {
       (await readJson<{ error: { reason: string } }>(streamed)).error.reason
     ).toBe("size");
     expect(await files.exists(first(uploads).key)).toBe(false);
+  });
+
+  test("explicit upload without a key is a validation error", async () => {
+    const router = mk({
+      allowedOrigins: () => true,
+      operations: ["upload"],
+    });
+    const res = await router.handle(put("op=upload", "hello"));
+    expect(res.status).toBe(422);
+    expect(
+      (await readJson<{ error: { message: string } }>(res)).error.message
+    ).toBe("upload requires a key");
   });
 
   test("explicit upload: missing body and oversize", async () => {

@@ -519,6 +519,25 @@ describe("gateway — trash ops read only the caller's trash", () => {
     expect((await files.trashed()).map((t) => t.key)).toEqual(["other/b.txt"]);
   });
 
+  test("a scoped purge-all fails closed when the plugin can't list its trash", async () => {
+    // A purge-only plugin: without `trashed()` the gateway can't tell which
+    // entries belong to the caller, so it refuses rather than purge them all.
+    const purged: (string | undefined)[] = [];
+    const purgeOnly: FilesPlugin<{ purge: (key?: string) => Promise<void> }> = {
+      extend: () => ({
+        purge: (key) => {
+          purged.push(key);
+          return Promise.resolve();
+        },
+      }),
+      name: "purge-only",
+    };
+    const files = createFiles({ adapter: memory(), plugins: [purgeOnly] });
+    const r = router(files, ["purge"], () => ({ keyPrefix: "tenant" }));
+    expect(await status(r, { op: "purge" })).toBe(422);
+    expect(purged).toEqual([]);
+  });
+
   test("a trash plugin that ignores the prefix is still filtered per tenant", async () => {
     const purged: (string | undefined)[] = [];
     const entries = [

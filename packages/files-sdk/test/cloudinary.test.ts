@@ -834,6 +834,23 @@ describe("cloudinary adapter", () => {
     expect(mapCloudinaryError(original)).toBe(original);
   });
 
+  test("mapCloudinaryError > a non-object error falls back to Provider", () => {
+    expect(mapCloudinaryError("boom").code).toBe("Provider");
+    expect(mapCloudinaryError(null).code).toBe("Provider");
+  });
+
+  test("move > maps a rename failure", async () => {
+    renameMock.mockRejectedValueOnce({
+      error: { http_code: 404, message: "Resource not found" },
+    });
+    const files = new Files({
+      adapter: cloudinary({ cloudName: CLOUD_NAME }),
+    });
+    await expect(files.move("source", "destination")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+  });
+
   test("construction > malformed CLOUDINARY_URL falls through to plain envs", () => {
     process.env.CLOUDINARY_URL = "not-a-cloudinary-url";
     process.env.CLOUDINARY_CLOUD_NAME = CLOUD_NAME;
@@ -1401,6 +1418,16 @@ describe("cloudinary resumable uploads (chunked)", () => {
       message: "cloudinary: chunk upload failed (HTTP 401).",
     });
     expect(calls).toBe(1);
+  });
+
+  test("driver calls before begin/adopt fail as Invalid", () => {
+    const driver = withCreds().resumableUpload?.("doc", {});
+    if (driver?.mode !== "offset") {
+      throw new Error("expected an offset driver");
+    }
+    expect(() => driver.probe()).toThrow(
+      "cloudinary: resumable upload not started."
+    );
   });
 
   test("resumable requires apiKey + apiSecret", async () => {

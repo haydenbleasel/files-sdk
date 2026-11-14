@@ -1325,6 +1325,15 @@ describe("bunnyStorage adapter", () => {
     expect(mapped.message).toBe("object missing");
   });
 
+  test("mapBunnyStorageError classifies by a numeric `status` or `statusCode`", () => {
+    expect(mapBunnyStorageError({ message: "gone", status: 404 }).code).toBe(
+      "NotFound"
+    );
+    expect(
+      mapBunnyStorageError({ message: "denied", statusCode: 401 }).code
+    ).toBe("Unauthorized");
+  });
+
   test("mapBunnyStorageError handles non-object errors via the optional-chain short-circuit", () => {
     // Exercises the `e?.code` / `e?.message` short-circuit branch when the
     // thrown value isn't an object (the SDK should never do this, but it's

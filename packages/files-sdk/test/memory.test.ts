@@ -771,6 +771,22 @@ describe("memory resumable uploads (in-process)", () => {
     });
   });
 
+  test("resuming a memory token for a different key throws", async () => {
+    const files = new Files({ adapter: memory() });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "other.bin",
+      provider: "memory",
+      uploadId: "mem-1",
+    };
+    await expect(
+      files.upload("x.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: "Resume token does not match this upload's key.",
+    });
+  });
+
   test("resuming a non-memory token throws", async () => {
     const files = new Files({ adapter: memory() });
     const token = {

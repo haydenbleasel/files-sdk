@@ -484,6 +484,22 @@ describe("supabase adapter", () => {
       expect(result.etag).toBe("etag-a");
       expect(result.lastModified).toBe(STABLE_LAST_MODIFIED_MS);
     });
+
+    test("a ReadableStream upload reports size 0 when the follow-up info() fails", async () => {
+      infoMock.mockImplementationOnce(() =>
+        Promise.reject(new Error("info not supported"))
+      );
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode("hello"));
+          c.close();
+        },
+      });
+      const result = await makeAdapter().upload("s.txt", stream);
+      expect(uploadMock).toHaveBeenCalledTimes(1);
+      expect(result.size).toBe(0);
+      expect(result.etag).toBeUndefined();
+    });
   });
 
   describe("download", () => {
@@ -961,6 +977,18 @@ describe("supabase adapter", () => {
       expect(signCall[2]?.download).toBe("report.pdf");
     });
 
+    test("responseContentDisposition skips parameters without a value", async () => {
+      const adapter = makeAdapter();
+      await adapter.url("a.txt", {
+        responseContentDisposition: 'attachment; ext; filename="report.pdf"',
+      });
+      const [signCall] = createSignedUrlMock.mock.calls;
+      if (!signCall) {
+        throw new Error("expected createSignedUrl");
+      }
+      expect(signCall[2]?.download).toBe("report.pdf");
+    });
+
     test("an inline responseContentDisposition is rejected", async () => {
       const adapter = makeAdapter();
       await expect(
@@ -1406,6 +1434,15 @@ describe("supabase adapter", () => {
       }
     });
 
+    test("delimiter list error propagates as FilesError", async () => {
+      listV2Mock.mockImplementationOnce(() =>
+        Promise.resolve(fail(403, "Unauthorized", "denied"))
+      );
+      await expect(
+        makeAdapter().list({ delimiter: "/", prefix: "a/" })
+      ).rejects.toMatchObject({ code: "Unauthorized" });
+    });
+
     test("list error propagates as FilesError", async () => {
       listV2Mock.mockImplementationOnce(() =>
         Promise.resolve(fail(403, "Unauthorized", "denied"))
@@ -1756,6 +1793,24 @@ describe("supabase resumable uploads (TUS)", () => {
     ).rejects.toMatchObject({
       code: "Unsupported",
       message: expect.stringMatching(/resumable uploads are not supported/u),
+    });
+  });
+
+  test("before a session is opened, discard is a no-op and probe fails", async () => {
+    const calls: string[] = [];
+    installFetch((url, init) => {
+      calls.push(`${init.method} ${url}`);
+      return new Response(null, { status: 204 });
+    });
+    const driver = makeAdapter().resumableUpload?.("file", {});
+    if (driver?.mode !== "offset") {
+      throw new Error("expected an offset driver");
+    }
+    await expect(driver.discard()).resolves.toBeUndefined();
+    expect(calls).toEqual([]);
+    await expect(driver.probe()).rejects.toMatchObject({
+      code: "Invalid",
+      message: "supabase: resumable upload has no session.",
     });
   });
 

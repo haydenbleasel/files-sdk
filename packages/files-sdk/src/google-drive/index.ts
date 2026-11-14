@@ -414,9 +414,7 @@ const toUint8 = (data: DriveMediaPayload): Uint8Array => {
   if (data instanceof ArrayBuffer) {
     return new Uint8Array(data);
   }
-  if (Buffer.isBuffer(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
+  // Any other view, a Node Buffer included.
   if (ArrayBuffer.isView(data)) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
@@ -507,15 +505,6 @@ interface SharedDriveParams {
   driveId?: string;
 }
 
-const hasEnvAuth = (): boolean => {
-  const email = readEnv("GOOGLE_DRIVE_CLIENT_EMAIL");
-  const key = readEnv("GOOGLE_DRIVE_PRIVATE_KEY");
-  if (email && key) {
-    return true;
-  }
-  return Boolean(readEnv("GOOGLE_DRIVE_KEY_FILE"));
-};
-
 const buildAuth = (opts: GoogleDriveAdapterOptions): AuthHandle | undefined => {
   const subject = opts.subject ?? readEnv("GOOGLE_DRIVE_SUBJECT");
   if (opts.credentials) {
@@ -567,16 +556,6 @@ const buildAuth = (opts: GoogleDriveAdapterOptions): AuthHandle | undefined => {
 export const googleDrive = (
   opts: GoogleDriveAdapterOptions = {}
 ): GoogleDriveAdapter => {
-  const haveExplicit = Boolean(
-    opts.credentials || opts.keyFilename || opts.oauth || opts.client
-  );
-  if (!haveExplicit && !hasEnvAuth()) {
-    throw new FilesError(
-      "Invalid",
-      "google-drive adapter: missing auth. Pass `credentials`, `keyFilename`, `oauth`, or `client`. Env fallbacks: GOOGLE_DRIVE_CLIENT_EMAIL + GOOGLE_DRIVE_PRIVATE_KEY, or GOOGLE_DRIVE_KEY_FILE."
-    );
-  }
-
   let driveClient: drive_v3.Drive;
   let authForTokens: AuthHandle | undefined;
   if (opts.client) {
@@ -588,8 +567,10 @@ export const googleDrive = (
   } else {
     const built = buildAuth(opts);
     if (!built) {
-      // Unreachable — the guard above guarantees explicit or env auth.
-      throw new FilesError("Invalid", "google-drive: failed to build auth");
+      throw new FilesError(
+        "Invalid",
+        "google-drive adapter: missing auth. Pass `credentials`, `keyFilename`, `oauth`, or `client`. Env fallbacks: GOOGLE_DRIVE_CLIENT_EMAIL + GOOGLE_DRIVE_PRIVATE_KEY, or GOOGLE_DRIVE_KEY_FILE."
+      );
     }
     authForTokens = built;
     // SAFETY: `@googleapis/drive` accepts a google-auth-library

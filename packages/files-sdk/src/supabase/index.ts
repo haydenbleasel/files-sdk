@@ -364,9 +364,30 @@ const isStorageClientLike = (
 ): candidate is { storage: StorageClient } =>
   isObject(candidate) && "storage" in candidate && isObject(candidate.storage);
 
-const buildClient = (opts: SupabaseAdapterOptions): StorageClient => {
+const b64 = (value: string): string => Buffer.from(value).toString("base64");
+
+interface TusConfig {
+  endpoint: string;
+  key: string;
+}
+
+interface SupabaseConnection {
+  client: StorageClient;
+  /**
+   * The resumable (TUS) endpoint + key, resolved from the same URL as the
+   * storage client. Absent when only a pre-built `client` was supplied (no
+   * URL/key to reach the upload endpoint with).
+   */
+  tus?: TusConfig;
+}
+
+const connect = (opts: SupabaseAdapterOptions): SupabaseConnection => {
   if (opts.client) {
-    return isStorageClientLike(opts.client) ? opts.client.storage : opts.client;
+    return {
+      client: isStorageClientLike(opts.client)
+        ? opts.client.storage
+        : opts.client,
+    };
   }
   const url =
     opts.url ?? readEnv("SUPABASE_URL") ?? readEnv("NEXT_PUBLIC_SUPABASE_URL");
@@ -389,47 +410,13 @@ const buildClient = (opts: SupabaseAdapterOptions): StorageClient => {
   const storageUrl = trimmed.endsWith("/storage/v1")
     ? trimmed
     : `${trimmed}/storage/v1`;
-  return new StorageClient(storageUrl, {
-    Authorization: `Bearer ${key}`,
-    apikey: key,
-  });
-};
-
-const b64 = (value: string): string => Buffer.from(value).toString("base64");
-
-interface TusConfig {
-  endpoint: string;
-  key: string;
-}
-
-// Resolve the resumable (TUS) endpoint + key the same way `buildClient`
-// resolves the storage URL. Returns `undefined` when only a pre-built `client`
-// was supplied (no URL/key to reach the upload endpoint with).
-const resolveTusConfig = (
-  opts: SupabaseAdapterOptions
-): TusConfig | undefined => {
-  if (opts.client) {
-    return;
-  }
-  const url =
-    opts.url ?? readEnv("SUPABASE_URL") ?? readEnv("NEXT_PUBLIC_SUPABASE_URL");
-  const key =
-    opts.key ??
-    readEnv("SUPABASE_SERVICE_ROLE_KEY") ??
-    readEnv("SUPABASE_KEY") ??
-    readEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY");
-  if (!(url && key)) {
-    return;
-  }
-  let end = url.length;
-  while (end > 0 && url[end - 1] === "/") {
-    end -= 1;
-  }
-  const trimmed = url.slice(0, end);
-  const storageUrl = trimmed.endsWith("/storage/v1")
-    ? trimmed
-    : `${trimmed}/storage/v1`;
-  return { endpoint: `${storageUrl}/upload/resumable`, key };
+  return {
+    client: new StorageClient(storageUrl, {
+      Authorization: `Bearer ${key}`,
+      apikey: key,
+    }),
+    tus: { endpoint: `${storageUrl}/upload/resumable`, key },
+  };
 };
 
 // The system metadata block on a listing row. The SDK declares every field
@@ -884,10 +871,9 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
       "supabase adapter: missing bucket. Pass `bucket`."
     );
   }
-  const client = buildClient(opts);
+  const { client, tus } = connect(opts);
   const bucketRef = client.from(bucket);
   const requestContext = requestContextOf(bucketRef);
-  const tus = resolveTusConfig(opts);
   const defaultUrlExpiresIn =
     opts.defaultUrlExpiresIn ?? DEFAULT_URL_EXPIRES_IN;
   const bucketPath = encodeURIComponent(bucket);

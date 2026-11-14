@@ -1260,6 +1260,33 @@ describe("appwrite resumable uploads (chunked)", () => {
     expect(deleteFileMock).toHaveBeenCalledTimes(1);
   });
 
+  test("discard swallows a failed partial-file lookup", async () => {
+    getFileMock.mockRejectedValueOnce(new Error("lookup failed"));
+    const driver = adapter().resumableUpload?.("doc", {});
+    if (driver?.mode !== "offset") {
+      throw new Error("expected an offset driver");
+    }
+    driver.adopt({
+      contentType: "application/octet-stream",
+      fileId: "doc",
+      key: "doc",
+      offset: FIVE_MIB,
+      provider: "appwrite",
+    });
+    await expect(driver.discard()).resolves.toBeUndefined();
+    expect(deleteFileMock).not.toHaveBeenCalled();
+  });
+
+  test("driver calls before begin/adopt fail as Invalid", () => {
+    const driver = adapter().resumableUpload?.("doc", {});
+    if (driver?.mode !== "offset") {
+      throw new Error("expected an offset driver");
+    }
+    expect(() => driver.probe()).toThrow(
+      "appwrite: resumable upload not started."
+    );
+  });
+
   test("resumable requires an API key (not a keyless or pre-built client)", async () => {
     // The chunked path is raw HTTP authenticated with the key, so without one
     // (no key configured, or a pre-built client that keeps it private) no

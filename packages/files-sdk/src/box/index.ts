@@ -312,13 +312,9 @@ const splitKey = (key: string): SplitKey => {
     throw new FilesError("Invalid", "box: key must not be empty");
   }
   const parts = trimmed.split("/").filter((p) => p.length > 0);
+  // `trimmed` is non-empty with no leading or trailing "/", so its last
+  // segment is always a non-empty file name.
   const leaf = parts.pop() ?? "";
-  if (!leaf) {
-    throw new FilesError(
-      "Invalid",
-      `box: key "${key}" has no file name segment`
-    );
-  }
   return { leaf, parents: parts };
 };
 

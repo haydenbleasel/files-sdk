@@ -420,14 +420,11 @@ const splitAtBound = (page: TierPage, bound: EmissionBound): PageSplit => {
 
 /** A tier's next composite-cursor slot, or `undefined` when it's finished. */
 const nextSlot = (
-  page: TierPage | undefined,
+  page: TierPage,
   held: boolean,
   bound: EmissionBound,
   previousSkip: string | undefined
 ): TierCursor | undefined => {
-  if (page === undefined) {
-    return undefined;
-  }
   if (held) {
     // Re-fetch the same page next round and drop what was emitted this round
     // (`emitNone` emitted nothing, so the previous skip still stands).

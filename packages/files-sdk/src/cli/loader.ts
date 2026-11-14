@@ -4,7 +4,7 @@ import { FilesError } from "../internal/errors.js";
 import { isObject } from "../internal/is.js";
 import { getProvider } from "../providers/index.js";
 import { PROVIDER_NAMES, PROVIDERS } from "./registry.js";
-import type { ProviderOpts } from "./registry.js";
+import type { ProviderOpts, ProviderRegistration } from "./registry.js";
 
 /**
  * Flat runtime configuration shared by every provider — one optional field per
@@ -66,7 +66,13 @@ export interface GlobalCliOptions {
   configJson?: Record<string, unknown>;
 }
 
-const pickProvider = (opts: GlobalCliOptions): string => {
+/** The `--provider` slug a call resolved to, and its registry entry. */
+interface PickedProvider {
+  entry: ProviderRegistration;
+  name: string;
+}
+
+const pickProvider = (opts: GlobalCliOptions): PickedProvider => {
   const name = opts.provider ?? process.env.FILES_SDK_PROVIDER;
   if (!name) {
     throw new FilesError(
@@ -75,13 +81,14 @@ const pickProvider = (opts: GlobalCliOptions): string => {
     );
   }
   // Own keys only: `in` would also accept prototype names like `toString`.
-  if (!Object.hasOwn(PROVIDERS, name)) {
+  const entry = Object.hasOwn(PROVIDERS, name) ? PROVIDERS[name] : undefined;
+  if (!entry) {
     throw new FilesError(
       "Invalid",
       `unknown provider "${name}". One of: ${PROVIDER_NAMES.join(", ")}`
     );
   }
-  return name;
+  return { entry, name };
 };
 
 const toProviderOpts = (opts: GlobalCliOptions): ProviderOpts => ({
@@ -132,11 +139,7 @@ export const isModuleNotFound = (cause: unknown): boolean => {
 export const loadFiles = async (
   opts: GlobalCliOptions
 ): Promise<LoadResult> => {
-  const provider = pickProvider(opts);
-  const entry = PROVIDERS[provider];
-  if (!entry) {
-    throw new FilesError("Invalid", `unknown provider "${provider}"`);
-  }
+  const { entry, name: provider } = pickProvider(opts);
   try {
     const adapter = await entry.load(toProviderOpts(opts));
     // `prefix` / `timeout` / `retries` are Files-instance concerns, not adapter
@@ -186,4 +189,4 @@ export const loadFiles = async (
 };
 
 export const describeProvider = (opts: GlobalCliOptions): string =>
-  pickProvider(opts);
+  pickProvider(opts).name;

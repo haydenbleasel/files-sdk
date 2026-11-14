@@ -1118,6 +1118,34 @@ describe("s3-fetch core — copies over CopyObject's 5 GiB ceiling", () => {
     expect(parts[0]?.headers.get("x-amz-copy-source-if-match")).toBeNull();
   });
 
+  test("the caller's signal rides every step of the multipart copy", async () => {
+    const { fetchImpl, requests } = scripted({
+      head: () =>
+        new Response(null, {
+          headers: { "content-length": String(5 * GIB + 1) },
+        }),
+    });
+    const signals: AbortSignal[] = [];
+    const controller = new AbortController();
+    await makeAdapter({
+      fetch: (request: Request) => {
+        signals.push(request.signal);
+        return fetchImpl(request);
+      },
+    }).copy("a", "b", { signal: controller.signal });
+    const multipartSteps = requests
+      .map((request, index) => ({ request, signal: signals[index] }))
+      .filter(
+        ({ request }) =>
+          request.url.searchParams.has("uploads") ||
+          request.url.searchParams.has("uploadId")
+      );
+    // CreateMultipartUpload, 11 part copies, CompleteMultipartUpload.
+    expect(multipartSteps).toHaveLength(13);
+    controller.abort();
+    expect(multipartSteps.every(({ signal }) => signal?.aborted)).toBe(true);
+  });
+
   test("a failed part copy aborts the upload and surfaces the part's error", async () => {
     const { fetchImpl, requests } = scripted({
       // An abort that fails too doesn't mask the copy's own failure.

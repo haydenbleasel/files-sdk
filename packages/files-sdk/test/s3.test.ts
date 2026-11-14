@@ -752,6 +752,17 @@ describe("s3 adapter", () => {
     expect(s3Mock.commandCalls(HeadObjectCommand)).toHaveLength(0);
   });
 
+  test("conditional writes accept an unquoted response ETag from a compatible endpoint", async () => {
+    s3Mock.on(PutObjectCommand).resolves({ ETag: "bare-etag" });
+    const conditional = requireNativeConditional(
+      s3({ bucket: "b", region: "us-east-1" })
+    );
+
+    const result = await conditional.create("record.bin", "abc");
+
+    expect(result.etag).toBe("bare-etag");
+  });
+
   test("exact read combines If-Match, range, signal, and normalized response metadata", async () => {
     s3Mock.on(GetObjectCommand).resolves({
       Body: streamBody("234") as unknown as undefined,
@@ -2611,7 +2622,22 @@ describe("s3 local refusals are Invalid, not retried Provider errors", () => {
     await expect(
       driver.uploadPart({ data: new Uint8Array(1), partNumber: 1 })
     ).rejects.toMatchObject({ code: "Invalid" });
+    // Nothing was created, so there is nothing to abort.
+    await expect(driver.discard()).resolves.toBeUndefined();
     expect(s3Mock.calls()).toHaveLength(0);
+  });
+
+  test("begin() carries cacheControl onto CreateMultipartUpload", async () => {
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    const driver = rbAdapter().resumableUpload?.("big.bin", {
+      cacheControl: "max-age=60",
+    });
+    await driver?.begin({ contentType: "video/mp4", total: 10 });
+    const [create] = s3Mock.commandCalls(CreateMultipartUploadCommand);
+    expect(create?.args[0].input).toMatchObject({
+      CacheControl: "max-age=60",
+      ContentType: "video/mp4",
+    });
   });
 });
 

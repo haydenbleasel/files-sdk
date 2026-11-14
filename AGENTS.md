@@ -37,7 +37,7 @@ bun changeset              # add a changeset (see "Changesets")
 
 # packages/files-sdk
 bun test <substring>       # path substrings, not globs: `bun test s3` also runs bun-s3, s3-fetch*, cli-conditional-s3… (not minio/r2); pass a path for one file
-bun run test:coverage      # the 98% per-file gate. Only meaningful from THIS directory (root cwd = no gate)
+bun run test:coverage      # the 100% per-file gate. Only meaningful from THIS directory (root cwd = no gate)
 bun run dev                # rebuild on change
 bun run size               # per-subpath minified/gzipped sizes
 LIVE_TESTS=1 bun test .live  # live suites against real providers (needs creds; skipped otherwise)
@@ -88,7 +88,7 @@ Notes:
 ## Testing
 
 - `bun:test`. One `test/<name>.test.ts` per adapter, plugin, gateway.
-- **Per-file coverage threshold: 98% lines and 98% functions** (`bunfig.toml`; keys must be plural). New code ships with tests that meet it; an uncovered branch fails the pre-commit hook.
+- **Per-file coverage threshold: 100% lines and 100% functions** (`bunfig.toml`; keys must be plural). New code ships with tests that meet it; an uncovered branch fails the pre-commit hook. Bun has no coverage-ignore comment (`istanbul ignore` and friends do nothing), so a branch no input can reach is dead code: delete it rather than leave it uncovered.
 - Mock at the boundary: `aws-sdk-client-mock` for the S3 family, `test/fake-s3-server.ts` for the fetch engine, `fetch` or the SDK client for the rest. Never `mock.module`: it leaks across test files and can't be reverted. Inject dependencies instead.
 - Core behaviour goes in `core.test.ts`/`files.test.ts` against `fake-adapter.ts`; helpers in `internal/` get direct tests.
 - Live suites are `*.live.test.ts`, gated by `test/live-helper.ts` (`LIVE_TESTS=1` plus the adapter's env vars). Keep them out of the default run.
@@ -132,7 +132,7 @@ Model it on the most recent one (`git show --stat` the "Add a … adapter" commi
 2. `package.json` `exports["./<slug>"]` (+ optional peer if it needs an SDK).
 3. `src/providers/index.ts` catalog entry with every env var the adapter reads (the drift test checks both directions).
 4. `src/cli/registry.ts` entry + a case in `test/cli-registry.test.ts`.
-5. `test/<slug>.test.ts` at parity with siblings: CRUD, URLs, error mapping, env fallback, capability gates. 98% coverage. Then regenerate the docs comparison table's data (`/docs/adapters`): `WRITE_ADAPTER_CAPABILITIES=1 bun test adapter-capabilities`. If the adapter needs more than S3-style placeholder options to construct, add them to `PROVIDER_OPTS` in `test/adapter-capabilities.test.ts`. The same test fails whenever a capability flag changes without a regenerate.
+5. `test/<slug>.test.ts` at parity with siblings: CRUD, URLs, error mapping, env fallback, capability gates. 100% coverage. Then regenerate the docs comparison table's data (`/docs/adapters`): `WRITE_ADAPTER_CAPABILITIES=1 bun test adapter-capabilities`. If the adapter needs more than S3-style placeholder options to construct, add them to `PROVIDER_OPTS` in `test/adapter-capabilities.test.ts`. The same test fails whenever a capability flag changes without a regenerate.
 6. `test/build-output.test.ts` if the adapter has an optional peer.
 7. Docs: `apps/web/docs/adapters/(vendor-adapters)/<slug>.mdx` (or `(system-adapters)`), the provider span in `docs/cli/index.mdx`, and any "N providers" counts in `docs/index.mdx` / `faq.mdx`.
 8. `skills/files-sdk/SKILL.md` + `references/adapter-setup.md`, `.github/CONTRIBUTING.md` lists.

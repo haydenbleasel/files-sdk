@@ -720,6 +720,19 @@ describe("reactive query hooks", () => {
     await waitFor(() => expect(result.current.data).toHaveLength(2));
   });
 
+  test("useSearch matches a regular expression", async () => {
+    const adapter = memory();
+    await createFiles({ adapter }).upload("x/1", "a");
+    await createFiles({ adapter }).upload("x/2", "b");
+    const pattern = /x\/1/u;
+    const { result } = renderHook(() =>
+      useSearch(pattern, {}, config(adapter))
+    );
+    await waitFor(() =>
+      expect(result.current.data?.map((f) => f.key)).toEqual(["x/1"])
+    );
+  });
+
   test("useList surfaces an error", async () => {
     const router = createFilesRouter({
       files: createFiles({ adapter: memory() }),

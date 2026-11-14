@@ -277,6 +277,17 @@ describe("cli/registry option merging", () => {
     expect(result.files.adapter.name).toBe("s3");
   });
 
+  test("s3 without --access-key-id leaves credentials to the default chain", async () => {
+    // No flag credentials: the nested `credentials` object is omitted, not
+    // passed half-filled, so the AWS SDK's own provider chain resolves them.
+    const result = await loadFiles({
+      bucket: "test-bucket",
+      provider: "s3",
+      region: "us-east-1",
+    });
+    expect(result.files.adapter.name).toBe("s3");
+  });
+
   test("flat --access-key-id reaches non-s3 S3 wrappers", async () => {
     // Regression: the registry used to wrap creds as `{credentials: {…}}`
     // only, which the wrapper adapters (vultr, wasabi, akamai, …) ignore

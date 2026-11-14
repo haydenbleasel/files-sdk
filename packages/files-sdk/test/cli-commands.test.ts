@@ -1194,3 +1194,126 @@ describe("cli/commands new surface", () => {
     expect(cap.stderr.join("")).toContain("uploaded p.txt");
   });
 });
+
+// An s3-fetch source whose every request is refused with a 403, so a bulk
+// call reports each key as an Unauthorized error instead of throwing.
+const deniedS3 = (): CommonRunOpts["global"] => ({
+  accessKeyId: "AKIATEST",
+  bucket: "bucket",
+  configJson: {
+    fetch: () =>
+      Promise.resolve(
+        new Response(
+          "<Error><Code>AccessDenied</Code><Message>denied</Message></Error>",
+          { status: 403 }
+        )
+      ),
+  },
+  endpoint: "https://s3.test",
+  provider: "s3-fetch",
+  region: "us-east-1",
+  secretAccessKey: "secret",
+});
+
+describe("cli/commands partial failures and remaining paths", () => {
+  const write = async (key: string, body: string): Promise<void> => {
+    const src = await fsp.mkdtemp(path.join(os.tmpdir(), "files-sdk-src-"));
+    tmpDirs.push(src);
+    const file = path.join(src, "body");
+    await fsp.writeFile(file, body);
+    await runUpload({ ...baseOpts(), file, key });
+    cap.stdout.length = 0;
+  };
+
+  // A destination fs root holding a regular file at `blocker`, so any key
+  // under `blocker/` fails to write (mkdir EEXIST → Conflict).
+  const blockedRoot = async (): Promise<string> => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "files-sdk-blk-"));
+    tmpDirs.push(dir);
+    await fsp.writeFile(path.join(dir, "blocker"), "not a directory");
+    return dir;
+  };
+
+  test("upload --dir reports per-file errors and exits with the first error's code", async () => {
+    const localDir = await fsp.mkdtemp(
+      path.join(os.tmpdir(), "files-sdk-dir-")
+    );
+    tmpDirs.push(localDir);
+    await fsp.mkdir(path.join(localDir, "blocker"), { recursive: true });
+    await fsp.writeFile(path.join(localDir, "blocker", "x.txt"), "x");
+    await fsp.writeFile(path.join(localDir, "ok.txt"), "ok");
+    const dest = await blockedRoot();
+    await runUpload({
+      ...baseOpts({ global: { provider: "fs", root: dest } }),
+      dir: localDir,
+    });
+    const out = lastJson(cap.stdout) as {
+      errors: { key: string }[];
+      results: { key: string }[];
+    };
+    expect(out.results.map((r) => r.key)).toEqual(["ok.txt"]);
+    expect(out.errors.map((e) => e.key)).toEqual(["blocker/x.txt"]);
+    // Conflict → 4.
+    expect(takeExitCode()).toBe(4);
+  });
+
+  test("delete (many) reports per-key errors and exits with the first error's code", async () => {
+    await runDelete({ ...baseOpts({ global: deniedS3() }), keys: ["a", "b"] });
+    const out = lastJson(cap.stdout) as { errors: { key: string }[] };
+    expect(out.errors.map((e) => e.key).toSorted()).toEqual(["a", "b"]);
+    // Unauthorized → 3.
+    expect(takeExitCode()).toBe(3);
+  });
+
+  test("transfer reports per-key errors and exits with the first error's code", async () => {
+    await write("blocker/t.txt", "one");
+    const dest = await blockedRoot();
+    await runTransfer({
+      ...baseOpts(),
+      to: JSON.stringify({ provider: "fs", root: dest }),
+    });
+    const out = lastJson(cap.stdout) as { errors: { key: string }[] };
+    expect(out.errors.map((e) => e.key)).toEqual(["blocker/t.txt"]);
+    expect(takeExitCode()).toBe(4);
+  });
+
+  test("sync reports per-key errors and exits with the first error's code", async () => {
+    await write("blocker/s.txt", "one");
+    const dest = await blockedRoot();
+    await runSync({
+      ...baseOpts(),
+      to: JSON.stringify({ provider: "fs", root: dest }),
+    });
+    const out = lastJson(cap.stdout) as { errors: { key: string }[] };
+    expect(out.errors.map((e) => e.key)).toEqual(["blocker/s.txt"]);
+    expect(takeExitCode()).toBe(4);
+  });
+
+  test("sign-upload prints the signed request for a signing provider", async () => {
+    await runSignUpload({
+      ...baseOpts({ global: deniedS3() }),
+      expiresIn: 60,
+      key: "up.bin",
+    });
+    const out = lastJson(cap.stdout) as {
+      key: string;
+      method: string;
+      url: string;
+    };
+    expect(out.key).toBe("up.bin");
+    expect(out.method).toBe("PUT");
+    expect(out.url).toContain("X-Amz-Expires=60");
+  });
+
+  test("download --stdout --verbose --pretty pretty-prints the JSON metadata on stderr", async () => {
+    await write("pv.txt", "pretty");
+    cap.stderr.length = 0;
+    await runDownload({
+      ...baseOpts({ pretty: true, verbose: true }),
+      keys: ["pv.txt"],
+      stdout: true,
+    });
+    expect(cap.stdout.join("")).toContain("pretty");
+    expect(cap.stderr.join("")).toContain('  "key": "pv.txt"');
+  });
+});

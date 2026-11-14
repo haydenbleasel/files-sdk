@@ -2042,6 +2042,21 @@ describe("box adapter", () => {
       expect(await sizeOf(files, "docs/c.txt")).toBe(1);
     });
 
+    test("a stale cached parent is re-walked for a key in a folder never cached", async () => {
+      const files = new Files({ adapter: box(baseOpts) });
+      await files.upload("docs/a.txt", "a");
+      for (const id of store.keys()) {
+        if (id !== ROOT_ID) {
+          store.delete(id);
+        }
+      }
+      await new Files({ adapter: box(baseOpts) }).upload("docs/b.txt", "b");
+      // "docs" is cached (stale) but "docs/sub" never was; the walk 404s on
+      // the dead "docs" id, both levels are evicted, and the retry succeeds.
+      await files.upload("docs/sub/c.txt", "c");
+      expect(await sizeOf(files, "docs/sub/c.txt")).toBe(1);
+    });
+
     test("copy re-resolves a stale source id", async () => {
       const files = new Files({ adapter: box(baseOpts) });
       await files.upload("a.txt", "old");
@@ -2205,6 +2220,22 @@ describe("box resumable uploads (in-process)", () => {
     ).rejects.toMatchObject({
       code: "Invalid",
       message: expect.stringMatching(/in-process only/u),
+    });
+  });
+
+  test("a token for another key can't be resumed", async () => {
+    const files = new Files({ adapter: box(baseOpts) });
+    const token: ResumableUploadSession = {
+      contentType: "text/plain",
+      key: "x.bin",
+      provider: "box",
+      uploadId: "box-1",
+    };
+    await expect(
+      files.upload("y.bin", "data", { control: UploadControl.from(token) })
+    ).rejects.toMatchObject({
+      code: "Invalid",
+      message: expect.stringMatching(/does not match/u),
     });
   });
 

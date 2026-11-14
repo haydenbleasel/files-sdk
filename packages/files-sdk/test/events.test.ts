@@ -114,6 +114,16 @@ describe("memory adapter events", () => {
     expect(subscribe).toHaveBeenCalledTimes(1);
   });
 
+  test("a memory-named adapter without a subscribe function is never subscribed", async () => {
+    const adapter = { ...memory(), subscribe: undefined };
+    const files = createFiles({ adapter, plugins: [events()] });
+    const { handler, seen } = collect();
+    files.events.on("*", handler);
+    await files.upload("a.txt", "x");
+    await files.events.settled();
+    expect(seen).toEqual([]);
+  });
+
   test("a throwing listener can't fail the write", async () => {
     const adapter = memory();
     adapter.subscribe(() => {

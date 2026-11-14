@@ -1005,6 +1005,56 @@ describe("pocketbase adapter", () => {
   });
 
   describe("error paths and edge cases", () => {
+    test("a non-object error maps to Provider", () => {
+      expect(mapPocketBaseError("boom").code).toBe("Provider");
+      expect(mapPocketBaseError(null).code).toBe("Provider");
+    });
+
+    test("copy of a missing key rejects as NotFound", async () => {
+      const adapter = pocketbase({
+        collection: "files",
+        url: "http://pb.test",
+      });
+      await expect(adapter.copy("missing.txt", "b.txt")).rejects.toMatchObject({
+        code: "NotFound",
+      });
+      expect(backing.has("b.txt")).toBe(false);
+    });
+
+    test("records without an `updated` field report no lastModified", async () => {
+      // `updated` is an optional autodate field in PocketBase 0.23+, so a
+      // collection may not carry it at all.
+      const adapter = pocketbase({
+        collection: "files",
+        url: "http://pb.test",
+      });
+      createMock.mockImplementationOnce((() =>
+        Promise.resolve({
+          collectionId: COLLECTION_ID,
+          collectionName: COLLECTION_NAME,
+          file: "a.txt",
+          id: "rec-bare",
+          key: "a.txt",
+        })) as never);
+      const uploaded = await adapter.upload("a.txt", "hello");
+      expect(uploaded.lastModified).toBeUndefined();
+
+      await adapter.upload("b.txt", "world");
+      const entry = backing.get("b.txt");
+      if (!entry) {
+        throw new Error("expected entry");
+      }
+      backing.set("b.txt", {
+        ...entry,
+        updated: undefined as unknown as string,
+      });
+      const info = await adapter.head("b.txt");
+      expect(info.lastModified).toBeUndefined();
+      const file = await adapter.download("b.txt");
+      expect(file.lastModified).toBeUndefined();
+      expect(await file.text()).toBe("world");
+    });
+
     test("upload rejects unsupported Body types", async () => {
       const adapter = pocketbase({
         collection: "files",

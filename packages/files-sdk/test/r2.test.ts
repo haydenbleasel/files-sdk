@@ -194,6 +194,23 @@ describe("r2 adapter — HTTP path", () => {
     expect(signed).toContain("X-Amz-Expires=90");
   });
 
+  test("defaultUrlExpiresIn reaches the presigned URL on both engines", async () => {
+    for (const client of ["aws-sdk", "fetch"] as const) {
+      const files = new Files({
+        adapter: r2({
+          accessKeyId: "K",
+          accountId: "ACCT",
+          bucket: "uploads",
+          client,
+          defaultUrlExpiresIn: 120,
+          secretAccessKey: "S",
+        }),
+      });
+      // eslint-disable-next-line no-await-in-loop -- one engine at a time
+      expect(await files.url("a.txt")).toContain("X-Amz-Expires=120");
+    }
+  });
+
   test("delegates upload to underlying S3 client", async () => {
     const s3Mock = mockClient(S3Client);
     s3Mock.reset();
@@ -1045,6 +1062,26 @@ describe("r2 adapter — Workers binding path", () => {
         }),
       }).capabilities.signedUpload
     ).toEqual(cap);
+  });
+
+  test("binding upload carries cacheControl in httpMetadata", async () => {
+    const { bucket } = fakeBinding();
+    const seen: unknown[] = [];
+    const put = bucket.put.bind(bucket);
+    bucket.put = (key, body, opts) => {
+      seen.push(opts);
+      return put(key, body, opts);
+    };
+    const files = new Files({ adapter: r2({ binding: bucket as never }) });
+    await files.upload("c.txt", "x", {
+      cacheControl: "max-age=60",
+      contentType: "text/plain",
+    });
+    expect(seen).toEqual([
+      {
+        httpMetadata: { cacheControl: "max-age=60", contentType: "text/plain" },
+      },
+    ]);
   });
 
   test("binding declares range/delimiter/metadata/cacheControl but no server-side copy or progress", () => {

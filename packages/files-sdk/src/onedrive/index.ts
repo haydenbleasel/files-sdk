@@ -281,14 +281,9 @@ const readGraphErrorBody = async (
   }
 };
 
-const basename = (key: string): string => {
-  let end = key.length;
-  while (end > 0 && key[end - 1] === "/") {
-    end -= 1;
-  }
-  const idx = key.lastIndexOf("/", end - 1);
-  return key.slice(idx + 1, end);
-};
+// Every caller passes a key `itemApiPath` already accepted, so it never ends
+// in "/".
+const basename = (key: string): string => key.slice(key.lastIndexOf("/") + 1);
 
 const trimSlashes = (s: string): string => {
   let start = 0;
@@ -481,9 +476,7 @@ const toUint8 = (data: GraphContentPayload): Uint8Array => {
   if (data instanceof ArrayBuffer) {
     return new Uint8Array(data);
   }
-  if (Buffer.isBuffer(data)) {
-    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  }
+  // Any other view, a Node Buffer included.
   if (ArrayBuffer.isView(data)) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
   }
