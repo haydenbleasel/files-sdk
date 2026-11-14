@@ -1315,6 +1315,28 @@ describe("vercel-blob adapter", () => {
     expect(result.size).toBe(5);
   });
 
+  test("a stream upload survives a failed size lookup", async () => {
+    // The blob has already been written when head() runs: failing the upload
+    // there would report a stored blob as not uploaded (and, with a random
+    // suffix, never tell the caller its key).
+    const adapter = vercelBlob();
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array([1, 2, 3]));
+        c.close();
+      },
+    });
+    headMock.mockImplementationOnce(() =>
+      Promise.reject(new Error("head unavailable"))
+    );
+    const result = await adapter.upload("s.bin", stream);
+    expect(result).toMatchObject({
+      etag: '"etag-s.bin"',
+      key: "s.bin",
+      size: 0,
+    });
+  });
+
   test("upload of known-size body skips the extra head() round trip", async () => {
     const adapter = vercelBlob();
     headMock.mockClear();

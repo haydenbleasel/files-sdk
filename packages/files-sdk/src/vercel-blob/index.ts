@@ -987,16 +987,21 @@ export const vercelBlob = (
         // Vercel's PutBlobResult has no size; for stream bodies we can't compute
         // it locally, so fall back to a follow-up head() to get the authoritative
         // size (and lastModified). For known-size bodies, skip the extra round trip.
-        const localSize = sizeOf(body);
-        let size = localSize;
+        // The lookup is best effort: the blob is already written, so a failed
+        // head() reports size 0 rather than failing the upload.
+        let size = sizeOf(body);
         let lastModified = Date.now();
         if (size === undefined) {
-          const { size: headSize, uploadedAt } = await blob.head(result.url, {
-            ...(options?.signal && { abortSignal: options.signal }),
-            ...resolveAuth(),
-          });
-          size = headSize;
-          lastModified = uploadedAt?.getTime() ?? lastModified;
+          try {
+            const { size: headSize, uploadedAt } = await blob.head(result.url, {
+              ...(options?.signal && { abortSignal: options.signal }),
+              ...resolveAuth(),
+            });
+            size = headSize;
+            lastModified = uploadedAt?.getTime() ?? lastModified;
+          } catch {
+            size = 0;
+          }
         }
         return {
           contentType:
