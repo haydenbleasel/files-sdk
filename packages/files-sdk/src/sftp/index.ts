@@ -192,6 +192,17 @@ const renameOver = async (
   }
 };
 
+// A directory is not an object (`head` and `exists` report it missing). A
+// server opens one fine and only fails the read with a generic FAILURE, which
+// would surface as a retryable Provider error — or, streamed, as a file that
+// errors mid-read — so `download` and `copy` refuse it from the stat, before
+// any read.
+const assertNotDirectory = (stat: SftpClient.FileStats, key: string): void => {
+  if (stat.isDirectory) {
+    throw new FilesError("NotFound", `sftp: ${key} is a directory`);
+  }
+};
+
 type Resolved =
   | { injected: SftpClient }
   | { connectConfig: SftpClient.ConnectOptions };
@@ -354,6 +365,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       // the client over a single connection. Buffers the whole object — see
       // the adapter docs for the large-file caveat.
       await run(opts2?.signal, async (client) => {
+        assertNotDirectory(await client.stat(fromRemote), from);
         // SAFETY: `get()` without a destination resolves to a Buffer; the
         // string / WritableStream members of its return type only apply when
         // a `dst` path or stream is passed.
@@ -422,6 +434,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         const { client, release } = await acquireMapped();
         try {
           const stat = await client.stat(remote);
+          assertNotDirectory(stat, key);
           const nodeStream = client.createReadStream(remote, readStreamOptions);
           const { signal } = downloadOpts;
           const onAbort = (): void => {
@@ -460,6 +473,7 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
       }
       return run(downloadOpts?.signal, async (client) => {
         const stat = await client.stat(remote);
+        assertNotDirectory(stat, key);
         let bytes: Uint8Array;
         if (readStreamOptions) {
           // Ranged read: `createReadStream` carries the native start/end byte

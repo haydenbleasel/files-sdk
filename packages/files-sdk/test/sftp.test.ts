@@ -375,6 +375,30 @@ describe("sftp adapter", () => {
     expect(deletes).toBe(0);
   });
 
+  test("copy of a directory is NotFound, not a retryable read failure", async () => {
+    // Reading a directory fails with a generic FAILURE (4) on a real server.
+    let reads = 0;
+    const client = {
+      get() {
+        reads += 1;
+        return Promise.reject(sftpError(4, "Failure"));
+      },
+      stat() {
+        return Promise.resolve({
+          isDirectory: true,
+          isFile: false,
+          modifyTime: STABLE_MTIME,
+          size: 4096,
+        });
+      },
+    } as unknown as SftpClient;
+    const files = new Files({ adapter: sftp({ client }) });
+    await expect(files.copy("a-dir", "b-dir")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(reads).toBe(0);
+  });
+
   test("move between two spellings of one path is a no-op", async () => {
     const files = newFiles();
     await files.upload("dir/a.txt", "A");
@@ -889,6 +913,42 @@ describe("sftp edge cases (injected client)", () => {
     await expect(files.head("a-dir")).rejects.toMatchObject({
       code: "NotFound",
     });
+  });
+
+  test("download of a directory throws NotFound instead of reading it", async () => {
+    // An SFTP server opens a directory fine and only fails the read with a
+    // generic FAILURE (4), which would otherwise surface as a retryable
+    // Provider error — or, streamed, as a file that errors mid-read.
+    let reads = 0;
+    const client = {
+      createReadStream() {
+        reads += 1;
+        return Readable.from([]);
+      },
+      get() {
+        reads += 1;
+        return Promise.reject(sftpError(4, "Failure"));
+      },
+      stat() {
+        return Promise.resolve({
+          isDirectory: true,
+          isFile: false,
+          modifyTime: STABLE_MTIME,
+          size: 4096,
+        });
+      },
+    } as unknown as SftpClient;
+    const files = new Files({ adapter: sftp({ client }) });
+    await expect(files.download("a-dir")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    await expect(
+      files.download("a-dir", { as: "stream" })
+    ).rejects.toMatchObject({ code: "NotFound" });
+    await expect(
+      files.download("a-dir", { range: { end: 3, start: 0 } })
+    ).rejects.toMatchObject({ code: "NotFound" });
+    expect(reads).toBe(0);
   });
 
   test("list of a missing root returns an empty page", async () => {
