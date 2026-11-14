@@ -172,18 +172,29 @@ export const FileList = ({
   const filesRef = useRef(files);
   filesRef.current = files;
 
+  // Every load takes a ticket; only the newest may apply its result, so a slow
+  // response for a prefix you've already changed can't overwrite the current
+  // one. Same pattern as `file-browser`.
+  const requestRef = useRef(0);
+
   const refresh = useCallback(async () => {
+    requestRef.current += 1;
+    const request = requestRef.current;
     setIsLoading(true);
     try {
       const result = await filesRef.current.list(
         prefix ? { prefix } : undefined
       );
-      setItems(result.items);
+      if (request === requestRef.current) {
+        setItems(result.items);
+      }
     } catch {
       // Leave the current items in place; the hook mirrors the error to
       // `files.error` for display. Crucially, don't re-fetch on failure.
     } finally {
-      setIsLoading(false);
+      if (request === requestRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [prefix]);
 
