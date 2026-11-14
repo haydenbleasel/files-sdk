@@ -32,7 +32,7 @@ await files.head("avatars/abc.png", { timeout: 2_000 }); // tighter for one read
 await files.download("big.zip", { timeout: 0 }); // disabled for a large object
 ```
 
-Because it's **per attempt** and timeouts aren't retryable, a call that retries up to `n` times on _other_ (provider) errors can run as long as `timeout × n` plus backoff. Bound the whole call with a `signal` you abort yourself. When an adapter applies its own download timeout (Vercel Blob, UploadThing), the signals merge — yours can tighten the deadline, never loosen it.
+Because it's **per attempt** and timeouts aren't retryable, a call that retries up to `n` times on _other_ (provider) errors can run as long as `timeout × (n + 1)` plus backoff. Bound the whole call with a `signal` you abort yourself. When an adapter applies its own download timeout (Vercel Blob, UploadThing), the signals merge — yours can tighten the deadline, never loosen it.
 
 ## Cancellation (`signal`)
 

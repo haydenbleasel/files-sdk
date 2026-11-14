@@ -103,7 +103,7 @@ files --provider s3 --bucket uploads mcp --allow-writes \
 ```
 
 ```jsonc
-// ~/.claude.json or .claude/mcp.json
+// ~/.claude.json or .mcp.json at the project root
 {
   "mcpServers": {
     "files-sdk": {
