@@ -2142,6 +2142,20 @@ describe("Files.search", () => {
     expect(prefixes).toEqual(["uploads/2024"]);
   });
 
+  test("finds keys under a literal brace segment", async () => {
+    const files = new Files({ adapter: fakeAdapter() });
+    await searchSeed(files, ["users/{id}/a.json", "users/{id}/b.txt"]);
+
+    // The scanned glob base used to be the whole pattern here, so the walk
+    // listed a prefix no key starts with and the search came back empty.
+    expect(await searchCollect(files.search("users/{id}/*.json"))).toEqual([
+      "users/{id}/a.json",
+    ]);
+    expect(await searchCollect(files.search("users/\\{id\\}/*.json"))).toEqual([
+      "users/{id}/a.json",
+    ]);
+  });
+
   test("a leading-wildcard glob pushes down no prefix", async () => {
     const { adapter, prefixes } = listSpy();
     const files = new Files({ adapter });

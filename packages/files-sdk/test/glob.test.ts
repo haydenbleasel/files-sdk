@@ -91,4 +91,21 @@ describe("globPrefix", () => {
     expect(globPrefix("a\\\\b/x")).toBe("a\\b/x");
     expect(globMatcher("a\\*b/x", false)("a*b/x")).toBe(true);
   });
+
+  test("stops at the first wildcard when a brace or bracket hides it from the scan", () => {
+    // picomatch's scan reports no glob after an escaped or literal brace (or
+    // an unclosed bracket) and hands back the whole pattern as the base.
+    for (const [pattern, key] of [
+      ["dir\\{1\\}/*.pdf", "dir{1}/a.pdf"],
+      ["users/{id}/*.json", "users/{id}/a.json"],
+      ["a\\{b*", "a{bc"],
+      ["a\\{b+(c)", "a{bc"],
+      ["a[b/*.txt", "a[b/c.txt"],
+    ] as const) {
+      expect(globMatcher(pattern, false)(key)).toBe(true);
+      expect(key.startsWith(globPrefix(pattern))).toBe(true);
+    }
+    expect(globPrefix("dir\\{1\\}/*.pdf")).toBe("dir{1}/");
+    expect(globPrefix("users/{id}/*.json")).toBe("users/");
+  });
 });

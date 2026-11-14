@@ -25,6 +25,26 @@ export const globMatcher = (
 export const globSource = (glob: string, caseInsensitive: boolean): string =>
   picomatch.makeRe(glob, { dot: true, nocase: caseInsensitive }).source;
 
+// An escape pair, or the first character of glob syntax: a wildcard, the
+// opener of a class / brace / group, or the `+` `@` `!` of an extglob.
+const ESCAPE_OR_SYNTAX = /\\.|(?<syntax>[*?[{(]|[+@!](?=\())/gsu;
+
+/**
+ * `base` up to its first unescaped glob syntax. picomatch's scan stops looking
+ * for wildcards once it meets an escaped brace (`dir\{1\}/*.pdf`), a brace it
+ * matches literally (`users/{id}/*.json`), or an unclosed bracket, and returns
+ * the whole pattern as the base. Listing that as a literal prefix finds no
+ * keys, so only the part before the syntax is kept.
+ */
+const literalHead = (base: string): string => {
+  for (const match of base.matchAll(ESCAPE_OR_SYNTAX)) {
+    if (match.groups?.syntax !== undefined) {
+      return base.slice(0, match.index);
+    }
+  }
+  return base;
+};
+
 /**
  * The literal key prefix every match must start with — picomatch's scanned
  * `base` — used to push a `prefix` down to `listAll` so a search doesn't walk
@@ -37,11 +57,14 @@ export const globSource = (glob: string, caseInsensitive: boolean): string =>
  * - `*.pdf`, `!keep.txt` → `""`
  * - `a/b/c` → `a/b/c` (no wildcard: the whole key is literal)
  * - `a\*b/x` → `a*b/x` (an escape stands for the literal it guards)
+ * - `users/{id}/*.json` → `users/` (see {@link literalHead})
  */
 export const globPrefix = (glob: string): string => {
   const { base, negated } = picomatch.scan(glob);
   // The scanned base keeps the pattern's backslash escapes (`a\*b` for a
   // literal `a*b`); the keys it's matched against don't, so unescape before
   // handing it to the provider as a literal prefix.
-  return negated ? "" : base.replaceAll(/\\(?<literal>.)/gu, "$<literal>");
+  return negated
+    ? ""
+    : literalHead(base).replaceAll(/\\(?<literal>.)/gu, "$<literal>");
 };
