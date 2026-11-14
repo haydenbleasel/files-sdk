@@ -654,10 +654,19 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
           }
           try {
             await client.write(key, bytes, { type: contentType });
-            const stat = await statOrThrow(key, () => client.stat(key));
-            // SAFETY: `requirePending()` above throws unless a session was
-            // begun or adopted, which is what sets `uploadId`.
-            pending.delete(uploadId as string);
+          } catch (error) {
+            throw mapBunS3Error(error);
+          }
+          // The object has committed, so the buffered session is done.
+          // SAFETY: `requirePending()` above throws unless a session was
+          // begun or adopted, which is what sets `uploadId`.
+          pending.delete(uploadId as string);
+          // Best-effort, as in `upload()`: the stat only decorates the result,
+          // so a principal allowed PutObject but not HeadObject (or a
+          // transient HEAD failure) must not turn a finished upload into an
+          // error, whose retry would write the whole body again.
+          try {
+            const stat = await client.stat(key);
             return {
               contentType: stat.type || contentType,
               etag: stripEtag(stat.etag),
@@ -665,8 +674,8 @@ export const bunS3 = (opts: BunS3AdapterOptions = {}): BunS3Adapter => {
               lastModified: stat.lastModified.getTime(),
               size: stat.size,
             };
-          } catch (error) {
-            throw mapBunS3Error(error);
+          } catch {
+            return { contentType, key, size: bytes.byteLength };
           }
         },
         discard() {

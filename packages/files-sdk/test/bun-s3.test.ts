@@ -1292,6 +1292,39 @@ describe("bun-s3 resumable uploads (in-process)", () => {
     expect(client.writes).toEqual([]);
   });
 
+  test("a failed post-write stat doesn't fail a committed resumable upload", async () => {
+    const client = new FakeBunS3Client();
+    // A principal allowed PutObject but not HeadObject: the final write lands,
+    // then the stat that only decorates the result is refused.
+    client.stat = () =>
+      Promise.reject(Object.assign(new Error("denied"), { status: 403 }));
+    const files = new Files({ adapter: bunS3({ client }) });
+    const control = new UploadControl();
+    const result = await files.upload("s.bin", "abcdefgh", {
+      contentType: "text/plain",
+      control,
+      multipart: { partSize: 4 },
+    });
+    expect(result).toMatchObject({
+      contentType: "text/plain",
+      key: "s.bin",
+      size: 8,
+    });
+    expect(control.status).toBe("completed");
+    // Written exactly once, and the buffered session is released: the token
+    // no longer names a pending upload.
+    expect(client.writes.map((write) => write.key)).toEqual(["s.bin"]);
+    const session = control.session as ResumableUploadSession;
+    await expect(
+      files.upload("s.bin", "abcdefgh", {
+        control: UploadControl.from(session),
+      })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringMatching(/session not found/u),
+    });
+  });
+
   test("a failed final write maps the provider error", async () => {
     const client = new FakeBunS3Client();
     client.write = () =>
