@@ -128,7 +128,10 @@ class FakeUTFile extends Blob {
     name: string,
     options?: { type?: string; customId?: string | null; lastModified?: number }
   ) {
-    super(parts, options?.type ? { type: options.type } : undefined);
+    // Like the real `UTFile`, always pass a type: without one it guesses from
+    // the file name and falls back to octet-stream, so a Blob part's own type
+    // is never inherited.
+    super(parts, { type: options?.type ?? "application/octet-stream" });
     this.name = name;
     this.customId = options?.customId ?? undefined;
     this.lastModified = options?.lastModified ?? Date.now();
@@ -920,6 +923,16 @@ describe("uploadthing adapter", () => {
     // Bun's Blob normalizes string-part types; the adapter passes the type
     // through verbatim, so just assert the prefix.
     expect(file?.type).toMatch(/^text\/plain/u);
+  });
+
+  test("upload keeps a Blob's own type when no contentType is passed", async () => {
+    const files = new Files({ adapter: uploadthing() });
+    // `UTFile` doesn't inherit its parts' type: without one it guesses from
+    // the file name, so an extension-less key stored as octet-stream.
+    const blob = new Blob(["xyz"], { type: "image/webp" });
+    const result = await files.upload("avatars/123", blob);
+    expect(uploadFilesMock.mock.calls[0]?.[0]?.type).toBe("image/webp");
+    expect(result.contentType).toBe("image/webp");
   });
 
   test("upload surfaces utapi.uploadFiles thrown error (not result.error path)", async () => {

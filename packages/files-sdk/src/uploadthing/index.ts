@@ -665,7 +665,12 @@ export const uploadthing = (
       };
     },
     async upload(key, body, options): Promise<UploadResult> {
-      const contentType = options?.contentType;
+      // A Blob/File carries its own type, as in every other adapter. `UTFile`
+      // doesn't inherit it from its parts: left unset it guesses from the file
+      // name and falls back to octet-stream.
+      const contentType =
+        options?.contentType ??
+        ((body instanceof Blob && body.type) || undefined);
       const blob = await bodyToBlob(body, contentType);
       const file = new UTFile([blob], basename(key), {
         customId: key,
