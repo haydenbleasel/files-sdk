@@ -451,6 +451,57 @@ describe("ftp adapter", () => {
     });
   });
 
+  test("move of a directory is NotFound, never a rename of its whole tree", async () => {
+    // RNFR/RNTO renames a directory with everything under it; a directory is
+    // not an object (head/exists report it missing), so neither is its move.
+    const client = makeFakeClient();
+    const renames: string[][] = [];
+    client.rename = (from: string, to: string) => {
+      renames.push([from, to]);
+      return Promise.resolve({ code: 250, message: "" });
+    };
+    const files = new Files({ adapter: ftp({ client }) });
+    await files.upload("dir/a.txt", "A");
+    await expect(files.move("dir", "other")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(renames).toEqual([]);
+    expect(store.get("dir/a.txt")?.toString()).toBe("A");
+  });
+
+  test("move of a missing source doesn't create the destination folder", async () => {
+    const files = newFiles();
+    await expect(
+      files.move("nope.txt", "new-folder/dst.txt")
+    ).rejects.toMatchObject({ code: "NotFound" });
+    expect(dirs.has("new-folder")).toBe(false);
+  });
+
+  test("move still renames a file the server lists but refuses to SIZE", async () => {
+    const client = makeFakeClient();
+    client.size = () =>
+      Promise.reject(ftpError(502, "502 SIZE not implemented"));
+    const files = new Files({ adapter: ftp({ client }) });
+    store.set("src.txt", Buffer.from("payload"));
+    await files.move("src.txt", "dst.txt");
+    expect(store.has("src.txt")).toBe(false);
+    expect(store.get("dst.txt")?.toString()).toBe("payload");
+  });
+
+  test("move surfaces a transport failure while checking the source", async () => {
+    const client = makeFakeClient();
+    client.size = () =>
+      Promise.reject(
+        Object.assign(new Error("connection reset"), { code: "ECONNRESET" })
+      );
+    const files = new Files({ adapter: ftp({ client }), retries: 0 });
+    store.set("src.txt", Buffer.from("payload"));
+    await expect(files.move("src.txt", "dst.txt")).rejects.toMatchObject({
+      code: "Provider",
+    });
+    expect(store.has("src.txt")).toBe(true);
+  });
+
   test("move overwrites an existing destination on a server that refuses RNTO over it", async () => {
     // IIS-style servers answer RNTO onto an existing file with a 550, which
     // a plain rename surfaced as a bogus NotFound.

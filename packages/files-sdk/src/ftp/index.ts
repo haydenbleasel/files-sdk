@@ -209,6 +209,23 @@ const listedInParent = async (
   return entries.some((entry) => entry.name === base && !entry.isDirectory);
 };
 
+// Whether `remote` currently holds a file (not a directory, not nothing).
+// SIZE answers for a file; any FTP error reply to it — a directory and a
+// missing path both get the catch-all 550, and some servers refuse or lack the
+// command — is settled by the parent's listing instead. A transport failure
+// propagates.
+const isFileAt = async (client: Client, remote: string): Promise<boolean> => {
+  try {
+    await client.size(remote);
+    return true;
+  } catch (error) {
+    if (ftpReplyCode(error) === undefined) {
+      throw error;
+    }
+    return await listedInParent(client, remote);
+  }
+};
+
 // Idempotent DELE. 550 is FTP's catch-all "file unavailable": it answers a
 // missing file, but also "permission denied" and "not a plain file". Only a
 // file that is really gone is a no-op; one still listed after a 550 means the
@@ -782,6 +799,13 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
         return;
       }
       await run(opts2?.signal, async (client) => {
+        // RNFR/RNTO renames a directory with everything under it. A directory
+        // is not an object (`head` reports it as NotFound), so neither is its
+        // move — and a missing source is settled here too, before a parent
+        // folder is created for a destination that will never arrive.
+        if (!(await isFileAt(client, fromRemote))) {
+          throw new FilesError("NotFound", `ftp: no file at ${from}`);
+        }
         // Native rename — no body round-trip. RNFR/RNTO won't create the
         // destination's parent, so ensure it first (ensureDir changes cwd, so
         // restore it) and then rename relative to the login dir like every
