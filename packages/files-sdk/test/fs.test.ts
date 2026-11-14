@@ -575,6 +575,58 @@ describe("fs adapter", () => {
       await expect(files.exists("plain.txt")).resolves.toBe(true);
     });
 
+    test("deleting a key several levels under a file is a no-op too", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }) });
+      await files.upload("plain.txt", "x");
+      await expect(
+        files.delete("plain.txt/child/leaf")
+      ).resolves.toBeUndefined();
+      await expect(
+        files.delete(["plain.txt/a/b/c", "missing/a/b"])
+      ).resolves.toEqual({ results: ["plain.txt/a/b/c", "missing/a/b"] });
+      await expect(files.exists("plain.txt")).resolves.toBe(true);
+    });
+
+    test("writing under a file is a Conflict at any depth, never NotFound", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }), retries: 0 });
+      await files.upload("plain.txt", "x");
+      await files.upload("src.txt", "y");
+      // A file sits where each key needs a folder: the write can't succeed on
+      // any attempt, and nothing the caller named is missing.
+      for (const key of ["plain.txt/child", "plain.txt/child/leaf"]) {
+        // eslint-disable-next-line no-await-in-loop -- sequential negative assertions per key
+        await expect(files.upload(key, "z")).rejects.toMatchObject({
+          code: "Conflict",
+        });
+        // eslint-disable-next-line no-await-in-loop -- see above
+        await expect(files.copy("src.txt", key)).rejects.toMatchObject({
+          code: "Conflict",
+        });
+        // eslint-disable-next-line no-await-in-loop -- see above
+        await expect(files.move("src.txt", key)).rejects.toMatchObject({
+          code: "Conflict",
+        });
+        // eslint-disable-next-line no-await-in-loop -- see above
+        await expect(
+          files.upload(key, "z", { control: new UploadControl() })
+        ).rejects.toMatchObject({ code: "Conflict" });
+      }
+      // A source under a file is still just missing.
+      await expect(
+        files.move("plain.txt/child/leaf", "dst.txt")
+      ).rejects.toMatchObject({ code: "NotFound" });
+      await expect(files.exists("src.txt")).resolves.toBe(true);
+      const entries = await fsp.readdir(root);
+      expect(entries.toSorted()).toEqual([
+        "plain.txt",
+        "plain.txt.meta.json",
+        "src.txt",
+        "src.txt.meta.json",
+      ]);
+    });
+
     test("a root that is a plain file fails loudly instead of looking empty", async () => {
       const dir = await makeRoot();
       const root = path.join(dir, "not-a-dir");

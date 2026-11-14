@@ -284,7 +284,12 @@ const writePathUnderRoot = async (
       const realDir = await realpathUnderRoot(root, dir, key);
       return path.join(realDir, ...tail);
     } catch (error) {
-      if (errorCode(error) !== "ENOENT") {
+      // `ENOTDIR` is a file further up the path (`a.txt/b/c` with `a.txt` an
+      // object): keep walking, as for a missing folder, until the walk
+      // reaches that file and vets it. What it means is the caller's to
+      // say: nothing to remove for `delete`, a `Conflict` for a write.
+      const code = errorCode(error);
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
         throw error;
       }
     }
@@ -412,8 +417,35 @@ const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
   }
 };
 
+// Whether a folder occupies `sidecarPath` (see `readSidecar`). Any failure to
+// look reads as "no": the commit's own renames report what's really wrong.
+const isFolder = async (sidecarPath: string): Promise<boolean> => {
+  try {
+    const stat = await fsp.lstat(sidecarPath);
+    return stat.isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// A file sitting where the key needs a folder (`a.txt/b/c` with `a.txt` an
+// object) fails the same way on every attempt, and nothing the caller named
+// is missing, so it is a `Conflict`: `mkdir` reports `EEXIST` when the file is
+// the direct parent, but `ENOTDIR` (which reads as `NotFound`) when it is
+// further up.
 const ensureDirFor = async (filePath: string): Promise<void> => {
-  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  try {
+    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  } catch (error) {
+    if (errorCode(error) === "ENOTDIR") {
+      throw new FilesError(
+        "Conflict",
+        "fs: a file sits where this key needs a folder",
+        error
+      );
+    }
+    throw error;
+  }
 };
 
 // Best-effort delete used in error-recovery and copy-without-source-sidecar
