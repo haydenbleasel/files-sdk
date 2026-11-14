@@ -25,6 +25,28 @@ const http2Request = (
   }) as unknown as NodeLikeRequest & IncomingMessage;
 
 describe("toWebRequest", () => {
+  test.each([
+    ["//evil.test/api/files?op=list", "//evil.test/api/files"],
+    ["/\\evil.test/api/files?op=list", "//evil.test/api/files"],
+    ["http://evil.test/api/files?op=list", "/api/files"],
+    ["http://evil.test//other.test/api?op=list", "//other.test/api"],
+  ])("a request target never names the host: %s", (target, pathname) => {
+    const req = toWebRequest(
+      {
+        headers: { host: "app.test" },
+        method: "GET",
+        rawHeaders: ["host", "app.test"],
+        socket: {},
+        url: target,
+      } as unknown as NodeLikeRequest,
+      new AbortController().signal
+    );
+    const url = new URL(req.url);
+    expect(url.origin).toBe("http://app.test");
+    expect(url.pathname).toBe(pathname);
+    expect(url.search).toBe("?op=list");
+  });
+
   test("drops HTTP/2 pseudo-headers and takes the host from :authority", () => {
     const req = toWebRequest(
       http2Request(

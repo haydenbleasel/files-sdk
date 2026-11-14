@@ -33,6 +33,15 @@ const requestProtocol = (req: IncomingMessage): string => {
     : "http";
 };
 
+/** The path and query of a request target, whatever form it arrived in. */
+const pathOf = (target: string, base: string): string => {
+  if (target.startsWith("/")) {
+    return target;
+  }
+  const { pathname, search } = new URL(target, base);
+  return pathname + search;
+};
+
 /**
  * Marshal a Node request into the Web `Request` the gateway consumes.
  *
@@ -52,7 +61,13 @@ export const toWebRequest = (
   const host =
     req.headers.host ?? (isString(authority) ? authority : undefined);
   const base = `${requestProtocol(req)}://${host ?? "localhost"}`;
-  const url = new URL(overrides.url ?? req.originalUrl ?? req.url ?? "/", base);
+  // The request target is only ever a path on this host. Resolving it against
+  // the base would let it name the host instead: Node hands over `//evil.test/x`
+  // (a network-path reference) or an absolute-form `http://evil.test/x`
+  // verbatim, and the gateway's same-origin check would then compare a
+  // cross-site `Origin` against the attacker's own host and pass it.
+  const target = overrides.url ?? req.originalUrl ?? req.url ?? "/";
+  const url = new URL(base + pathOf(target, base));
 
   // `rawHeaders` is a flat [k, v, k, v, …] list — appending each pair preserves
   // duplicates without the string|string[] branching of `req.headers`.
