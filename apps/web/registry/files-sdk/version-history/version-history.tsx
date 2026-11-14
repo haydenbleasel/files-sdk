@@ -49,18 +49,33 @@ export const VersionHistory = ({
   const filesRef = useRef(files);
   filesRef.current = files;
 
+  // Every load takes a ticket; only the newest may apply its result, so a slow
+  // response for a key you've already switched away from can't land under the
+  // new one.
+  const requestRef = useRef(0);
+
   const refresh = useCallback(async () => {
+    requestRef.current += 1;
+    const request = requestRef.current;
     setIsLoading(true);
     try {
-      setVersions(await filesRef.current.versions(fileKey));
+      const next = await filesRef.current.versions(fileKey);
+      if (request === requestRef.current) {
+        setVersions(next);
+      }
     } catch {
       // The hook mirrors the error to `files.error` for display.
     } finally {
-      setIsLoading(false);
+      if (request === requestRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [fileKey]);
 
+  // A new key starts from a clean slate: the previous key's versions must
+  // never be listed (or restorable) under this one, even if its load fails.
   useEffect(() => {
+    setVersions([]);
     void refresh();
   }, [refresh]);
 
