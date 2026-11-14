@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
+import type PocketBaseClient from "pocketbase";
+
 import { Files, FilesError } from "../src/index.js";
 import { expectDispositionRefusal } from "./disposition-refusal.js";
 
 const lastArgOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
   m.mock.calls.at(-1)?.[index] as { signal?: AbortSignal } | undefined;
+
+const requestKeyOf = (m: { mock: { calls: unknown[][] } }, index: number) =>
+  (m.mock.calls.at(-1)?.[index] as { requestKey?: unknown } | undefined)
+    ?.requestKey;
 
 interface StoredEntry {
   bytes: Uint8Array;
@@ -1337,6 +1343,82 @@ describe("pocketbase adapter", () => {
       await adapter.upload("b.txt", "world");
       expect(authWithPasswordMock).toHaveBeenCalledTimes(2);
       expect(backing.has("b.txt")).toBe(true);
+    });
+  });
+
+  describe("SDK auto-cancellation", () => {
+    // The PocketBase SDK aborts a pending request when another with the same
+    // method + path starts, and swaps the caller's `signal` for its own
+    // controller, unless the request passes `requestKey: null`.
+    test("every SDK request opts out with requestKey: null", async () => {
+      const adapter = pocketbase({
+        authToken: "tok",
+        collection: "files",
+        url: "http://pb.test",
+      });
+      await adapter.upload("a.txt", "hello");
+      expect(requestKeyOf(getFirstListItemMock, 1)).toBeNull();
+      expect(requestKeyOf(createMock, 1)).toBeNull();
+      await adapter.upload("a.txt", "world");
+      expect(requestKeyOf(updateMock, 2)).toBeNull();
+      await adapter.download("a.txt");
+      expect(requestKeyOf(getTokenMock, 0)).toBeNull();
+      getTokenMock.mockClear();
+      await adapter.url("a.txt");
+      expect(requestKeyOf(getTokenMock, 0)).toBeNull();
+      await adapter.list();
+      expect(requestKeyOf(getListMock, 2)).toBeNull();
+      await adapter.delete("a.txt");
+      expect(requestKeyOf(deleteMock, 1)).toBeNull();
+    });
+
+    // The real SDK, through its CommonJS entry: `mock.module` above replaces
+    // only the default one.
+    const realClient = async () => {
+      const { default: RealPocketBase } = await import("pocketbase/cjs");
+      const seen: (AbortSignal | undefined)[] = [];
+      globalThis.fetch = ((_url: string, init?: RequestInit) => {
+        seen.push(init?.signal ?? undefined);
+        // oxlint-disable-next-line promise/avoid-new -- a delayed, abortable response
+        return new Promise<Response>((resolve, reject) => {
+          const timer = setTimeout(
+            () =>
+              resolve(
+                Response.json({
+                  items: [],
+                  page: 1,
+                  perPage: 30,
+                  totalItems: 0,
+                  totalPages: 1,
+                })
+              ),
+            5
+          );
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        });
+      }) as typeof fetch;
+      // The same client class as the default entry; the two builds just
+      // carry separate declarations.
+      const client = new RealPocketBase(
+        "http://pb.test"
+      ) as unknown as PocketBaseClient;
+      return { adapter: pocketbase({ client, collection: "files" }), seen };
+    };
+
+    test("concurrent calls on the real SDK don't cancel each other", async () => {
+      const { adapter } = await realClient();
+      const results = await Promise.all([adapter.list(), adapter.list()]);
+      expect(results).toEqual([{ items: [] }, { items: [] }]);
+    });
+
+    test("the caller's signal reaches fetch on the real SDK", async () => {
+      const { adapter, seen } = await realClient();
+      const { signal } = new AbortController();
+      await adapter.list({ signal });
+      expect(seen.at(-1)).toBe(signal);
     });
   });
 

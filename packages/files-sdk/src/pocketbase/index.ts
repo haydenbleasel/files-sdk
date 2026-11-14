@@ -217,12 +217,22 @@ const prefixFilter = (
   prefix: string
 ): string => pb.filter(`${keyField} ~ {:p}`, { p: `${prefix}%` });
 
-// PocketBase's `SendOptions` extends `RequestInit`, so it carries `signal`
-// directly. Forward the operation's AbortSignal as a `SendOptions` arg; return
-// `undefined` when there's no signal so we leave the call untouched.
-const sendOpts = (
-  signal: AbortSignal | undefined
-): { signal: AbortSignal } | undefined => (signal ? { signal } : undefined);
+// Options for every SDK request. `requestKey: null` opts out of the SDK's
+// auto-cancellation, which is on by default: it aborts a pending request as
+// soon as another with the same method + path starts (two concurrent
+// `create()`s, `getList()`s, or file-token requests), and replaces the
+// request's `signal` with its own controller, dropping the caller's. With it
+// off, the operation's AbortSignal rides along as `SendOptions.signal`
+// (`SendOptions` extends `RequestInit`).
+interface RequestOptions {
+  requestKey: null;
+  signal?: AbortSignal;
+}
+
+const sendOpts = (signal: AbortSignal | undefined): RequestOptions => ({
+  requestKey: null,
+  ...(signal && { signal }),
+});
 
 export const pocketbase = (
   opts: PocketBaseAdapterOptions
@@ -554,7 +564,7 @@ export const pocketbase = (
           {
             sort: keyField,
             ...(filter && { filter }),
-            ...(listOpts?.signal && { signal: listOpts.signal }),
+            ...sendOpts(listOpts?.signal),
           }
         );
         const items = pageItems(response.items, listOpts?.prefix);
