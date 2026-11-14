@@ -629,4 +629,44 @@ describe("contentType plugin — XML under a media type", () => {
       )
     ).rejects.toThrow(/its bytes are "application\/xhtml\+xml"/u);
   });
+
+  test("an XML root with no prolog is classified under an XML claim", async () => {
+    // The `<?xml` prolog is optional, so leaving it off must not turn an
+    // XHTML- or SVG-namespaced root into "unknown" bytes that keep the claim.
+    const files = withContentType({ onMismatch: "reject" });
+    const xhtml = `<x:html xmlns:x="http://www.w3.org/1999/xhtml"><x:script>alert(1)</x:script></x:html>`;
+    const svg = `<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "x"><svg xmlns="http://www.w3.org/2000/svg"><script/></svg>`;
+    await expect(
+      files.upload("feed.xml", xhtml, { contentType: "application/xml" })
+    ).rejects.toThrow(/its bytes are "application\/xhtml\+xml"/u);
+    await expect(
+      files.upload("feed.xml", svg, { contentType: "text/xml" })
+    ).rejects.toThrow(/its bytes are "image\/svg\+xml"/u);
+    await expect(
+      files.upload("a", `<x><s:script xmlns:s="urn:x"/></x>`, {
+        contentType: "image/x+xml",
+      })
+    ).rejects.toThrow(/its bytes are "application\/xml"/u);
+  });
+
+  test("a prolog-less XML root is relabeled in correct mode, and plain XML keeps its type", async () => {
+    const files = withContentType();
+    await files.upload(
+      "feed.xml",
+      `<s:svg xmlns:s="http://www.w3.org/2000/svg"><s:script/></s:svg>`
+    );
+    expect(await typeOf(files, "feed.xml")).toBe("image/svg+xml");
+    await files.upload(
+      "atom.xml",
+      `<feed xmlns="http://www.w3.org/2005/Atom"/>`
+    );
+    expect(await typeOf(files, "atom.xml")).toBe("application/xml");
+  });
+
+  test("a prolog-less root stays unknown without an XML claim", async () => {
+    const files = withContentType({ onUnknown: "reject" });
+    await expect(
+      files.upload("notes.txt", `<feed xmlns="http://www.w3.org/2005/Atom"/>`)
+    ).rejects.toThrow(/could not identify/u);
+  });
 });

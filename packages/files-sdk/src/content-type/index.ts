@@ -285,7 +285,8 @@ const xmlType = (text: string, from: number): string => {
  * recognized as what it is. A comment followed by nothing recognizable is
  * HTML (the WHATWG sniffing rule) — unless `xmlDeclared`, when the caller has
  * declared an XML-family type and a leading comment is ordinary XML (its root
- * classified as {@link xmlType} would).
+ * classified as {@link xmlType} would). Under that same claim, markup with no
+ * `<?xml` prolog at all is classified by its root too.
  */
 const sniffText = (
   bytes: Uint8Array,
@@ -304,7 +305,11 @@ const sniffText = (
     return xmlType(text, i);
   }
   if (!text.startsWith("<!--", i)) {
-    return markupType(text.slice(i, i + 32));
+    const markup = markupType(text.slice(i, i + 32));
+    // The `<?xml` prolog is optional. Under an XML claim a browser parses the
+    // document as XML either way, so a bare (or doctype-led) root is
+    // classified like one behind a prolog instead of passing as unknown.
+    return markup === undefined && xmlDeclared ? xmlType(text, i) : markup;
   }
   while (i !== -1 && text.startsWith("<!--", i)) {
     const close = text.indexOf("-->", i + 4);
