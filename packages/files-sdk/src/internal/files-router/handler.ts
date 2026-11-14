@@ -237,6 +237,19 @@ const optSize = (record: JsonObject): number | undefined => {
   return size;
 };
 
+// A requested expiry: a positive whole number of seconds, as the SDK's own
+// `expiresIn` must be, or absent to take the router's default.
+const optExpiresIn = (record: JsonObject): number | undefined => {
+  const expiresIn = optNum(record, "expiresIn");
+  if (
+    expiresIn !== undefined &&
+    !(Number.isSafeInteger(expiresIn) && expiresIn > 0)
+  ) {
+    return fail("expected a positive integer: expiresIn");
+  }
+  return expiresIn;
+};
+
 const fileInfos = (ctx: HandlerContext, body: JsonObject): ClientFileInfo[] => {
   const value = body.files;
   if (!isJsonArray(value) || value.length === 0) {
@@ -908,7 +921,7 @@ const dispatchJson = async (
     case "presign": {
       requireOrigin(ctx, parsed);
       const files = fileInfos(ctx, body);
-      const expiresIn = optNum(body, "expiresIn");
+      const expiresIn = optExpiresIn(body);
       // What the client declared, for a per-user quota or type gate. The
       // upload token then binds the declared size, so the proxy PUT and
       // `complete` hold the real bytes to what was approved here.

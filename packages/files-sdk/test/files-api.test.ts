@@ -3579,3 +3579,35 @@ describe("createFilesRouter — search glob head stays inside the scope", () => 
   });
 });
 
+describe("createFilesRouter — presign expiresIn", () => {
+  test("a non-positive or fractional expiresIn is refused instead of minting a dead token", async () => {
+    for (const adapter of [memory(), signing()]) {
+      const r = router({ adapter, operations: ["upload"] });
+      for (const expiresIn of [0, -1, 1.5]) {
+        // oxlint-disable-next-line no-await-in-loop -- one value per case
+        const res = await r.handle(
+          post({
+            expiresIn,
+            files: [{ name: "a.png", size: 1, type: "image/png" }],
+            op: "presign",
+          })
+        );
+        expect(res.status).toBe(422);
+        // oxlint-disable-next-line no-await-in-loop -- drain each body
+        expect((await readJson<Envelope>(res)).error.message).toBe(
+          "expected a positive integer: expiresIn"
+        );
+      }
+      // oxlint-disable-next-line no-await-in-loop -- one adapter per case
+      const ok = await r.handle(
+        post({
+          expiresIn: 60,
+          files: [{ name: "a.png", size: 1, type: "image/png" }],
+          op: "presign",
+        })
+      );
+      expect(ok.status).toBe(200);
+    }
+  });
+});
+
