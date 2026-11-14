@@ -43,7 +43,16 @@ export interface FilePreviewProps {
     src?: string;
     text?: string;
   }) => ReactNode;
+  /** Classes for the outer `<figure>`. */
   className?: string;
+  /**
+   * Classes merged into the built-in preview element: the PDF `<object>`
+   * (`h-72` by default), the `<img>` and the text `<pre>` (both `max-h-72`).
+   * Conflicting utilities replace the defaults, so
+   * `"h-[80vh] max-h-none"` makes PDFs and text 80vh tall and fits images
+   * within that height. Not applied to a `renderPreview` viewer.
+   */
+  previewClassName?: string;
 }
 
 /** The `file` prop is either a bare key or an already-resolved record. */
@@ -179,12 +188,14 @@ const formatBytes = (bytes: number): string => {
 };
 
 const Body = ({
+  className,
   error,
   isLoading,
   src,
   text,
   type,
 }: {
+  className?: string;
   error?: string;
   isLoading: boolean;
   src?: string;
@@ -203,7 +214,7 @@ const Body = ({
     return (
       <object
         aria-label="PDF preview"
-        className="h-72 w-full"
+        className={cn("h-72 w-full", className)}
         data={src}
         type="application/pdf"
       >
@@ -219,14 +230,19 @@ const Body = ({
       // eslint-disable-next-line nextjs/no-img-element
       <img
         alt="preview"
-        className="max-h-72 w-auto rounded object-contain"
+        className={cn("max-h-72 w-auto rounded object-contain", className)}
         src={src}
       />
     );
   }
   if (text !== undefined) {
     return (
-      <pre className="max-h-72 w-full overflow-auto text-xs whitespace-pre-wrap">
+      <pre
+        className={cn(
+          "max-h-72 w-full overflow-auto text-xs whitespace-pre-wrap",
+          className
+        )}
+      >
         {text}
       </pre>
     );
@@ -255,6 +271,7 @@ export const FilePreview = ({
   pdfSource = "blob",
   renderPreview,
   className,
+  previewClassName,
 }: FilePreviewProps) => {
   const key = isKey(file) ? file : file.key;
   const [meta, setMeta] = useState<FileInfo | undefined>(
@@ -382,6 +399,7 @@ export const FilePreview = ({
           })
         ) : (
           <Body
+            className={previewClassName}
             error={loadError}
             isLoading={isLoading}
             src={src}

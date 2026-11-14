@@ -27,6 +27,20 @@ export function Preview({ fileKey }: { fileKey: string }) {
 
 The footer shows the key, size, type and etag. Pass either a key string (the component `head()`s it for metadata) or an already-resolved `FileInfo` (a `list()` item, say) to skip that round-trip.
 
+## Sizing the preview
+
+`className` styles the outer `<figure>`. To size the preview itself, pass `previewClassName`, which is merged into the built-in preview element: the PDF `<object>`, the `<img>` or the text `<pre>`. PDFs default to `h-72` and images and text to `max-h-72`, and conflicting utilities replace those defaults. To fill most of a tall container like a sheet:
+
+```tsx lineNumbers
+<FilePreview
+  file={fileKey}
+  files={files}
+  previewClassName="h-[80vh] max-h-none"
+/>
+```
+
+PDFs and text get 80vh of height and images scale to fit within it. A [`renderPreview`](#custom-viewers) viewer doesn't receive `previewClassName`; size it with its own classes.
+
 ## Files without a real content type
 
 Objects stored as `application/octet-stream` (or with no type at all) are common when something other than a browser wrote them. `FilePreview` previews those by their key's extension instead: `.pdf`, raster images (`.png`, `.jpg`, `.gif`, `.webp`, `.avif`, `.bmp`) and text (`.txt`, `.md`, `.csv`, `.log`, `.json`). An extension-less key is checked for the PDF signature with a 5-byte range read, on adapters that support range reads, and previewed as a PDF when it matches. The footer still shows the stored type.
