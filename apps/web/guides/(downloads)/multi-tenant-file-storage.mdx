@@ -92,7 +92,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 Three rules keep the prefix trustworthy:
 
 - **Only the session decides it.** Never build the prefix from a query parameter, header, or body field the browser controls. `authorize` also receives the client's `key`; use it for per-key rules, never to choose the prefix.
-- **Use an immutable, opaque ID.** If the prefix is a slug or display name a tenant can change, a tenant that renames itself to a former tenant's slug inherits that tenant's files. Error messages also echo the full storage key (`unsafe key: orgs/acme/../…`), so a tenant can see its own prefix. Don't put anything private, like an email address, in it.
+- **Use an immutable, opaque ID.** If the prefix is a slug or display name a tenant can change, a tenant that renames itself to a former tenant's slug inherits that tenant's files. Gateway error messages name the key the client sent (`unsafe key: ../…`), not the prefix, but signed URLs and upload tokens carry the full storage key, so a tenant can see its own prefix. Don't put anything private, like an email address, in it.
 - **The trailing slash is handled for you.** The gateway normalizes `orgs/acme` to `orgs/acme/` before using it, so `acme` never matches `acme-co`. The tenants below were picked so that one name is a string prefix of the other.
 
 ## What one tenant can reach
@@ -106,7 +106,7 @@ The bucket holds `orgs/acme/report.pdf` and `orgs/acme-co/secret.txt`. A signed-
 | `head` | `422` | `404` | looked up `orgs/acme/orgs/acme-co/secret.txt` |
 | `exists` | `422` | `200`, `exists: false` | the same lookup |
 | `download` | `422`, also when sent as `%2E%2E%2F…` | `404` | the same lookup |
-| `url` | `422` | `404` | the same lookup |
+| `url` | `422` | `422` (`Unsupported`) | nothing: the memory adapter can't mint the expiring URL `maxExpiresIn` asks for, whatever the key |
 | `upload` with a key | `422` | `200` | wrote `orgs/acme/orgs/acme-co/secret.txt` |
 | `upload` without a key | a file named `../../acme-co/secret.txt` was stored as `<uuid>.txt` | not applicable | wrote `orgs/acme/<uuid>.txt` |
 | `delete` | `422` | `200` | deleted `orgs/acme/orgs/acme-co/secret.txt`, which didn't exist |
@@ -119,13 +119,13 @@ Every request without a session got `401`. After the run, `orgs/acme-co/` held e
 
 Three kinds of result show up in that table:
 
-- **`422 Validation`** means the gateway refused the key before calling storage. It prepends the prefix first and then rejects the result if it contains a `.` or `..` segment or a NUL byte, so `../acme-co/secret.txt` becomes `orgs/acme/../acme-co/secret.txt` and stops there. Query strings are decoded before the check, so `%2E%2E%2F` is caught too. A double-encoded `%252E%252E%252F` or a backslash path (`..\acme-co\secret.txt`) isn't a traversal in object storage at all; both came back `404` as literal keys under `orgs/acme/`.
+- **`422 Validation`** means the gateway refused the key before calling storage. It prepends the prefix first and then rejects the result if it contains a `.` or `..` segment or a NUL byte, so `../acme-co/secret.txt` becomes `orgs/acme/../acme-co/secret.txt` and stops there. Query strings are decoded before the check, so `%2E%2E%2F` is caught too. A backslash path (`..\acme-co\secret.txt`) gets the same `422`, because the check counts a backslash as a separator. A double-encoded `%252E%252E%252F` isn't a traversal in object storage at all; it came back `404` as a literal key under `orgs/acme/`.
 - **`404`, empty lists, and `exists: false`** mean the full storage key was treated as a relative key. `orgs/acme-co/secret.txt` becomes `orgs/acme/orgs/acme-co/secret.txt`, which doesn't exist.
 - **`200` on a write** means the write happened inside `acme`'s own prefix. That includes `delete`: deleting a key that doesn't exist succeeds, on the memory adapter and against a local MinIO server alike. A `200` from a cross-tenant delete doesn't mean anything was deleted, which is why the last column comes from listing the bucket afterwards, not from the responses.
 
 Keyless uploads can't be steered at all. The server mints the key from the tenant prefix, a random UUID, and the file's extension; the client's file name contributes nothing else. Tampering with the key in the `complete` step changes nothing either, because the signed upload token carries the real key.
 
-On a signing adapter, two rows look different. The memory adapter can't sign URLs, so `url` and `download` look the object up and answer `404`. S3, R2, and MinIO sign without a lookup: against a local MinIO server, `url` returned `200` with a signed URL and `download` returned a `302`, both pointing at `orgs/acme/orgs/acme-co/secret.txt`. Fetching that URL returned `404 NoSuchKey`. Either way, the URL can only point inside the caller's prefix.
+On a signing adapter, two rows look different. The memory adapter can't sign URLs, so `download` proxies, looks the object up, and answers `404`, and `url` answers `422` (`Unsupported`) for any key, because the policy's `maxExpiresIn` requires an expiring link. S3, R2, and MinIO sign without a lookup: against a local MinIO server, `url` returned `200` with a signed URL and `download` returned a `302`, both pointing at `orgs/acme/orgs/acme-co/secret.txt`. Fetching that URL returned `404 NoSuchKey`. Either way, the URL can only point inside the caller's prefix.
 
 ## Keep the check in your test suite
 

@@ -233,7 +233,7 @@ Content-Type: video/mp4
 X-Content-Type-Options: nosniff
 ETag: "5bfbd550cb99f1d231a2c739aff908fa"
 Last-Modified: Fri, 09 Oct 2026 05:26:26 GMT
-Content-Disposition: attachment
+Content-Disposition: attachment; filename="intro.mp4"
 Content-Range: bytes 0-1023/30084139
 Content-Length: 1024
 ```
@@ -248,7 +248,6 @@ curl -s -o /dev/null -D - -b "session=…" -H "Range: bytes=40000000-" \
 ```text
 HTTP/1.1 416 Range Not Satisfiable
 Content-Range: bytes */30084139
-Content-Length: 0
 ```
 
 `If-Range` guards against splicing two versions of a file. Send the `ETag` from an earlier response: while it still matches, you get the `206`. If the object changed, you get `200 OK` and the whole new file. The S3 adapters report ETags without quotes, so the proxy adds them to its `ETag` header, and it accepts the validator back quoted or bare. An HTTP date equal to `Last-Modified` (to the second) also matches. A weak validator (`W/"…"`) never does.

@@ -329,7 +329,7 @@ The gateway keeps working: its Admin SDK calls aren't gated by rules, and its si
 
 **``Cannot sign data without `client_email`.``** The server is using user credentials, typically from `gcloud auth application-default login`. Use a service account, or impersonate one, as described in [Sign without a key file](#sign-without-a-key-file).
 
-**Uploads and downloads fail with a `500`, code `Provider`, mentioning `iam.serviceAccounts.signBlob`.** IAM refused the signing call. `@google-cloud/storage` rethrows that refusal as a plain `SigningError`, so the SDK reports `Provider` and the gateway answers `500` with IAM's message, on presigns and download redirects alike. Grant the role shown above and make sure the IAM Service Account Credentials API is enabled.
+**Uploads and downloads fail with a `500`, code `Provider`, and the server log mentions `iam.serviceAccounts.signBlob`.** IAM refused the signing call. `@google-cloud/storage` rethrows that refusal as a plain `SigningError`, so the SDK reports `Provider` and the gateway answers `500` with the fixed message `storage provider error`, on presigns and download redirects alike. IAM's message goes to the router's `onError`, which logs it by default. Grant the role shown above and make sure the IAM Service Account Credentials API is enabled.
 
 **`network error during upload` and a CORS error in the console.** The bucket has no CORS rule for the page's origin, or the rule doesn't allow `POST`. Apply `cors.json` and check the origin matches exactly, scheme and port included.
 

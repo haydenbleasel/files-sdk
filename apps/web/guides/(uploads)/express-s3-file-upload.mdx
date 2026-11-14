@@ -167,7 +167,7 @@ What each piece does:
 
 ## Let the browser POST to S3
 
-With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. Its policy pins the key, requires the `Content-Type` the browser claimed, and allows 0 bytes to `maxUploadSize`. A file that already declares a larger size gets `422` (`upload exceeds maxUploadSize`) at presign, before anything is signed. After the browser's `POST`, the client calls `complete`, and the gateway `head`s the object to confirm it landed and is within the limit.
+With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. Its policy pins the key, requires the `Content-Type` the browser claimed, and allows 0 bytes up to the size the browser declared, capped by `maxUploadSize`. A file that already declares a larger size gets `422` (`upload exceeds maxUploadSize`) at presign, before anything is signed. After the browser's `POST`, the client calls `complete`, and the gateway `head`s the object to confirm it landed and is within the limit.
 
 The browser sends that form cross-origin, so the bucket needs a CORS rule. In the S3 console, open the bucket's **Permissions** tab and edit **Cross-origin resource sharing (CORS)**:
 

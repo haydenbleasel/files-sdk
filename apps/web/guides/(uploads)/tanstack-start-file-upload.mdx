@@ -118,7 +118,7 @@ What the route does with each request:
 
 ## Let the browser POST to S3
 
-With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. The policy inside those fields fixes the key, requires the `Content-Type` the browser claimed, and allows anything from 0 bytes to `maxUploadSize`. S3 checks each condition when the form arrives.
+With `maxUploadSize` set, the S3 adapter answers a presign with a presigned `POST`: a form URL plus signed fields. The policy inside those fields fixes the key, requires the `Content-Type` the browser claimed, and allows anything from 0 bytes up to the size the browser declared, capped by `maxUploadSize`. S3 checks each condition when the form arrives.
 
 The browser sends that form cross-origin, so the bucket needs a CORS rule. In the S3 console, open the bucket's **Permissions** tab and edit **Cross-origin resource sharing (CORS)**:
 
@@ -256,9 +256,9 @@ TanStack's open feature request [TanStack/router#5704](https://github.com/TanSta
 ## Limits and tradeoffs
 
 - **The policy checks the claimed type, not the bytes.** On the keyless path, S3 stores the object with the `Content-Type` the browser declared and rejects a form that changes it, but a file of HTML labelled `image/png` passes. The keyed path stores whatever header the browser sends. To decide the type from the bytes, see [Enforce file-size and content-type limits on presigned uploads](/guides/presigned-upload-validation).
-- **Keep `maxUploadSize` set.** Without it, the S3 adapter signs a presigned `PUT` instead of a `POST`. That `PUT` binds the `Content-Type` the browser claimed, so S3 refuses a different one, but it has no size limit, and complete has no limit to check either. (The `PUT` also needs `PUT` and the `Content-Type` header in the CORS rule.)
+- **Keep `maxUploadSize` set.** Without it, the S3 adapter signs a presigned `PUT` instead of a `POST`. That `PUT` binds the `Content-Type` the browser claimed, so S3 refuses a different one, but it has no size limit, and complete only holds the object to the size the client declared. (The `PUT` also needs `PUT` and the `Content-Type` header in the CORS rule.)
 - **Body-reading plugins turn keyless uploads into proxied ones.** `contentType()`, and `validation()` with a size or type rule, refuse to sign upload URLs because they can't inspect bytes they never see, and turn off `files.capabilities.signedUpload`. The gateway checks that and uses its proxy path instead, so `upload(file)` then streams through your server too.
-- **Complete is the last check.** After a direct upload, the complete step `head`s the object. One larger than `maxUploadSize` is deleted and reported as an error. With S3's policy in place that case shouldn't arise. Against a local MinIO server with a 1000-byte limit, a 2000-byte object written to the minted key from the server side came back from complete as `uploaded object is 2000 bytes, exceeds maxSize 1000`, and was gone afterwards.
+- **Complete is the last check.** After a direct upload, the complete step `head`s the object. One larger than the size the upload declared (capped by `maxUploadSize`) is deleted and reported as an error. With S3's policy in place that case shouldn't arise. Against a local MinIO server with a 1000-byte limit, a 2000-byte object written to the minted key from the server side came back from complete as `uploaded object is 2000 bytes, exceeds maxSize 1000`, and was gone afterwards.
 - **Empty files pass.** The gateway signs the policy with a minimum of 0 bytes, so a 0-byte file uploads and completes. Check `file.size` in the browser, or the size complete returns, if empty files aren't useful to you.
 - **Keyed uploads can overwrite.** A user can `PUT` to a key they already wrote. Check `key` in `authorize`, or generate unique keys on the client as above.
 - **Serverless hosts cap request bodies.** On Vercel, function request bodies are limited to 4.5 MB, so the streamed path fails above that. [Fix Vercel's 413 upload error](/guides/vercel-large-file-upload) covers the platform side. The keyless path never sends file bytes to the function.

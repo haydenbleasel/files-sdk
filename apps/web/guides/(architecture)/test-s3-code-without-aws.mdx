@@ -285,7 +285,7 @@ Memory reports what it can't do through `files.capabilities`, the same object pr
 | `files.url(key)` | `memory://key`, not fetchable | A presigned HTTPS URL |
 | `files.url(key, { expiresIn })` | Throws `Unsupported` | Signed, up to 7 days |
 | `files.signedUploadUrl(key)` | An inert `memory://` placeholder | A real presigned target |
-| ETag format | Quoted: `"05e918d2"` | Bare hex; multipart adds `-<parts>` |
+| ETag format | Quoted MD5: `"5d41402abc4b2a76b9719d911017c592"` | Bare hex; multipart adds `-<parts>` |
 | Stream bodies | Read fully into memory | Streamed through lib-storage multipart |
 | Keys over 1,024 bytes | Accepted | Rejected |
 | Conditional writes | Throw `Unsupported` | Supported on AWS S3 |
@@ -453,6 +453,6 @@ Reach for it when the test is about S3's own answers: a specific error code, the
 
 **`aws-sdk-client-mock` doesn't intercept, and the test fails with `The AWS Access Key Id you provided does not exist in our records`.** The request went to real AWS. `mockClient(S3Client)` patches the `S3Client` class you import, and the adapter constructed a different copy. This happens when two copies of `@aws-sdk/client-s3` are installed. With `files-sdk` linked from a local checkout, for example, the adapter resolved the SDK from the checkout's `node_modules`, not the app's. Run `npm ls @aws-sdk/client-s3` and make sure the adapter and the test import the same copy.
 
-**`files-sdk/api: no secret and no FILES_API_SECRET` in the test output.** Each `createFilesRouter` call without a secret warns once. Set `FILES_API_SECRET` in `test.env`, as in the config above.
+**``files-sdk/api: no `secret` and no FILES_API_SECRET`` in the test output.** Each `createFilesRouter` call without a secret warns once. Set `FILES_API_SECRET` in `test.env`, as in the config above.
 
 **Code that works on S3 throws `Unsupported` against memory.** It asked for something memory can't do: an expiring `url()`, a conditional write, or anything else `files.capabilities` reports as unsupported. Branch on the capability in the code under test, or move that case to the MinIO or mocked-client tests.

@@ -260,7 +260,7 @@ The cost is that every byte now passes through your server. Two consequences:
 
 ### Option 2: keep direct uploads and check after they land
 
-Keep the presigned path and check each object before your app relies on it. The gateway's complete step deletes an object over `maxUploadSize`, but on R2 setting `maxUploadSize` is what switches uploads to the proxy, so on this path complete has no limit to check. Do the check yourself when the client hands the key to your app, for example when it attaches the file to a record:
+Keep the presigned path and check each object before your app relies on it. The gateway's complete step deletes an object over `maxUploadSize`, but on R2 setting `maxUploadSize` is what switches uploads to the proxy, so on this path complete only holds the object to the size the client declared at presign, which the client chooses. Do the check yourself when the client hands the key to your app, for example when it attaches the file to a record:
 
 ```ts title="app/files/actions.ts" lineNumbers
 "use server";

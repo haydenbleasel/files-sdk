@@ -273,7 +273,7 @@ The table assumes the bucket holds `<owner-id>/report.pdf` and that each call na
 
 Three behaviors explain most of that table:
 
-- **A refused write is an `Unauthorized` error.** Storage turns Postgres's RLS violation into an `AccessDenied` error with the message `new row violates row-level security policy`. The adapter maps it to `FilesError` code `Unauthorized`, and the gateway answers `401` with that message.
+- **A refused write is an `Unauthorized` error.** Storage turns Postgres's RLS violation into an `AccessDenied` error with the message `new row violates row-level security policy`. The adapter maps it to `FilesError` code `Unauthorized`, and the gateway answers `401` with the fixed message `storage access denied`. It passes the original error to the router's `onError`, which logs it on the server by default.
 - **A hidden object looks missing.** Storage looks the object up under the caller's `SELECT` policy. When the policy hides the row, the lookup finds nothing and Storage answers `Object not found`. The adapter reports `NotFound` (`404` through the gateway), so another user can't tell whether a key exists.
 - **A refused delete succeeds quietly.** Storage deletes only the rows the caller's `DELETE` policy allows and reports the rest as nothing to delete. `files.delete()` resolves, as it does for a key that never existed. Check with `head()` as the owner, not with the delete's result.
 
@@ -358,7 +358,7 @@ Supabase also refuses a secret key sent from a browser: it matches on the `User-
 
 ## Troubleshooting
 
-**`new row violates row-level security policy`** (`Unauthorized`, or `401` from the gateway). Check three things in order:
+**`new row violates row-level security policy`** (`Unauthorized`; through the gateway, a `401` with `storage access denied` in the browser and this message in the server log). Check three things in order:
 
 1. The key's first folder equals the user's `sub`. Log the key the adapter wrote: it's `keyPrefix` plus the client's key.
 2. The `INSERT`, `SELECT`, and `UPDATE` policies all exist. The adapter always upserts.
@@ -372,6 +372,6 @@ Supabase also refuses a secret key sent from a browser: it matches on the `User-
 
 **``supabase: `maxSize` is not supported.``** Code called `files.signedUploadUrl()` with a size limit. Use bucket limits, or upload through the gateway, which proxies instead of signing.
 
-**`The object exceeded the maximum allowed size` or `mime type … is not supported` with a `500`.** The bucket's `file_size_limit` or `allowed_mime_types` refused the file. Lower `maxUploadSize` to match the bucket, and set an `accept` attribute on the file input so users can't easily pick a type the bucket rejects.
+**`The object exceeded the maximum allowed size` or `mime type … is not supported` in the server log, with a `500` and `storage provider error` in the browser.** The bucket's `file_size_limit` or `allowed_mime_types` refused the file. Lower `maxUploadSize` to match the bucket, and set an `accept` attribute on the file input so users can't easily pick a type the bucket rejects.
 
 **`supabase: responseContentDisposition "inline" is not supported`.** Supabase signed URLs can only force an attachment. Download the file through the gateway, or call `url()` without a disposition.

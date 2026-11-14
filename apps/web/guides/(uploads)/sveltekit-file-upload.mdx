@@ -129,7 +129,7 @@ What the endpoint does with each request:
 - **One route, three methods.** `createRouteHandler` returns the `GET`, `POST`, and `PUT` exports SvelteKit expects. `GET` serves downloads, `POST` the JSON operations (presign, complete, delete, head), and `PUT` the upload bytes.
 - **`getRequestEvent()` bridges to `locals`.** The handlers pass `event.request` to the gateway, and `authorize` receives that same `Request`, not the SvelteKit event. `getRequestEvent()` from `$app/server` returns the event for the current request, `locals` included. A logged run confirmed that `getRequestEvent().request` is the exact object `authorize` receives. It relies on `AsyncLocalStorage`, because `authorize` runs after the gateway has awaited the request body. adapter-node has it. On other adapters, check that their runtime provides `node:async_hooks`.
 - **`authorize` gates every operation.** `Unauthorized` becomes a `401`, and `ReadOnly` a `403`. An unauthenticated `POST` answered `401` with `Sign in to manage files`. A `list` call answered `403` with `list is not allowed`, because the page never needs the gateway to list.
-- **`maxUploadSize` goes into the policy.** For `upload(file)`, the gateway asks the adapter for a `POST` policy instead of a `PUT` URL. A policy generated through the gateway for a PDF carried `["content-length-range", 0, maxUploadSize]`, an exact match on `Content-Type: application/pdf`, and the minted key `users/42/<uuid>.pdf`. GCS checks each condition when the form arrives ([policy document conditions](https://docs.cloud.google.com/storage/docs/authentication/signatures#policy-document)).
+- **`maxUploadSize` goes into the policy.** For `upload(file)`, the gateway asks the adapter for a `POST` policy instead of a `PUT` URL. A policy generated through the gateway for a PDF carried `["content-length-range", 0, <size>]` (the size the browser declared, capped by `maxUploadSize`), an exact match on `Content-Type: application/pdf`, and the minted key `users/42/<uuid>.pdf`. GCS checks each condition when the form arrives ([policy document conditions](https://docs.cloud.google.com/storage/docs/authentication/signatures#policy-document)).
 - **`FILES_API_SECRET` signs the presign → complete token.** Set it to the same long random value on every instance. The router reads it from the environment.
 
 [Authorization](/docs/ui/server/authorization) covers the rest of what `authorize` can return.
@@ -290,12 +290,12 @@ adapter-node reads request bodies with a limit of `BODY_SIZE_LIMIT`, which [defa
 {
   "error": {
     "code": "Provider",
-    "message": "Content-length of 1048576 exceeds limit of 524288 bytes."
+    "message": "storage provider error"
   }
 }
 ```
 
-A chunked body without `Content-Length` failed the same way, with `request body size exceeded BODY_SIZE_LIMIT of 524288`. No object was left behind in either case. With `BODY_SIZE_LIMIT=10M` the same 1 MiB upload stored normally.
+The gateway withholds storage error messages from the client, so the cause is in the server log: `Content-length of 1048576 exceeds limit of 524288 bytes.` A chunked body without `Content-Length` failed the same way, with `request body size exceeded BODY_SIZE_LIMIT of 524288` in the log. No object was left behind in either case. With `BODY_SIZE_LIMIT=10M` the same 1 MiB upload stored normally.
 
 Set it to the largest keyed upload you accept:
 
@@ -366,7 +366,7 @@ Deploy with `--service-account "$SA"`, and set `FILES_API_SECRET` and `BODY_SIZE
 
 **`upload failed (403)` on a keyed upload, with no JSON body.** SvelteKit's CSRF check refused a cross-origin `PUT`. Add the origin to `csrf.trustedOrigins`, as well as to `allowedOrigins`.
 
-**`Content-length of … exceeds limit of 524288 bytes.`** A keyed upload hit adapter-node's default `BODY_SIZE_LIMIT`. Raise it, or switch to `upload(file)`.
+**`storage provider error` (`500`) on a keyed upload, with `Content-length of … exceeds limit of 524288 bytes.` in the server log.** A keyed upload hit adapter-node's default `BODY_SIZE_LIMIT`. Raise it, or switch to `upload(file)`.
 
 **`network error during upload` and a CORS error in the console.** The preflight to `storage.googleapis.com` didn't match the bucket's CORS rule. Check that the page's exact origin is listed and `POST` is in `method`.
 

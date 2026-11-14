@@ -162,7 +162,7 @@ export default defineEventHandler(async (event) => {
 What the route does with each request:
 
 - **The router is built per request.** `authorize` receives the Web `Request`, not the h3 event. On Nuxt 4 (Nitro 2, h3 1) the binding builds that `Request` from `event.node.req`, so nothing on the event, like `event.context` or a session helper's cache, reaches it. Resolving the session first and closing over `user` is the simplest bridge, and building the router costs a few object allocations. If your auth library reads request headers instead, such as Better Auth's `auth.api.getSession({ headers: req.headers })`, create the router once at module scope and call it from `authorize({ req })`.
-- **The secret must be stable.** Without `secret` (or `FILES_API_SECRET`), each router falls back to a random secret and logs `no secret and no FILES_API_SECRET`. With a router per request, that happens on every request, and every upload fails at complete with `upload token signature`.
+- **The secret must be stable.** Without `secret` (or `FILES_API_SECRET`), each router falls back to a random secret and logs ``no `secret` and no FILES_API_SECRET``. With a router per request, that happens on every request, and every upload fails at complete with `upload token signature`.
 - **`authorize` runs before every operation.** A thrown `FilesError` becomes the response: `Unauthorized` is a `401`, and `ReadOnly` is a `403`. Any other error becomes a generic `500`, so its message never reaches the browser. [Authorization](/docs/ui/server/authorization) covers the rest of what `authorize` can return.
 - **The prefix isolates users.** Every key the browser sends or receives is relative to `users/<id>/`, and the gateway refuses keys that try to climb out of it. [Isolate each tenant's files](/guides/multi-tenant-file-storage) shows what it returns when one user reaches for another's keys.
 - **`onUploadComplete` runs once the file has landed.** For `upload(file)`, that's in the complete step, after the gateway `head`s the object in B2. [Check sizes after upload](#check-sizes-after-upload) covers what happens when it throws.
@@ -370,7 +370,7 @@ Nitro 3 is in beta, and Nuxt 4.6 still runs Nitro 2. Standalone Nitro 3 apps imp
 
 **`origin not allowed` (403) on upload, delete, or complete, while the list loads.** The request URL the gateway built doesn't match the page's origin. Behind a proxy, forward `Host` and `X-Forwarded-Proto` ([above](#run-behind-a-reverse-proxy)). Reads don't check the origin, which is why the list still works.
 
-**`upload token signature` at complete.** Presign and complete were signed with different secrets. `NUXT_FILES_API_SECRET` is missing in that environment, or it differs between instances. Look for `no secret and no FILES_API_SECRET` in the server log.
+**`upload token signature` at complete.** Presign and complete were signed with different secrets. `NUXT_FILES_API_SECRET` is missing in that environment, or it differs between instances. Look for ``no `secret` and no FILES_API_SECRET`` in the server log.
 
 **`network error during upload` and a CORS error in the console.** The browser's preflight to B2 didn't match a rule. Check that the page's exact origin is in `AllowedOrigins`, `PUT` is in `AllowedMethods`, and `content-type` is in `AllowedHeaders`.
 

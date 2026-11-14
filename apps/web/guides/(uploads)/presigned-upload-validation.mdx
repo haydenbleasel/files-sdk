@@ -29,15 +29,15 @@ Each row comes from that adapter's `signedUploadUrl` source. "Throws" means File
 | Provider and adapter | Contract | Max size | Min size | Content-Type |
 | --- | --- | --- | --- | --- |
 | S3, `s3()` with `maxSize` | `POST` policy | `content-length-range`, checked by S3 | `minSize`, default 1 | `eq $Content-Type`, checked by S3 |
-| S3, `s3()` without `maxSize` | Presigned `PUT` | None | None | Signed; a different type fails the signature |
-| S3-compatible, `s3Fetch()` | Presigned `PUT` | Throws | None | Signed; a different type fails the signature |
-| R2, either `client` | Presigned `PUT` | Throws | None | Signed; a different type fails the signature |
+| S3, `s3()` without `maxSize` | Presigned `PUT` | None | A positive `minSize` throws | Signed; a different type fails the signature |
+| S3-compatible, `s3Fetch()` | Presigned `PUT` | Throws | A positive `minSize` throws | Signed; a different type fails the signature |
+| R2, either `client` | Presigned `PUT` | Throws | A positive `minSize` throws | Signed; a different type fails the signature |
 | Vercel Blob, public or private | Presigned `PUT` | `maximumSizeInBytes`, checked by Vercel | A positive `minSize` throws | `allowedContentTypes`, checked by Vercel |
 | GCS, `gcs()` with `maxSize` | V4 `POST` policy | `content-length-range`, checked by GCS | `minSize`, default 1 | `eq $Content-Type`, checked by GCS |
 | GCS, `gcs()` without `maxSize` | V4 signed `PUT` | None | None | Signed |
 | Azure, `azure()` | SAS `PUT` | Throws | A positive `minSize` throws | Throws |
 
-"Signed" applies when you pass `contentType`. The S3 rows also cover every `s3()` wrapper (Hetzner, Wasabi, and the rest), and MinIO and RustFS on either client. Without a `contentType`, their `PUT` URLs sign only `host`, and the client can send any type.
+"Signed" applies when you pass `contentType`. The S3 rows also cover every `s3()` wrapper (Hetzner, Wasabi, and the rest) except Backblaze B2, which has no `POST` policies and throws on `maxSize`, and MinIO and RustFS on either client. Without a `contentType`, their `PUT` URLs sign only `host`, and the client can send any type.
 
 Sources for each row:
 
@@ -185,7 +185,7 @@ If a client can only send a `PUT` (some upload widgets can't build a form), call
 
 ## What the gateway does with `maxUploadSize`
 
-The gateway's keyless `upload(file)` starts with the size the browser declares. A file that claims more than `maxUploadSize` gets `422` with `reason: "size"` and the message `upload exceeds maxUploadSize`, before anything is signed. Otherwise the gateway asks the adapter for a presigned target with `maxSize: maxUploadSize`, `minSize: 0`, and the file's claimed type. If `files.capabilities.signedUpload` says the adapter can't sign that (no direct uploads, no `maxSize` while `maxUploadSize` is set, or no `contentType` for a typed file), or `signedUploadUrl` refuses with an `Invalid` or `Unsupported` error, the gateway hands the browser a proxy target instead: a `PUT` to `/api/files?op=proxy` that streams through your server. There's no error and no log line. These are the targets the presign step returned for each configuration:
+The gateway's keyless `upload(file)` starts with the size the browser declares. A file that claims more than `maxUploadSize` gets `422` with `reason: "size"` and the message `upload exceeds maxUploadSize`, before anything is signed. Otherwise the gateway asks the adapter for a presigned target with `maxSize` set to the declared size capped by `maxUploadSize`, `minSize: 0`, and the file's claimed type. If `files.capabilities.signedUpload` says the adapter can't sign that (no direct uploads, no `maxSize` while `maxUploadSize` is set, or no `contentType` for a typed file), or `signedUploadUrl` refuses with an `Invalid` or `Unsupported` error, the gateway hands the browser a proxy target instead: a `PUT` to `/api/files?op=proxy` that streams through your server. There's no error and no log line. These are the targets the presign step returned for each configuration:
 
 | Configuration | Target |
 | --- | --- |
