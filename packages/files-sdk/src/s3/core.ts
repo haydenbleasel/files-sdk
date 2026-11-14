@@ -489,12 +489,42 @@ const resolveMultipart = (
 };
 
 /**
+ * A view of `client` whose `send` puts `signal` on the requests that carry
+ * the body, for lib-storage's `Upload`. `Upload` sends its requests bare, so
+ * its `abort()` only stops it starting new ones: a PutObject already in
+ * flight still lands the object after the caller was told the upload was
+ * aborted, and in-flight parts upload to the end. Only PutObject and
+ * UploadPart take the signal. A cancelled CreateMultipartUpload would hide
+ * the UploadId the cleanup needs, and the AbortMultipartUpload cleanup itself
+ * goes out after the abort.
+ */
+const abortableUploadClient = (
+  sdk: Pick<S3Sdk["clientS3"], "PutObjectCommand" | "UploadPartCommand">,
+  client: ClientS3.S3Client,
+  signal: AbortSignal
+): ClientS3.S3Client => {
+  const send = (command: Parameters<ClientS3.S3Client["send"]>[0]) => {
+    if (command instanceof sdk.PutObjectCommand) {
+      return client.send(command, { abortSignal: signal });
+    }
+    if (command instanceof sdk.UploadPartCommand) {
+      return client.send(command, { abortSignal: signal });
+    }
+    return client.send(command);
+  };
+  // SAFETY: an object whose prototype is the client, so every member `Upload`
+  // reads (`config`, and `send` above) is the client's own or delegates to it.
+  return Object.create(client, { send: { value: send } }) as ClientS3.S3Client;
+};
+
+/**
  * Upload via `@aws-sdk/lib-storage`'s `Upload`, which transparently switches to
  * multipart for large bodies and falls back to a single PutObject for small
  * ones. Used for explicit `multipart`, for progress reporting, and for
  * unknown-length streams. Returns the (quote-stripped) ETag.
  */
 const runLibStorageUpload = async (
+  sdk: Pick<S3Sdk["clientS3"], "PutObjectCommand" | "UploadPartCommand">,
   client: ClientS3.S3Client,
   params: PutObjectCommandInput,
   multipart: MultipartInput,
@@ -507,7 +537,7 @@ const runLibStorageUpload = async (
     params.ContentLength
   );
   const upload = new Upload({
-    client,
+    client: signal ? abortableUploadClient(sdk, client, signal) : client,
     params,
     queueSize,
     ...(partSize !== undefined && { partSize }),
@@ -1740,6 +1770,7 @@ export const createS3Adapter = (
         let etag: string | undefined;
         if (useUpload) {
           etag = await runLibStorageUpload(
+            sdk.clientS3,
             client,
             params,
             multipart,

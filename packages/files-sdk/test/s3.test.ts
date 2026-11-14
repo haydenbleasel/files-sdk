@@ -39,6 +39,7 @@ const s3Mock = mockClient(S3Client);
 // static fields let tests assert how the adapter constructed the Upload.
 type ProgressListener = (p: { loaded?: number; total?: number }) => void;
 interface UploadOpts {
+  client?: S3Client;
   params?: { Body?: unknown };
   partSize?: number;
   queueSize?: number;
@@ -104,6 +105,11 @@ const firstCall = <T extends { args: unknown[] }>(calls: T[]): T => {
   }
   return first;
 };
+
+const sendOptionsOf = (call: {
+  args: unknown[];
+}): { abortSignal?: AbortSignal } | undefined =>
+  (call.args as [unknown, { abortSignal?: AbortSignal }?])[1];
 
 const requireNativeConditional = (
   adapter: S3Adapter
@@ -1975,6 +1981,54 @@ describe("s3 adapter", () => {
     });
     expect(events.length).toBeGreaterThan(0);
     expect(FakeUpload.aborted).toBe(1);
+  });
+
+  test("a lib-storage upload's data requests carry the abort signal", async () => {
+    // lib-storage sends its requests bare, so its abort() only stops it
+    // starting new ones: a PutObject already in flight would still land the
+    // object after the caller was told the upload was aborted.
+    s3Mock.on(PutObjectCommand).resolves({});
+    s3Mock.on(UploadPartCommand).resolves({});
+    s3Mock.on(CreateMultipartUploadCommand).resolves({ UploadId: "u1" });
+    s3Mock.on(AbortMultipartUploadCommand).resolves({});
+    const { signal } = new AbortController();
+    const adapter = s3({ bucket: "b", region: "us-east-1" });
+    await adapter.upload("big.bin", "hello", { multipart: true, signal });
+    const client = FakeUpload.lastOptions?.client;
+    if (!client) {
+      throw new Error("expected the Upload to be given a client");
+    }
+    const target = { Bucket: "b", Key: "big.bin" };
+    await client.send(new PutObjectCommand({ ...target, Body: "hello" }));
+    await client.send(
+      new UploadPartCommand({ ...target, PartNumber: 1, UploadId: "u1" })
+    );
+    expect(
+      sendOptionsOf(firstCall(s3Mock.commandCalls(PutObjectCommand)))
+    ).toEqual({ abortSignal: signal });
+    expect(
+      sendOptionsOf(firstCall(s3Mock.commandCalls(UploadPartCommand)))
+    ).toEqual({ abortSignal: signal });
+    // Opening the multipart upload and aborting it stay off the signal: a
+    // cancelled CreateMultipartUpload would hide the UploadId the cleanup
+    // needs, and the cleanup itself runs after the abort.
+    await client.send(new CreateMultipartUploadCommand(target));
+    await client.send(
+      new AbortMultipartUploadCommand({ ...target, UploadId: "u1" })
+    );
+    expect(
+      sendOptionsOf(
+        firstCall(s3Mock.commandCalls(CreateMultipartUploadCommand))
+      )
+    ).toBeUndefined();
+    expect(
+      sendOptionsOf(firstCall(s3Mock.commandCalls(AbortMultipartUploadCommand)))
+    ).toBeUndefined();
+    // The rest of the client is the adapter's own.
+    expect(client.config).toBe(adapter.raw.config);
+    // Without a signal there is nothing to carry, so it's the client itself.
+    await adapter.upload("big.bin", "hello", { multipart: true });
+    expect(FakeUpload.lastOptions?.client).toBe(adapter.raw);
   });
 
   test("a lib-storage upload detaches its abort listener once it settles", async () => {
