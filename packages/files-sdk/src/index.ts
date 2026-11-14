@@ -3866,11 +3866,14 @@ export class Files<A extends Adapter = Adapter> {
    *   overlap it. Its keys and those of the slices never sent are reported
    *   with the abort error, and the keys earlier slices deleted stay in
    *   `results`.
+   *   This holds for the first slice too, as it does for every item a fan-out
+   *   delete's signal cuts off, so the abort contract doesn't change with the
+   *   adapter or with whether a plugin forces the fan-out.
    * - A slice that fails outright (the adapter threw rather than reporting
    *   per-key errors) has settled, so only its own keys are reported and the
-   *   next slice goes out, as the adapters' own batches do.
-   * - Either way, a first slice that throws rejects the call instead, as the
-   *   unsliced call does, since no slice has reported a deletion yet.
+   *   next slice goes out, as the adapters' own batches do. On the first
+   *   slice the call rejects instead, as the unsliced call does, since nothing
+   *   has been deleted yet.
    *
    * Without either, nothing can cut the delete short, so it's one native call.
    */
@@ -3910,10 +3913,10 @@ export class Files<A extends Adapter = Adapter> {
         errors.push(...(sliceResult.errors ?? []));
       } catch (error) {
         const wrapped = FilesError.wrap(error);
-        if (start === 0) {
-          throw wrapped;
-        }
         if (!wrapped.aborted) {
+          if (start === 0) {
+            throw wrapped;
+          }
           for (const path of slice) {
             errors.push({ error: wrapped, key: path });
           }

@@ -1263,7 +1263,7 @@ describe("Files class", () => {
     }
   });
 
-  test("a native bulk delete whose first slice times out rejects, as the unsliced call does", async () => {
+  test("a native bulk delete whose first slice times out reports every key instead of rejecting", async () => {
     const keys = Array.from({ length: 1500 }, (_, i) => `k${i}`);
     let calls = 0;
     const files = new Files({
@@ -1278,11 +1278,16 @@ describe("Files class", () => {
       timeout: 20,
     });
 
-    await expect(files.delete(keys)).rejects.toMatchObject({ timedOut: true });
+    const result = await files.delete(keys);
     expect(calls).toBe(1);
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual(keys);
+    for (const entry of result.errors ?? []) {
+      expect(entry.error.timedOut).toBe(true);
+    }
   });
 
-  test("a native bulk delete under an already-aborted constructor signal rejects without reaching the adapter", async () => {
+  test("a native bulk delete under an already-aborted constructor signal reaches no adapter", async () => {
     const controller = new AbortController();
     controller.abort(new Error("stop"));
     let calls = 0;
@@ -1297,10 +1302,16 @@ describe("Files class", () => {
       signal: controller.signal,
     });
 
-    await expect(files.delete(["a.txt", "b.txt"])).rejects.toMatchObject({
-      aborted: true,
-    });
+    const result = await files.delete(["a.txt", "b.txt"]);
     expect(calls).toBe(0);
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual([
+      "a.txt",
+      "b.txt",
+    ]);
+    for (const entry of result.errors ?? []) {
+      expect(entry.error.aborted).toBe(true);
+    }
   });
 
   test("a native bulk delete hands each slice the signal its timeout aborts", async () => {

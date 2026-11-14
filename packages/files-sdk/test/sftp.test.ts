@@ -775,9 +775,17 @@ describe("sftp edge cases (injected client)", () => {
     await files.upload("a.txt", "1");
     await files.upload("slow.txt", "2");
     await files.upload("c.txt", "3");
-    await expect(
-      files.delete(["a.txt", "slow.txt", "c.txt"])
-    ).rejects.toMatchObject({ timedOut: true });
+    const result = await files.delete(["a.txt", "slow.txt", "c.txt"]);
+    // The timeout cut the only slice off, so every key is reported with it.
+    expect(result.results).toEqual([]);
+    expect(result.errors?.map((entry) => entry.key)).toEqual([
+      "a.txt",
+      "slow.txt",
+      "c.txt",
+    ]);
+    for (const entry of result.errors ?? []) {
+      expect(entry.error.timedOut).toBe(true);
+    }
     // Once the in-flight delete settles, the adapter stops instead of moving
     // on to keys the caller was told weren't deleted.
     await sleep(100);
