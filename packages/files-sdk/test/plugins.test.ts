@@ -114,6 +114,44 @@ describe("plugin onion — wrap composition", () => {
     expect(kinds).toEqual(["upload", "head", "url"]);
   });
 
+  test("next() rejects, never throws, when the core refuses the operation", async () => {
+    // `next` is typed to return a promise, so a plugin may chain on it: the
+    // core's own refusals (an invalid key here) must arrive as a rejection or
+    // a `.finally()` cleanup is skipped.
+    const settled: string[] = [];
+    const chaining = (name: string): FilesPlugin => ({
+      name,
+      wrap: (op, next) => next(op).finally(() => settled.push(name)),
+    });
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [chaining("outer"), chaining("inner")],
+    });
+    await expect(files.head("")).rejects.toMatchObject({ code: "Invalid" });
+    expect(settled).toEqual(["inner", "outer"]);
+  });
+
+  test("next() rejects when an inner plugin throws synchronously", async () => {
+    const settled: string[] = [];
+    const files = new Files({
+      adapter: fakeAdapter(),
+      plugins: [
+        {
+          name: "outer",
+          wrap: (op, next) => next(op).finally(() => settled.push("outer")),
+        },
+        {
+          name: "inner",
+          wrap: () => {
+            throw new FilesError("Invalid", "vetoed");
+          },
+        },
+      ],
+    });
+    await expect(files.head("k.txt")).rejects.toThrow("vetoed");
+    expect(settled).toEqual(["outer"]);
+  });
+
   test("a no-plugin instance round-trips unchanged", async () => {
     const files = new Files({ adapter: fakeAdapter() });
     await files.upload("k.txt", "v");

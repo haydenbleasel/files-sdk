@@ -835,6 +835,31 @@ describe("conditional plugin boundary", () => {
     expect(collisionHarness.calls.copy).toHaveLength(0);
   });
 
+  test("a refused predicate reaches the plugin as a rejection from next()", async () => {
+    // `next` returns a promise, so a plugin that chains cleanup on it must
+    // still run that cleanup when the dispatcher refuses its candidate.
+    const harness = conditionalHarness();
+    const settled = mock(() => {});
+    const downgrade: FilesPlugin = {
+      name: "downgrade",
+      wrap: handlers({
+        upload: (op, next) => {
+          Reflect.set(op, "mode", "overwrite");
+          return next(op).finally(settled);
+        },
+      }),
+    };
+    await expect(
+      new Files({ adapter: harness.adapter, plugins: [downgrade] }).upload(
+        "a",
+        "v",
+        { condition: { type: "create" } }
+      )
+    ).rejects.toThrow("cannot remove or change");
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(harness.calls.create).toHaveLength(0);
+  });
+
   test("synthetic success and a second next call are rejected", async () => {
     const syntheticHarness = conditionalHarness();
     const synthetic: FilesPlugin = {

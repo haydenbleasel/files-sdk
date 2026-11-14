@@ -2262,20 +2262,26 @@ export class Files<A extends Adapter = Adapter> {
       // hands to `next()` ends up here before it can reach the provider, so a
       // predicate introduced anywhere in the onion is rejected exactly once
       // without a per-hop check on the hottest path (every bulk item).
-      const rejectIntroducedConditional: InternalNext = (nextOp) => {
+      //
+      // Every link is `async`: `next` is typed to return a promise, so a
+      // refusal the core raises synchronously (an invalid key, an unsupported
+      // option) or a `wrap` that throws before returning must reach the
+      // plugin that called `next` as a rejection, where its `.catch()` /
+      // `.finally()` can see it.
+      const rejectIntroducedConditional: InternalNext = async (nextOp) => {
         if (isConditionalOperation(nextOp)) {
           throw new FilesError(
             "Invalid",
             "a plugin cannot introduce a conditional predicate into an ordinary operation"
           );
         }
-        return base(nextOp);
+        return await base(nextOp);
       };
       // Fold from the innermost wrap outward so `plugins[0]` ends up outermost.
       let chain: InternalNext = rejectIntroducedConditional;
       for (const wrap of this.#wraps.toReversed()) {
         const next = chain;
-        chain = (nextOp) => wrap(nextOp, next);
+        chain = async (nextOp) => await wrap(nextOp, next);
       }
       // SAFETY: see above.
       return chain(op) as Promise<OperationResult<O>>;
@@ -2410,9 +2416,11 @@ export class Files<A extends Adapter = Adapter> {
       // eslint-disable-next-line no-loop-func -- each iteration captures its own block-scoped wrap/next pair
       chain = async (nextOp) => {
         try {
-          return await wrap(nextOp, (candidate) => {
+          // `async`, so a refused candidate rejects `next()` rather than
+          // throwing out of it (see the ordinary chain in `#dispatch`).
+          return await wrap(nextOp, async (candidate) => {
             assertSamePredicate(candidate);
-            return markCommitted(next(candidate));
+            return await markCommitted(next(candidate));
           });
         } catch (error) {
           // An outer plugin may swallow an inner plugin's post-commit throw
