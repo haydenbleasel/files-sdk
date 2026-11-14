@@ -2249,4 +2249,92 @@ describe("onedrive resumable uploads", () => {
       message: expect.stringMatching(/item path/u),
     });
   });
+
+  const adoptedDriver = () => {
+    const driver = onedrive(baseOpts).resumableUpload("doc.bin", {
+      multipart: { partSize: CHUNK },
+    });
+    driver.adopt({
+      itemPath: "doc.bin",
+      provider: "onedrive",
+      uploadUrl: "https://sn3302.up.1drv.com/up/session/doc.bin",
+    });
+    return driver;
+  };
+
+  test("resuming an expired session is NotFound, not a retryable Provider", async () => {
+    installFetch(() => new Response(null, { status: 404 }));
+    await expect(adoptedDriver().probe()).rejects.toMatchObject({
+      code: "NotFound",
+      message: "onedrive: resume status check failed (404)",
+      permanent: true,
+    });
+  });
+
+  test("a chunk PUT the session refuses is Unauthorized, not a retryable Provider", async () => {
+    installFetch(() => new Response("denied", { status: 403 }));
+    await expect(
+      adoptedDriver().uploadAt({
+        data: new Uint8Array(CHUNK),
+        isLast: false,
+        offset: 0,
+        total: CHUNK + 5,
+      })
+    ).rejects.toMatchObject({
+      code: "Unauthorized",
+      message: "onedrive: upload session chunk failed (403): denied",
+      permanent: true,
+    });
+  });
+
+  test("a plain session upload classifies a refused chunk PUT too", async () => {
+    installFetch(() => new Response("gone", { status: 404 }));
+    const files = new Files({ adapter: onedrive(baseOpts) });
+    await expect(
+      files.upload("doc.bin", "hello", { multipart: true })
+    ).rejects.toMatchObject({
+      code: "NotFound",
+      message: "onedrive: upload session chunk failed (404): gone",
+    });
+  });
+
+  test("a retried fragment Graph already holds (416) moves on from the session's next expected range", async () => {
+    // The first PUT landed but its reply was lost; Graph refuses the re-send
+    // with 416 and the session status says where it really is.
+    const methods: string[] = [];
+    installFetch((_url, init) => {
+      methods.push(init.method ?? "GET");
+      return init.method === "GET"
+        ? Response.json({ nextExpectedRanges: [`${CHUNK}-`] })
+        : new Response("fragment overlap", { status: 416 });
+    });
+    await expect(
+      adoptedDriver().uploadAt({
+        data: new Uint8Array(CHUNK),
+        isLast: false,
+        offset: 0,
+        total: CHUNK + 5,
+      })
+    ).resolves.toEqual({ nextOffset: CHUNK });
+    expect(methods).toEqual(["PUT", "GET"]);
+  });
+
+  test("a 416 with the session no further along still fails the chunk", async () => {
+    installFetch((_url, init) =>
+      init.method === "GET"
+        ? Response.json({ nextExpectedRanges: ["0-"] })
+        : new Response("bad range", { status: 416 })
+    );
+    await expect(
+      adoptedDriver().uploadAt({
+        data: new Uint8Array(CHUNK),
+        isLast: false,
+        offset: 0,
+        total: CHUNK + 5,
+      })
+    ).rejects.toMatchObject({
+      code: "Provider",
+      message: "onedrive: upload session chunk failed (416): bad range",
+    });
+  });
 });

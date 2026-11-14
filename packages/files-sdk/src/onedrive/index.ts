@@ -44,7 +44,10 @@ import { isNumber, isObject, isString } from "../internal/is.js";
 import { isJsonObject } from "../internal/json.js";
 import type { JsonValue } from "../internal/json.js";
 import { toWebStream } from "../internal/node-stream";
-import { assertSessionDiscarded } from "../internal/resumable-offset-http.js";
+import {
+  assertSessionDiscarded,
+  statusError,
+} from "../internal/resumable-offset-http.js";
 import { trustedHttpsSessionUrl } from "../internal/resumable-session-url.js";
 import { createStoredFile } from "../internal/stored-file.js";
 
@@ -279,6 +282,15 @@ const readGraphErrorBody = async (
   } catch {
     return null;
   }
+};
+
+// A failed request against an upload session's pre-authenticated URL (plain
+// fetch, so no GraphError): classified by status like every other offset
+// driver, so an expired session (404/410) or a refusal (401/403, 409) is a
+// definitive answer rather than a `Provider` error retried with backoff.
+const sessionError = (status: number, message: string): FilesError => {
+  const { code, permanent } = statusError(status, message);
+  return new FilesError(code, message, undefined, { permanent });
 };
 
 // Every caller passes a key `itemApiPath` already accepted, so it never ends
@@ -1016,8 +1028,8 @@ export const onedrive = (
       if (!res.ok) {
         // oxlint-disable-next-line eslint/no-await-in-loop, github/no-then -- reading the error body of the current chunk PUT; catch yields "" so the error is intentionally swallowed
         const text = await res.text().catch(() => "");
-        throw new FilesError(
-          "Provider",
+        throw sessionError(
+          res.status,
           `onedrive: upload session chunk failed (${res.status}): ${text || res.statusText}`
         );
       }
@@ -1072,6 +1084,23 @@ export const onedrive = (
       }),
       size: Number(item.size ?? 0),
     });
+    // Where the session says the next byte goes (the start of its first
+    // `nextExpectedRanges` entry).
+    const sessionOffset = async (): Promise<number> => {
+      const res = await fetch(requireUrl(), { method: "GET" });
+      if (!res.ok) {
+        throw sessionError(
+          res.status,
+          `onedrive: resume status check failed (${res.status})`
+        );
+      }
+      // SAFETY: `Response#json()` is untyped; a GET on the upload session
+      // URL returns an `uploadSession` resource whose `nextExpectedRanges`
+      // is a list of "start-end" strings (read optional-guarded).
+      const body = (await res.json()) as UploadSessionStatus;
+      const first = body.nextExpectedRanges?.[0];
+      return first ? Number(first.split("-")[0]) : 0;
+    };
     return {
       adopt(session: ResumableUploadSession) {
         if (session.provider !== "onedrive") {
@@ -1149,19 +1178,7 @@ export const onedrive = (
       partSize,
       async probe(): Promise<{ nextOffset: number }> {
         try {
-          const res = await fetch(requireUrl(), { method: "GET" });
-          if (!res.ok) {
-            throw new FilesError(
-              "Provider",
-              `onedrive: resume status check failed (${res.status})`
-            );
-          }
-          // SAFETY: `Response#json()` is untyped; a GET on the upload session
-          // URL returns an `uploadSession` resource whose `nextExpectedRanges`
-          // is a list of "start-end" strings (read optional-guarded).
-          const body = (await res.json()) as UploadSessionStatus;
-          const first = body.nextExpectedRanges?.[0];
-          return { nextOffset: first ? Number(first.split("-")[0]) : 0 };
+          return { nextOffset: await sessionOffset() };
         } catch (error) {
           throw mapGraphError(error);
         }
@@ -1202,11 +1219,21 @@ export const onedrive = (
             method: "PUT",
             ...(signal && { signal }),
           });
+          if (res.status === 416) {
+            // Graph refuses a fragment it already holds — a chunk that landed
+            // but whose reply was lost, re-sent by the retry — with 416. Ask
+            // the session where it really is and move on from there (the
+            // orchestrator re-slices); otherwise the chunk fails below.
+            const next = await sessionOffset();
+            if (next > offset) {
+              return { nextOffset: next };
+            }
+          }
           if (!res.ok) {
             // oxlint-disable-next-line github/no-then -- best-effort read: swallow the body-read error and use "" when building the failure message
             const text = await res.text().catch(() => "");
-            throw new FilesError(
-              "Provider",
+            throw sessionError(
+              res.status,
               `onedrive: upload session chunk failed (${res.status}): ${text || res.statusText}`
             );
           }
