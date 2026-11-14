@@ -276,6 +276,39 @@ describe("cli/io readBody", () => {
   test("with neither stdin nor file: throws FilesError(Provider)", async () => {
     await expect(readBody({})).rejects.toBeInstanceOf(FilesError);
   });
+
+  test("a directory as --file is Invalid up front, not a mid-upload read error", async () => {
+    // Left to the stream, the EISDIR surfaced inside the adapter's upload and
+    // took whatever code its error mapper gave it (Conflict on fs, Provider
+    // elsewhere) instead of the usage error it is.
+    const file = await makeTmpFile("x");
+    const error = await readBody({ file: path.dirname(file) }).catch(
+      (error_: unknown) => error_
+    );
+    expect(error).toBeInstanceOf(FilesError);
+    expect((error as FilesError).code).toBe("Invalid");
+    expect((error as FilesError).message).toMatch(/--file is a directory/u);
+  });
+
+  test("an unreadable --file fails up front as a local path error", async () => {
+    if (process.platform === "win32" || process.getuid?.() === 0) {
+      // chmod is a no-op for root on POSIX and isn't meaningful on Windows.
+      return;
+    }
+    const file = await makeTmpFile("secret");
+    await fsp.chmod(file, 0o000);
+    try {
+      // A Node system error naming the path is what `fail()` reports as
+      // Invalid (exit 2); from inside the upload it read as Unauthorized or
+      // a retryable Provider failure.
+      await expect(readBody({ file })).rejects.toMatchObject({
+        code: "EACCES",
+        path: file,
+      });
+    } finally {
+      await fsp.chmod(file, 0o644);
+    }
+  });
 });
 
 const makeStoredFile = (text: string) => {

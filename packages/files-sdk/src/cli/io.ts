@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readdir, stat } from "node:fs/promises";
+import { access, constants, mkdir, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 
@@ -171,6 +171,17 @@ export const readBody = async (source: BodySource): Promise<ResolvedBody> => {
     throw new FilesError("Invalid", "expected --file <path> or --stdin");
   }
   const stats = await stat(source.file);
+  // Check the source before the upload starts reading it. A read error from
+  // inside the adapter's upload takes whatever code its error mapper gives it
+  // (Conflict or Unauthorized on fs, a retryable Provider elsewhere), when the
+  // command is what's wrong.
+  if (stats.isDirectory()) {
+    throw new FilesError(
+      "Invalid",
+      `--file is a directory: ${source.file} (use --dir to upload a directory)`
+    );
+  }
+  await access(source.file, constants.R_OK);
   return {
     body: toWebStream(createReadStream(source.file)),
     hint: source.file,
