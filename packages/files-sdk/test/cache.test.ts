@@ -1208,3 +1208,46 @@ describe("cache plugin — provider events", () => {
     expect(failures).toEqual(["ns//a.txt", "ns//a.txt"]);
   });
 });
+
+describe("cache plugin — reads racing an out-of-band invalidation", () => {
+  /** A head of "k" held mid-flight with the pre-change answer already read. */
+  const heldHead = async () => {
+    const inner = fakeAdapter();
+    const gate = gated(inner);
+    const files = createFiles({ adapter: gate.adapter, plugins: [cache()] });
+    await files.upload("k", "one");
+    const holding = gate.hold("head");
+    const slowHead = files.head("k");
+    await holding;
+    // A change the plugin can't see: written straight to the provider.
+    await inner.upload("k", "three");
+    return { files, release: gate.release, slowHead };
+  };
+
+  test("invalidateCache(key) keeps an overlapping miss from re-caching stale data", async () => {
+    const { files, release, slowHead } = await heldHead();
+    await files.invalidateCache("k");
+    release();
+    const overlapped = await slowHead;
+    expect(overlapped.size).toBe(3);
+    expect(await sizeOf(files, "k")).toBe(5);
+  });
+
+  test("invalidateCache() does too, for every key in flight", async () => {
+    const { files, release, slowHead } = await heldHead();
+    await files.invalidateCache();
+    release();
+    const overlapped = await slowHead;
+    expect(overlapped.size).toBe(3);
+    expect(await sizeOf(files, "k")).toBe(5);
+  });
+
+  test("a provider event does too", async () => {
+    const { files, release, slowHead } = await heldHead();
+    files[FOLD_PROVIDER_EVENT](providerEvent("k"));
+    release();
+    const overlapped = await slowHead;
+    expect(overlapped.size).toBe(3);
+    expect(await sizeOf(files, "k")).toBe(5);
+  });
+});

@@ -689,10 +689,14 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
    * its failure is swallowed — an event is only a hint, never the caller's op.
    */
   const dropQuietly = async (key: string): Promise<void> => {
+    const storeKey = keyOf(key);
+    // The change the event reports may postdate what a read miss still in
+    // flight fetched, so that read must not record it.
+    noteWrite(storeKey);
     try {
       // Called synchronously up to its first `await`, so a sync store's
       // delete lands before the event moves on.
-      await store.delete(keyOf(key));
+      await store.delete(storeKey);
     } catch {
       // A store hiccup must not break event delivery.
     }
@@ -724,11 +728,17 @@ export const cache = (options: CacheOptions = {}): FilesPlugin<CacheApi> => {
       return {
         cacheStats: () => ({ ...stats }),
         invalidateCache: async (key?: string) => {
+          // An explicit invalidation says the object changed where the plugin
+          // couldn't see, so — like a write — it also stops a read miss still
+          // in flight from recording what it fetched before the change.
           if (key === undefined) {
+            for (const watched of inFlight.values()) {
+              watched.writes += 1;
+            }
             await store.clear();
             return;
           }
-          await store.delete(keyOf(key));
+          await drop([key], false);
         },
         resetCacheStats: () => {
           stats.hits = 0;
