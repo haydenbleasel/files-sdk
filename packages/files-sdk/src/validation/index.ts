@@ -165,14 +165,47 @@ const utf8ByteLength = (value: string): number => {
 };
 
 /**
+ * Cut `stream` off once more than `maxSize` bytes have come through it: the
+ * source is cancelled and the read fails with the size rule's error, so a body
+ * past the limit is never buffered whole just to be measured.
+ */
+const capped = (
+  stream: ReadableStream<Uint8Array>,
+  maxSize: number,
+  key: string
+): ReadableStream<Uint8Array> => {
+  let seen = 0;
+  return stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        seen += chunk.byteLength;
+        if (seen > maxSize) {
+          controller.error(
+            new ValidationError(
+              "size",
+              `validation: "${key}" is over the ${maxSize}-byte limit (stopped reading at ${seen} bytes)`
+            )
+          );
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    })
+  );
+};
+
+/**
  * An upload body's byte count. Known-length shapes are measured in place —
  * nothing is read or copied, so a multi-gigabyte `File` over `maxSize` is
  * rejected without being loaded. Only an unknown-length stream (or a `Blob`
- * that can't report a finite size) is drained, and its bytes are returned as
- * `buffered` for the caller to forward in place of the spent original.
+ * that can't report a finite size) is drained — no further than `maxSize`,
+ * when there is one — and its bytes are returned as `buffered` for the caller
+ * to forward in place of the spent original.
  */
 const measure = async (
-  body: Body
+  body: Body,
+  key: string,
+  maxSize: number | undefined
 ): Promise<{ size: number; buffered?: Uint8Array }> => {
   if (isString(body)) {
     return { size: utf8ByteLength(body) };
@@ -183,8 +216,9 @@ const measure = async (
   if (body instanceof Blob && Number.isFinite(body.size)) {
     return { size: body.size };
   }
+  const stream = body instanceof Blob ? body.stream() : body;
   const buffered = await collectStream(
-    body instanceof Blob ? body.stream() : body
+    maxSize === undefined ? stream : capped(stream, maxSize, key)
   );
   return { buffered, size: buffered.byteLength };
 };
@@ -359,7 +393,7 @@ export const validation = (options: ValidationOptions = {}): FilesPlugin => {
         if (maxSize === undefined && minSize === undefined) {
           return next(checked);
         }
-        const { buffered, size } = await measure(op.body);
+        const { buffered, size } = await measure(op.body, op.key, maxSize);
         assertSize(size, op.key);
         if (buffered === undefined) {
           return next(checked);

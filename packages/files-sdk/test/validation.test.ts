@@ -77,6 +77,37 @@ describe("validation plugin — size", () => {
     ).rejects.toThrow(/over the 10-byte limit/u);
   });
 
+  test("stops reading a stream once it passes maxSize", async () => {
+    // An endless body (a client that never stops sending): the size guard
+    // must cut it off, not buffer it until the process runs out of memory.
+    let pulled = 0;
+    let cancelled = false;
+    const endless = new ReadableStream<Uint8Array>(
+      {
+        cancel() {
+          cancelled = true;
+        },
+        pull(controller) {
+          pulled += 1;
+          if (pulled > 1000) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(new Uint8Array(1024));
+        },
+      },
+      { highWaterMark: 0 }
+    );
+    const files = withValidation({ maxSize: 2048, minSize: 1 });
+    const error = await caught(files.upload("big", endless));
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error).toMatchObject({ reason: "size" });
+    expect(String(error)).toMatch(/over the 2048-byte limit/u);
+    expect(pulled).toBeLessThan(10);
+    expect(cancelled).toBe(true);
+    expect(await files.exists("big")).toBe(false);
+  });
+
   test("buffers an in-limit stream and stores it", async () => {
     const files = withValidation({ maxSize: 100 });
     const text = "stream body";
@@ -151,7 +182,7 @@ describe("validation plugin — size", () => {
     const files = withValidation({ maxSize: 4 });
     await expect(
       files.upload("big", new Unsized(["too long"]))
-    ).rejects.toThrow(/is 8 bytes, over the 4-byte limit/u);
+    ).rejects.toThrow(/over the 4-byte limit \(stopped reading at 8 bytes\)/u);
     await files.upload("ok", new Unsized(["tiny"], { type: "text/csv" }));
     const file = await files.download("ok");
     expect(await file.text()).toBe("tiny");

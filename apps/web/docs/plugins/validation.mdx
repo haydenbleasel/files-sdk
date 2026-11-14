@@ -42,7 +42,7 @@ Every option is independent - set any combination, and with none set the plugin 
 
 ### Sizes
 
-`maxSize` and `minSize` are byte counts. Known-length bodies - strings (measured in UTF-8 bytes), `Uint8Array`, `ArrayBuffer`, `Blob`, and `File` - are measured without being read or copied and forwarded as-is, so a multi-gigabyte `File` over `maxSize` is rejected without being loaded into memory. Only an unknown-length stream has to be buffered to measure it (the same trade-off the [buffering plugins](/docs/plugins/compression) make).
+`maxSize` and `minSize` are byte counts. Known-length bodies - strings (measured in UTF-8 bytes), `Uint8Array`, `ArrayBuffer`, `Blob`, and `File` - are measured without being read or copied and forwarded as-is, so a multi-gigabyte `File` over `maxSize` is rejected without being loaded into memory. Only an unknown-length stream has to be buffered to measure it (the same trade-off the [buffering plugins](/docs/plugins/compression) make). With a `maxSize`, reading stops as soon as the stream passes it, so an oversized or endless body is cut off rather than buffered whole.
 
 ### Types
 
