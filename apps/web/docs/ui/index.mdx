@@ -112,7 +112,7 @@ const router = createFilesRouter({
   files: createFiles({ adapter: r2({ bucket: "uploads" }) }),
   allowedOrigins: ["https://app.example.com"],
   authorize: async ({ req }) => {
-    const session = await auth(req); // throw → 401
+    const session = await auth(req); // throw a FilesError("Unauthorized") → 401
     return { keyPrefix: `users/${session.id}/`, maxExpiresIn: 300 };
   },
 });

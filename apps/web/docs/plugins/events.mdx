@@ -32,7 +32,7 @@ files.events.on("created", "avatars/**", async (event) => {
 events({
   format?: "s3" | "r2" | "gcs" | "azure" | "b2" | "tigris" | "supabase"
     | "cloudinary" | "appwrite" | "box" | "memory",
-  bucket?: string,
+  bucket?: string | false,
   sdk?: boolean,
   dedupe?: { has(id): boolean | Promise<boolean>; add(id, ttl): void | Promise<void> },
   dedupeTtl?: number,

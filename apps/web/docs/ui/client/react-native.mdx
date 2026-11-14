@@ -62,5 +62,5 @@ await FileSystem.downloadAsync(
 
 - `StoredFile.stream()` needs a `ReadableStream` polyfill (Hermes has none) — prefer `blob()` / `arrayBuffer()`.
 - `StoredFile.text()` relies on `TextDecoder`, present on recent Hermes; polyfill it on older runtimes.
-- Presigned **POST** upload targets (S3-family adapters with a `maxUploadSize` gateway cap) require a `NativeFileRef` body — React Native's `FormData` cannot carry a Blob part, but it streams a descriptor natively. Presigned **PUT** targets and the through-the-gateway path accept any body form.
+- Presigned **POST** upload targets (S3-family adapters, whenever the upload declares its `size` or the gateway sets `maxUploadSize`) require a `NativeFileRef` body — React Native's `FormData` cannot carry a Blob part, but it streams a descriptor natively. Presigned **PUT** targets and the through-the-gateway path accept any body form.
 - The [UI components](/docs/ui/components) are React DOM + Tailwind, so they are web-only; the hook state (`uploads`, `progress`, `error`) maps directly onto your native components instead.

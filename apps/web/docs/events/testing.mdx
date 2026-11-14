@@ -34,14 +34,16 @@ Events arrive with `source: "provider"`, like a real notification. Uploads, copi
 
 Provider notifications arrive after the write, not during it, so the memory adapter's events are handled in the background, as are `sdk` source events. `files.events.settled()` resolves once everything delivered so far has been handled, including events those handlers caused. Await it before asserting.
 
-Handler failures in the background go to `onError`. Pass one in tests to fail loudly:
+Handler failures in the background go to `onError`, and nothing it throws propagates. Collect them in tests and assert after `settled()`:
 
 ```ts lineNumbers
+const failures: unknown[] = [];
 events({
   onError: (error) => {
-    throw error;
+    failures.push(error);
   },
 });
+// after `await files.events.settled()`: expect(failures).toEqual([]);
 ```
 
 ## Replaying a real payload
