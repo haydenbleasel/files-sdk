@@ -26,6 +26,7 @@ import { FilesError, dispositionUnsupported } from "../internal/errors.js";
 import type { ProviderFilesErrorCode } from "../internal/errors.js";
 import { isNumber, isObject, isString } from "../internal/is.js";
 import { toWebStream } from "../internal/node-stream";
+import { throwIfAborted } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { compareKeys, pageKeyList } from "../internal/walk-paginate.js";
 
@@ -986,10 +987,16 @@ export const fs = (opts: FsAdapterOptions): FsAdapter => {
         // pipe to disk while hashing in parallel — needs a tee, which doubles
         // memory anyway for any source that isn't back-pressured (and the
         // typical caller passes a small dev body).
+        //
+        // The drain runs under the caller's signal, so an abort or timeout
+        // cancels the stream instead of reading it to the end.
         const bytes =
           body instanceof ReadableStream
-            ? await collectStream(body)
+            ? await collectStream(body, options?.signal)
             : await bodyToBytes(body);
+        // No request carries the signal here, so check it before the write:
+        // an upload the caller was told had been aborted must not land.
+        throwIfAborted(options?.signal);
         const lastModified = Date.now();
         const sidecar: Sidecar = {
           contentType,

@@ -51,6 +51,17 @@ const drainStream = async (
   return out;
 };
 
+// What an upload settles to, as a value: "stored", or the error it rejected
+// with.
+const settledOutcome = async (upload: Promise<unknown>): Promise<unknown> => {
+  try {
+    await upload;
+    return "stored";
+  } catch (error) {
+    return error;
+  }
+};
+
 describe("fs adapter", () => {
   describe("construction", () => {
     test("missing root throws", () => {
@@ -1543,6 +1554,62 @@ describe("fs adapter", () => {
   });
 
   describe("upload failure cleanup", () => {
+    test("an aborted stream upload releases the body and writes nothing", async () => {
+      const root = await makeRoot();
+      const adapter = fsAdapter({ root });
+      const controller = new AbortController();
+      let release: (() => void) | undefined;
+      let cancelled = false;
+      // One chunk now, the rest only once the test releases it — after the
+      // abort, the way a slow source keeps producing past a timeout.
+      const body = new ReadableStream<Uint8Array>({
+        cancel() {
+          cancelled = true;
+        },
+        async pull(streamController) {
+          streamController.enqueue(new TextEncoder().encode("part"));
+          // oxlint-disable-next-line promise/avoid-new -- resolved by the test below
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          streamController.close();
+        },
+      });
+      const upload = adapter.upload("late.txt", body, {
+        signal: controller.signal,
+      });
+      // Settled into a value up front: the upload can't finish until the test
+      // releases the body below.
+      const outcome = settledOutcome(upload);
+      await delay(10);
+      controller.abort(new Error("timed out upstream"));
+      await delay(10);
+      release?.();
+      expect(await outcome).toMatchObject({ aborted: true, code: "Provider" });
+      expect(cancelled).toBe(true);
+      await delay(10);
+      expect(await adapter.exists("late.txt")).toBe(false);
+      expect(await fsp.readdir(root)).toEqual([]);
+    });
+
+    test("a buffered upload aborted while its body is read writes nothing", async () => {
+      const root = await makeRoot();
+      const adapter = fsAdapter({ root });
+      const controller = new AbortController();
+      const body = new Blob(["late"]);
+      const readBody = body.arrayBuffer.bind(body);
+      // Abort while the Blob is being read, before the adapter stages a byte.
+      spyOn(body, "arrayBuffer").mockImplementation(async () => {
+        const bytes = await readBody();
+        controller.abort();
+        return bytes;
+      });
+      await expect(
+        adapter.upload("late.txt", body, { signal: controller.signal })
+      ).rejects.toMatchObject({ aborted: true });
+      expect(await adapter.exists("late.txt")).toBe(false);
+    });
+
     test("buffer upload surfaces and cleans up when rename fails", async () => {
       const root = await makeRoot();
       const files = new Files({ adapter: fsAdapter({ root }) });

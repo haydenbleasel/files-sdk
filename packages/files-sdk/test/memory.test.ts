@@ -698,6 +698,69 @@ describe("memory adapter", () => {
   });
 });
 
+// What an upload settles to, as a value: "stored", or the error it rejected
+// with.
+const settledOutcome = async (upload: Promise<unknown>): Promise<unknown> => {
+  try {
+    await upload;
+    return "stored";
+  } catch (error) {
+    return error;
+  }
+};
+
+describe("memory upload abort", () => {
+  test("an aborted stream upload releases the body and stores nothing", async () => {
+    const adapter = memory();
+    const controller = new AbortController();
+    let release: (() => void) | undefined;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+      async pull(streamController) {
+        streamController.enqueue(new TextEncoder().encode("part"));
+        // oxlint-disable-next-line promise/avoid-new -- resolved by the test below
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        streamController.close();
+      },
+    });
+    const upload = adapter.upload("late.txt", body, {
+      signal: controller.signal,
+    });
+    // Settled into a value up front: the upload can't finish until the test
+    // releases the body below.
+    const outcome = settledOutcome(upload);
+    await delay(10);
+    controller.abort(new Error("timed out upstream"));
+    await delay(10);
+    release?.();
+    expect(await outcome).toMatchObject({ aborted: true, code: "Provider" });
+    expect(cancelled).toBe(true);
+    await delay(10);
+    expect(await adapter.exists("late.txt")).toBe(false);
+  });
+
+  test("a buffered upload aborted while its body is read stores nothing", async () => {
+    const adapter = memory();
+    const controller = new AbortController();
+    const body = new Blob(["late"]);
+    const readBody = body.arrayBuffer.bind(body);
+    body.arrayBuffer = async () => {
+      const bytes = await readBody();
+      controller.abort();
+      return bytes;
+    };
+    await expect(
+      adapter.upload("late.txt", body, { signal: controller.signal })
+    ).rejects.toMatchObject({ aborted: true });
+    expect(await adapter.exists("late.txt")).toBe(false);
+  });
+});
+
 describe("memory resumable uploads (in-process)", () => {
   test("fresh upload completes and stores the bytes", async () => {
     const files = new Files({ adapter: memory() });

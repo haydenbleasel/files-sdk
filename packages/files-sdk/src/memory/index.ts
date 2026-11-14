@@ -13,6 +13,7 @@ import { collectStream } from "../internal/core.js";
 import { FilesError } from "../internal/errors.js";
 import { isObject, isString } from "../internal/is.js";
 import { md5Hex } from "../internal/md5.js";
+import { throwIfAborted } from "../internal/retry.js";
 import { createStoredFile } from "../internal/stored-file.js";
 import { paginateHierarchy } from "../internal/walk-paginate.js";
 
@@ -146,7 +147,10 @@ const seedBytes = (
   return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
 };
 
-const bodyToBytes = async (body: Body): Promise<Uint8Array> => {
+const bodyToBytes = async (
+  body: Body,
+  signal?: AbortSignal
+): Promise<Uint8Array> => {
   if (isString(body)) {
     return textEncoder.encode(body);
   }
@@ -162,7 +166,9 @@ const bodyToBytes = async (body: Body): Promise<Uint8Array> => {
   if (ArrayBuffer.isView(body)) {
     return new Uint8Array(body.buffer, body.byteOffset, body.byteLength);
   }
-  return await collectStream(body);
+  // Under the caller's signal, so an abort or timeout cancels the stream
+  // instead of reading it to the end.
+  return await collectStream(body, signal);
 };
 
 // Only ever compares two distinct Map keys, so there is no "equal" result.
@@ -523,7 +529,11 @@ export const memory = (opts?: MemoryAdapterOptions): MemoryAdapter => {
       };
     },
     async upload(key, body, options) {
-      const bytes = await bodyToBytes(body);
+      const bytes = await bodyToBytes(body, options?.signal);
+      // Nothing after this point is a request the signal could cancel, so
+      // check it before the write: an upload the caller was told had been
+      // aborted must not land.
+      throwIfAborted(options?.signal);
       const contentType = inferContentType(body, options?.contentType);
       const entry = put(key, bytes, contentType, {
         cacheControl: options?.cacheControl,
