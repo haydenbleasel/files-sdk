@@ -2058,6 +2058,103 @@ describe("dropbox resumable uploads", () => {
     ).rejects.toBeInstanceOf(FilesError);
   });
 
+  test("a retried append Dropbox already applied moves on from its correct_offset", async () => {
+    // The first append lands but its reply is lost, so the retry re-sends the
+    // same bytes and Dropbox answers with where the session really is.
+    const driver = adapter().resumableUpload?.("doc.bin", {
+      multipart: { partSize: FOUR_MIB },
+    }) as OffsetResumableDriver;
+    const total = FOUR_MIB + 10;
+    const session = await driver.begin({
+      contentType: "application/octet-stream",
+      total,
+    });
+    filesUploadSessionAppendV2Mock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, {
+          error: { ".tag": "incorrect_offset", correct_offset: FOUR_MIB },
+          error_summary: "incorrect_offset/..",
+        })
+      )
+    );
+    await expect(
+      driver.uploadAt({
+        data: new Uint8Array(FOUR_MIB),
+        isLast: false,
+        offset: 0,
+        total,
+      })
+    ).resolves.toEqual({ nextOffset: FOUR_MIB });
+    // The resume token follows, so a later resume doesn't replay the chunk.
+    expect(session).toMatchObject({ offset: FOUR_MIB });
+    await driver.uploadAt({
+      data: new Uint8Array(10),
+      isLast: true,
+      offset: FOUR_MIB,
+      total,
+    });
+    expect(filesUploadSessionFinishMock.mock.calls.at(-1)?.[0].cursor).toEqual({
+      offset: FOUR_MIB,
+      session_id: session.provider === "dropbox" ? session.sessionId : "",
+    });
+    await expect(driver.complete([])).resolves.toMatchObject({ size: total });
+  });
+
+  test("a stale resume token's finish moves on from the nested correct_offset", async () => {
+    const driver = adapter().resumableUpload?.("doc.bin", {
+      multipart: { partSize: FOUR_MIB },
+    }) as OffsetResumableDriver;
+    driver.adopt({
+      contentType: "application/octet-stream",
+      offset: 0,
+      path: "/doc.bin",
+      provider: "dropbox",
+      sessionId: "session-1",
+    });
+    filesUploadSessionFinishMock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, {
+          error: {
+            ".tag": "lookup_failed",
+            lookup_failed: { ".tag": "incorrect_offset", correct_offset: 6 },
+          },
+          error_summary: "lookup_failed/incorrect_offset/..",
+        })
+      )
+    );
+    await expect(
+      driver.uploadAt({
+        data: new Uint8Array(10),
+        isLast: true,
+        offset: 0,
+        total: 10,
+      })
+    ).resolves.toEqual({ nextOffset: 6 });
+  });
+
+  test("an incorrect_offset that isn't ahead of the chunk still fails", async () => {
+    const driver = adapter().resumableUpload?.("doc.bin", {
+      multipart: { partSize: FOUR_MIB },
+    }) as OffsetResumableDriver;
+    await driver.begin({ contentType: "application/octet-stream", total: 20 });
+    filesUploadSessionAppendV2Mock.mockImplementationOnce(() =>
+      Promise.reject(
+        responseError(409, {
+          error: { ".tag": "incorrect_offset", correct_offset: 0 },
+          error_summary: "incorrect_offset/..",
+        })
+      )
+    );
+    await expect(
+      driver.uploadAt({
+        data: new Uint8Array(10),
+        isLast: false,
+        offset: 10,
+        total: 20,
+      })
+    ).rejects.toMatchObject({ code: "Provider" });
+  });
+
   test("driving the session out of order is Invalid, not a retryable Provider", async () => {
     const driver = adapter().resumableUpload?.(
       "doc.bin",

@@ -357,6 +357,27 @@ const isFileConflictAtDestination = (cause: unknown): boolean => {
   );
 };
 
+// Where Dropbox says an upload session really is, from an `incorrect_offset`
+// refusal: a bare variant on an append, nested under `lookup_failed` on a
+// finish. `undefined` for any other error.
+const sessionCorrectOffset = (
+  body: JsonValue | undefined,
+  depth = 0
+): number | undefined => {
+  if (depth > 6 || !isJsonObject(body)) {
+    return;
+  }
+  if (body[".tag"] === "incorrect_offset" && isNumber(body.correct_offset)) {
+    return body.correct_offset;
+  }
+  for (const value of Object.values(body)) {
+    const found = sessionCorrectOffset(value, depth + 1);
+    if (found !== undefined) {
+      return found;
+    }
+  }
+};
+
 // View a Uint8Array as a Node Buffer without copying — the Dropbox session
 // helpers take `Buffer` contents.
 const toBuffer = (data: Uint8Array): Buffer =>
@@ -1131,9 +1152,9 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
         isLast,
         signal,
       }): Promise<{ nextOffset: number }> {
+        const current = requireSession();
         try {
           await authHandle.ensureAccessToken();
-          const current = requireSession();
           const buffer = toBuffer(data);
           if (isLast) {
             finalItem = await sessionFinish(
@@ -1150,6 +1171,18 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
           current.offset = nextOffset;
           return { nextOffset };
         } catch (error) {
+          // A chunk Dropbox applied whose reply was lost: the retry re-sends
+          // it at the old offset and is refused with the session's real one.
+          // Move on from there (the orchestrator re-slices), and keep the
+          // token's offset in step so a later resume doesn't replay the chunk.
+          const correct =
+            error instanceof DropboxResponseError
+              ? sessionCorrectOffset(error.error)
+              : undefined;
+          if (correct !== undefined && correct > offset) {
+            current.offset = correct;
+            return { nextOffset: correct };
+          }
           throw mapDropboxError(error);
         }
       },
