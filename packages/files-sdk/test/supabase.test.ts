@@ -2607,6 +2607,18 @@ describe("supabase keys with URL delimiters (real storage-js client)", () => {
     expect(objects.has("x?token=y")).toBe(true);
   });
 
+  test("url and signedUploadUrl forward the signal to their signing requests", async () => {
+    const { adapter, requests } = fakeServer();
+    await adapter.upload("a.txt", "x");
+    const { signal } = new AbortController();
+    await adapter.url("a.txt", { signal });
+    expect(requests.at(-1)?.url).toBe(`${STORAGE_URL}/object/sign/${BUCKET}`);
+    expect(requests.at(-1)?.init.signal).toBe(signal);
+    await adapter.signedUploadUrl("a.txt", { expiresIn: 60, signal });
+    expect(requests.at(-1)?.url).toContain("/object/upload/sign/");
+    expect(requests.at(-1)?.init.signal).toBe(signal);
+  });
+
   test("a signed upload answer without a token is a Provider error", async () => {
     let body: unknown = { url: "/object/upload/sign/x/a.txt" };
     const fetchMock = mock(() => Promise.resolve(Response.json(body)));

@@ -936,12 +936,14 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     ctx: StorageRequestContext,
     key: string,
     expiresIn: number,
-    download: true | string | undefined
+    download: true | string | undefined,
+    signal: AbortSignal | undefined
   ): Promise<string> => {
     const res = await send(ctx, `/object/sign/${bucketPath}`, {
       body: JSON.stringify({ expiresIn, paths: [key] }),
       headers: { "content-type": "application/json" },
       method: "POST",
+      ...(signal && { signal }),
     });
     const body = await readJson(res);
     const entry = isJsonArray(body) ? body[0] : undefined;
@@ -1353,6 +1355,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
             body: "{}",
             headers: { "content-type": "application/json", "x-upsert": "true" },
             method: "POST",
+            ...(signOpts.signal && { signal: signOpts.signal }),
           }
         );
         const token = uploadTokenOf(await readJson(res));
@@ -1476,7 +1479,13 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
         ? downloadOptionFor(urlOpts.responseContentDisposition)
         : undefined;
       if (requestContext) {
-        return await signedReadUrl(requestContext, key, expiresIn, download);
+        return await signedReadUrl(
+          requestContext,
+          key,
+          expiresIn,
+          download,
+          urlOpts?.signal
+        );
       }
       const { data, error } = await bucketRef.createSignedUrl(key, expiresIn, {
         ...(download !== undefined && { download }),
