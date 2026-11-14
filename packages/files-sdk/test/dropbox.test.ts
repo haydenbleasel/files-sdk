@@ -867,6 +867,18 @@ describe("dropbox adapter", () => {
     expect(r.items[0]?.lastModified).toBeUndefined();
   });
 
+  test("list caps the page size at Dropbox's 2000-entry maximum", async () => {
+    // `files/list_folder` rejects a `limit` above 2000 with a 400; `limit` is
+    // a per-page cap, so a larger request is clamped rather than refused.
+    const files = new Files({ adapter: dropbox(baseOpts) });
+    await files.list({ limit: 5000 });
+    expect(filesListFolderMock.mock.calls.at(-1)?.[0].limit).toBe(2000);
+    await files.list({ limit: 50 });
+    expect(filesListFolderMock.mock.calls.at(-1)?.[0].limit).toBe(50);
+    await files.list();
+    expect(filesListFolderMock.mock.calls.at(-1)?.[0].limit).toBeUndefined();
+  });
+
   test("list propagates has_more cursor", async () => {
     const files = new Files({ adapter: dropbox(baseOpts) });
     filesListFolderMock.mockImplementationOnce(() =>

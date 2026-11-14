@@ -132,6 +132,9 @@ const req = (
   signal: AbortSignal | undefined
 ): DropboxRequestOptions | undefined => (signal ? { signal } : undefined);
 
+// `files/list_folder` rejects a `limit` above this with a 400.
+const MAX_LIST_LIMIT = 2000;
+
 const UPLOAD_SESSION_CHUNK_BYTES = 8 * 1024 * 1024;
 // Dropbox requires every non-final session chunk to be a multiple of 4 MiB.
 const UPLOAD_SESSION_CHUNK_MULTIPLE = 4 * 1024 * 1024;
@@ -1355,7 +1358,12 @@ export const dropbox = (opts: DropboxAdapterOptions): DropboxAdapter => {
             )
           : await client.filesListFolder(
               {
-                limit: options?.limit,
+                // A per-page cap, so a larger request is clamped to what
+                // Dropbox accepts rather than refused.
+                limit:
+                  options?.limit === undefined
+                    ? undefined
+                    : Math.min(options.limit, MAX_LIST_LIMIT),
                 path: keyToPath(
                   folded
                     ? prefix.slice(0, Math.max(prefix.lastIndexOf("/"), 0))
