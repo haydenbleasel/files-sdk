@@ -633,6 +633,21 @@ describe("tiering — tier() / tierOf()", () => {
     expect(await files.download("k").then((f) => f.text())).toBe("payload");
   });
 
+  test("tier() refuses a target that isn't a tier, leaving the object alone", async () => {
+    const { files, cold } = harness(prefixRoute, { fallback: true });
+    await files.upload("cold/a.txt", "keep me");
+    // An untyped caller (a request body, a CLI flag). Read as "not hot", this
+    // would copy the cold object onto itself and then delete it.
+    const target = "warm" as unknown as "cold";
+    await expect(files.tier("cold/a.txt", target)).rejects.toMatchObject({
+      code: "Invalid",
+    });
+    expect(cold.has("cold/a.txt")).toBe(true);
+    expect(await files.download("cold/a.txt").then((f) => f.text())).toBe(
+      "keep me"
+    );
+  });
+
   test("tier() to the current tier is a no-op", async () => {
     const { files, hot } = harness(prefixRoute);
     await files.upload("a.txt", "1");

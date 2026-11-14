@@ -893,6 +893,15 @@ export const tiering = (options: TieringOptions): FilesPlugin<TieringApi> => {
               "Cannot call tier() on a read-only Files instance."
             );
           }
+          // Anything but "hot" picks the cold runner, so an untyped target
+          // ("warm", "Cold") on a cold object would copy it onto itself and
+          // then delete it.
+          if (target !== "hot" && target !== "cold") {
+            throw new FilesError(
+              "Invalid",
+              `tiering: tier() target must be "hot" or "cold", received ${JSON.stringify(target)}`
+            );
+          }
           const current = await locate(hot, key);
           if (current === undefined) {
             throw new FilesError(
