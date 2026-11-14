@@ -176,6 +176,21 @@ describe("createFileTools", () => {
     expect((tools.deleteFile as AnyTool).title).toBe("Remove file");
   });
 
+  test("an undefined override value keeps the tool's own value", () => {
+    const tools = createFileTools({
+      files: newFiles(),
+      overrides: {
+        deleteFile: { description: undefined, needsApproval: undefined },
+      },
+    });
+    // An explicit `undefined` must not strip the approval gate (or the
+    // description the model sees) off a write tool.
+    expect((tools.deleteFile as AnyTool).needsApproval).toBe(true);
+    expect((tools.deleteFile as AnyTool).description).toBe(
+      "Permanently delete a file from the configured bucket."
+    );
+  });
+
   test("overrides for unknown tool names are ignored", () => {
     const tools = createFileTools({
       files: newFiles(),

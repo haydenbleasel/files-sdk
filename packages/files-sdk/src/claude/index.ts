@@ -216,7 +216,14 @@ export const createClaudeFileTools = ({
         // SAFETY: `allTools` is a closed record keyed by exactly the
         // FileToolName union, so the `in` check above proves membership.
         const key = name as FileToolName;
-        allTools[key] = { ...allTools[key], ...toolOverrides };
+        // An explicit `undefined` means "not overridden": spreading it would
+        // strip the tool's description or its read-only/destructive hints.
+        const defined = Object.fromEntries(
+          Object.entries(toolOverrides).filter(
+            ([, value]) => value !== undefined
+          )
+        );
+        allTools[key] = { ...allTools[key], ...defined };
       }
     }
   }

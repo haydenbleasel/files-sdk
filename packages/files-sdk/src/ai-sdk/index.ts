@@ -200,8 +200,16 @@ export function createFileTools({
         // SAFETY: `allTools` is a closed record keyed by exactly the
         // FileToolName union, so the `in` check above proves membership.
         const key = name as keyof FileTools;
+        // An explicit `undefined` means "not overridden": spreading it would
+        // strip the field, and for `needsApproval` that drops the approval
+        // gate off a write tool.
+        const defined = Object.fromEntries(
+          Object.entries(toolOverrides).filter(
+            ([, value]) => value !== undefined
+          )
+        );
         Object.assign(allTools, {
-          [key]: { ...allTools[key], ...toolOverrides },
+          [key]: { ...allTools[key], ...defined },
         });
       }
     }

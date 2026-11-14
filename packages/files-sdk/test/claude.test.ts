@@ -384,6 +384,25 @@ describe("createClaudeFileTools", () => {
     expect(tools.needsApproval("mcp__files__deleteFile")).toBe(true);
   });
 
+  test("an undefined override value keeps the tool's own value", () => {
+    const tools = createClaudeFileTools({
+      files: newFiles(),
+      overrides: {
+        listFiles: { annotations: undefined, description: undefined },
+      },
+    });
+    const registered = (
+      tools.server.instance as unknown as {
+        _registeredTools: Record<
+          string,
+          { description?: string; annotations?: Record<string, unknown> }
+        >;
+      }
+    )._registeredTools.listFiles;
+    expect(registered?.description).toMatch(/^List files/u);
+    expect(registered?.annotations).toEqual({ readOnlyHint: true });
+  });
+
   test("overrides for unknown tool names are ignored", () => {
     const tools = createClaudeFileTools({
       files: newFiles(),
