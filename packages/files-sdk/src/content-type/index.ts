@@ -405,7 +405,9 @@ const storedType = (type: string, essence: string): string => {
  * confirm it.
  */
 const declaredType = (body: Body, key: string, declared?: string): string => {
-  if (declared !== undefined) {
+  // An empty string is no claim (the core reads it as unset), which is what
+  // `{ contentType: file.type }` passes for a file the browser can't type.
+  if (declared) {
     return declared;
   }
   if (body instanceof Blob && body.type) {

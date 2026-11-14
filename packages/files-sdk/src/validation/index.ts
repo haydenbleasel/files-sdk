@@ -125,7 +125,9 @@ const resolveUploadType = (
   body: Body,
   key: string
 ): string => {
-  if (contentType !== undefined) {
+  // An empty string is no claim (the core reads it as unset), which is what
+  // `{ contentType: file.type }` passes for a file the browser can't type.
+  if (contentType) {
     return contentType;
   }
   if (body instanceof Blob && body.type) {

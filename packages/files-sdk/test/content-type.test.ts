@@ -538,6 +538,20 @@ describe("contentType plugin — malformed declared types", () => {
     ).rejects.toMatchObject({ code: "Invalid" });
   });
 
+  test("an empty contentType is no claim, as in the core", async () => {
+    // `{ contentType: file.type }` is "" for a file the browser can't type.
+    const files = withContentType({ onMismatch: "reject" });
+    await files.upload("a.png", PNG, { contentType: "" });
+    expect(await typeOf(files, "a.png")).toBe("image/png");
+    await expect(
+      files.upload("b.png", "<html></html>", { contentType: "" })
+    ).rejects.toThrow(
+      /is declared "image\/png" but its bytes are "text\/html"/u
+    );
+    await files.upload("notes.md", "# hi", { contentType: "" });
+    expect(await files.exists("notes.md")).toBe(true);
+  });
+
   test("a confirmed type is stored normalized, keeping its parameters", async () => {
     const files = withContentType({ onMismatch: "reject" });
     await files.upload("a.png", PNG, { contentType: " IMAGE/PNG " });

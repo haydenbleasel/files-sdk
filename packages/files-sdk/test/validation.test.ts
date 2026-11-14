@@ -270,6 +270,21 @@ describe("validation plugin — content type", () => {
     ).rejects.toMatchObject({ reason: "type" });
   });
 
+  test("an empty contentType is no claim, as in the core", async () => {
+    // `{ contentType: file.type }` is "" for a file the browser can't type;
+    // the core reads that as unset, so the Blob's type or the key decides.
+    const files = withValidation({ allowedTypes: ["image/*"] });
+    await files.upload("a.png", new Uint8Array([1]), { contentType: "" });
+    expect(await typeOf(files, "a.png")).toBe("image/png");
+    await files.upload("b", new Blob(["x"], { type: "image/gif" }), {
+      contentType: "",
+    });
+    expect(await typeOf(files, "b")).toBe("image/gif");
+    await expect(
+      files.upload("notes.txt", "hello", { contentType: "" })
+    ).rejects.toThrow(/type "text\/plain", which is not one of the allowed/u);
+  });
+
   test("stores the approved type normalized, keeping its parameters", async () => {
     const files = withValidation({ allowedTypes: ["text/*"] });
     await files.upload("a.txt", "hi", {
