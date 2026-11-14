@@ -8,7 +8,11 @@
 
 import type { BulkOptions, FileInfo, Files, SearchMatch } from "../../index.js";
 import { isAttachmentDisposition } from "../content-disposition.js";
-import { FilesError, isDispositionUnsupported } from "../errors.js";
+import {
+  FilesError,
+  isContentTypeUnsupported,
+  isDispositionUnsupported,
+} from "../errors.js";
 import { globPrefix } from "../glob.js";
 import { isBoolean, isFunction, isNumber, isString } from "../is.js";
 import type { JsonObject, JsonValue } from "../json.js";
@@ -165,6 +169,12 @@ const routerUrlDisposition = (
 // how to proceed rather than hand out a URL that may render inline.
 const URL_DISPOSITION_REFUSED =
   'url: this adapter cannot set Content-Disposition on its URLs, so the gateway cannot guarantee "attachment". Return { disposition: "inline" } from authorize for routes where inline URLs are acceptable, or use download, which proxies the bytes and sets Content-Disposition itself.';
+
+// The `url` op when `authorize` overrides the content type on an adapter that
+// can't bind one into its URLs (`Files` refuses it, see
+// `isContentTypeUnsupported`): the link would serve the stored type.
+const URL_CONTENT_TYPE_REFUSED =
+  "url: this adapter cannot set Content-Type on its URLs, so the gateway cannot apply the responseContentType returned from authorize. Use download, which proxies the bytes and sets Content-Type itself, or drop responseContentType for this route.";
 
 // A bulk request's array length is client-controlled work (one provider call
 // per entry), so cap it before touching storage: 413 with reason `count`.
@@ -735,6 +745,9 @@ const dispatchJson = async (
                 "signedUrl"
               ),
             }),
+            ...(scope.responseContentType !== undefined && {
+              responseContentType: scope.responseContentType,
+            }),
             signal,
           },
           disposition,
@@ -744,6 +757,9 @@ const dispatchJson = async (
       } catch (error) {
         if (isDispositionUnsupported(error)) {
           throw new FilesError("Unsupported", URL_DISPOSITION_REFUSED, error);
+        }
+        if (isContentTypeUnsupported(error)) {
+          throw new FilesError("Unsupported", URL_CONTENT_TYPE_REFUSED, error);
         }
         throw error;
       }

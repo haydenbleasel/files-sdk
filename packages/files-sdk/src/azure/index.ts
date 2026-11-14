@@ -777,11 +777,13 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
 
   const buildSasUrl = async ({
     contentDisposition,
+    contentType,
     expiresIn,
     key,
     permissions,
   }: {
     contentDisposition?: string;
+    contentType?: string;
     expiresIn: number;
     key: string;
     permissions: "r" | "cw";
@@ -792,6 +794,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
     const expiresOn = new Date(Date.now() + expiresIn * 1000);
     const sasOptions = {
       ...(contentDisposition && { contentDisposition }),
+      ...(contentType && { contentType }),
       expiresOn,
       permissions: BlobSASPermissions.parse(permissions),
       protocol: SASProtocol.Https,
@@ -981,10 +984,12 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         ...sasExpiryCap,
       },
       // `url()` mints a SAS (or returns `publicBaseUrl` when set and neither
-      // `expiresIn` nor `responseContentDisposition` is passed) — only when a
-      // signer exists; SAS-only and anonymous adapters throw. The SAS binds
-      // `responseContentDisposition` as `rscd`.
+      // `expiresIn` nor a response override is passed) — only when a signer
+      // exists; SAS-only and anonymous adapters throw. The SAS binds
+      // `responseContentDisposition` as `rscd` and `responseContentType` as
+      // `rsct`.
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         supported: Boolean(signer),
@@ -1429,6 +1434,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
+        responseContentType: urlOpts?.responseContentType,
       });
       if (strategy === "public" && publicBaseUrl) {
         return joinPublicUrl(publicBaseUrl, key);
@@ -1438,6 +1444,7 @@ export const azure = (opts: AzureAdapterOptions): AzureAdapter => {
         // delegation key) is mapped here instead of escaping as a raw error.
         return await buildSasUrl({
           contentDisposition: urlOpts?.responseContentDisposition,
+          contentType: urlOpts?.responseContentType,
           expiresIn: urlOpts?.expiresIn ?? defaultUrlExpiresIn,
           key,
           permissions: "r",

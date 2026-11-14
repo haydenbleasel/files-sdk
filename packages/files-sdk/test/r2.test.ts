@@ -965,6 +965,7 @@ describe("r2 adapter — Workers binding path", () => {
   test("signedUrl capability: plain binding unsupported; hybrid and HTTP carry the SigV4 one-week cap", async () => {
     const { bucket } = fakeBinding();
     const cap = {
+      contentType: true,
       disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
@@ -973,7 +974,12 @@ describe("r2 adapter — Workers binding path", () => {
     expect(
       new Files({ adapter: r2({ binding: bucket as never }) }).capabilities
         .signedUrl
-    ).toEqual({ disposition: false, expiry: "none", supported: false });
+    ).toEqual({
+      contentType: false,
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
     const hybrid = r2({
       accessKeyId: "K",
       accountId: "ACCT",
@@ -1125,6 +1131,49 @@ describe("r2 adapter — Workers binding path", () => {
     });
     expect(signed).toContain("X-Amz-Signature=");
     expect(signed).toContain("response-content-disposition=attachment");
+  });
+
+  test("hybrid: responseContentType forces signing through publicBaseUrl", async () => {
+    const { bucket } = fakeBinding();
+    const files = new Files({
+      adapter: r2({
+        accessKeyId: "K",
+        accountId: "ACCT",
+        binding: bucket as never,
+        bucket: "uploads",
+        publicBaseUrl: "https://pub.r2.dev",
+        secretAccessKey: "S",
+      }),
+    });
+    const signed = new URL(
+      await files.url("a.pdf", { responseContentType: "application/pdf" })
+    );
+    expect(signed.searchParams.get("X-Amz-Signature")).toBeTruthy();
+    expect(signed.searchParams.get("response-content-type")).toBe(
+      "application/pdf"
+    );
+  });
+
+  test("a plain binding refuses responseContentType, even with publicBaseUrl", async () => {
+    const { bucket } = fakeBinding();
+    const adapter = r2({
+      binding: bucket as never,
+      publicBaseUrl: "https://pub.r2.dev",
+    });
+    await expect(
+      new Files({ adapter }).url("a.pdf", {
+        responseContentType: "application/pdf",
+      })
+    ).rejects.toMatchObject({ code: "Unsupported" });
+    // Called directly, the adapter still won't hand back the permanent link.
+    await expect(
+      adapter.url("a.pdf", { responseContentType: "application/pdf" })
+    ).rejects.toMatchObject({
+      code: "Unsupported",
+      message: expect.stringContaining(
+        "`responseContentType` requires signing"
+      ),
+    });
   });
 
   test("hybrid: signedUploadUrl works with binding + HTTP creds", async () => {

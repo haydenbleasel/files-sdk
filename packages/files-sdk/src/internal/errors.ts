@@ -176,3 +176,26 @@ export const dispositionUnsupported = (message: string): FilesError => {
 // oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
 export const isDispositionUnsupported = (error: unknown): boolean =>
   error instanceof FilesError && DISPOSITION_UNSUPPORTED_BRAND in error;
+
+// The same kind of marker for a `responseContentType` refusal, so the gateway
+// can explain it without repeating the capability check that raised it.
+// oxlint-disable-next-line eslint/no-inline-comments -- `@__PURE__` is a bundler annotation that must sit inline before the call
+const CONTENT_TYPE_UNSUPPORTED_BRAND = /* @__PURE__ */ Symbol.for(
+  "files-sdk.ContentTypeUnsupported"
+);
+
+/**
+ * The `Unsupported` error `url()` throws when this instance can't bind a
+ * `responseContentType` override into its URLs, branded so
+ * {@link isContentTypeUnsupported} can recognize it across bundle copies.
+ */
+export const contentTypeUnsupported = (message: string): FilesError => {
+  const error = new FilesError("Unsupported", message);
+  Object.defineProperty(error, CONTENT_TYPE_UNSUPPORTED_BRAND, { value: true });
+  return error;
+};
+
+/** Whether `error` is a {@link contentTypeUnsupported} refusal. */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- a predicate over whatever a `catch` caught
+export const isContentTypeUnsupported = (error: unknown): boolean =>
+  error instanceof FilesError && CONTENT_TYPE_UNSUPPORTED_BRAND in error;

@@ -56,6 +56,7 @@ const CAPABILITIES: AdapterCapabilities = {
   serverSideCopy: true,
   signedUpload: { contentType: true, maxSize: true, supported: true },
   signedUrl: {
+    contentType: true,
     disposition: true,
     expiry: "exact",
     maxExpiresIn: 3600,

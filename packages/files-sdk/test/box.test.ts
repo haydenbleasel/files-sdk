@@ -1094,6 +1094,7 @@ describe("box adapter", () => {
       const caps = new Files({ adapter: box({ ...baseOpts, ...opts }) })
         .capabilities;
       expect(caps.signedUrl).toEqual({
+        contentType: false,
         disposition: false,
         expiry: "provider",
         supported: true,

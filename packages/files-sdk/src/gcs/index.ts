@@ -261,10 +261,12 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         supported: true,
       },
       // `url()` returns a V4 signed URL (or `publicBaseUrl` when set and
-      // neither `expiresIn` nor `responseContentDisposition` is passed), with
-      // `responseContentDisposition` bound as `responseDisposition`. The SDK
-      // rejects an expiry past V4's 7-day limit, so declare that ceiling.
+      // neither `expiresIn` nor a response override is passed), with
+      // `responseContentDisposition` bound as `responseDisposition` and
+      // `responseContentType` as `responseType`. The SDK rejects an expiry
+      // past V4's 7-day limit, so declare that ceiling.
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: V4_MAX_EXPIRES_IN,
@@ -483,6 +485,7 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
         expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
+        responseContentType: urlOpts?.responseContentType,
       });
       if (strategy === "public" && publicBaseUrl) {
         return joinPublicUrl(publicBaseUrl, key);
@@ -496,6 +499,9 @@ export const gcs = (opts: GCSAdapterOptions): GCSAdapter => {
           version: "v4",
           ...(urlOpts?.responseContentDisposition && {
             responseDisposition: urlOpts.responseContentDisposition,
+          }),
+          ...(urlOpts?.responseContentType && {
+            responseType: urlOpts.responseContentType,
           }),
         });
         return signed;

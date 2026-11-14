@@ -99,6 +99,7 @@ describe("fs adapter", () => {
           supported: false,
         });
         expect(caps.signedUrl).toEqual({
+          contentType: false,
           disposition: false,
           expiry: "none",
           supported: false,

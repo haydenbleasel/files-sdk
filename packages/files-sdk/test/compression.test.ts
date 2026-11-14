@@ -245,6 +245,7 @@ describe("compression plugin — capabilities + gateway", () => {
   test("advertises no presigned URLs and no range reads", () => {
     const { capabilities } = compressed(signing());
     expect(capabilities.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,

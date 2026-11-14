@@ -26,7 +26,11 @@ import {
   rangedSize,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
-import { FilesError, dispositionUnsupported } from "../internal/errors.js";
+import {
+  FilesError,
+  contentTypeUnsupported,
+  dispositionUnsupported,
+} from "../internal/errors.js";
 import { isString } from "../internal/is.js";
 import { lazyS3Adapter, resolveS3Engine } from "../internal/s3-engine.js";
 import type { S3FetchAdapter } from "../internal/s3-fetch.js";
@@ -630,15 +634,22 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
     // direct adapter callers attach `.catch` after; every other method here
     // already rejects.
     async url(key, urlOpts: UrlOptions = {}): Promise<string> {
-      // `responseContentDisposition` and an explicit `expiresIn` both require
-      // signing — bypass the publicBaseUrl path and route through hybrid
+      // `responseContentDisposition`, `responseContentType` (which `Files`
+      // only lets through when hybrid signing is configured), and an explicit
+      // `expiresIn` all require signing — bypass the publicBaseUrl path and route through hybrid
       // signing if available. No hybrid? Fail rather than silently dropping
       // the security ask or handing back a link that never expires.
       const wantsDisposition = Boolean(urlOpts.responseContentDisposition);
       const wantsExpiry = urlOpts.expiresIn !== undefined;
+      const wantsContentType = urlOpts.responseContentType !== undefined;
       if (wantsDisposition && !hybrid) {
         throw dispositionUnsupported(
           "r2 binding: `responseContentDisposition` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
+        );
+      }
+      if (wantsContentType && !hybrid) {
+        throw contentTypeUnsupported(
+          "r2 binding: `responseContentType` requires signing, which a Workers binding cannot do alone. Pass HTTP credentials (`accountId` + `accessKeyId` + `secretAccessKey` + `bucket`) to enable hybrid signing."
         );
       }
       if (wantsExpiry && !hybrid) {
@@ -648,10 +659,16 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
         );
       }
       // Order: explicit `publicBaseUrl` wins (cheapest, no network call) —
-      // unless the caller asked for `responseContentDisposition` or an
-      // explicit `expiresIn`, which force signing. After that, hybrid HTTP
-      // creds let url() sign. Without either, fail with guidance.
-      if (publicBaseUrl && !wantsDisposition && !wantsExpiry) {
+      // unless the caller asked for `responseContentDisposition`,
+      // `responseContentType`, or an explicit `expiresIn`, which force
+      // signing. After that, hybrid HTTP creds let url() sign. Without
+      // either, fail with guidance.
+      if (
+        publicBaseUrl &&
+        !wantsDisposition &&
+        !wantsContentType &&
+        !wantsExpiry
+      ) {
         return joinPublicUrl(publicBaseUrl, key);
       }
       if (hybrid) {
@@ -659,6 +676,9 @@ const r2FromBinding = (opts: R2BindingOptions): R2Adapter => {
           expiresIn: urlOpts.expiresIn ?? defaultUrlExpiresIn,
           ...(urlOpts.responseContentDisposition && {
             responseContentDisposition: urlOpts.responseContentDisposition,
+          }),
+          ...(wantsContentType && {
+            responseContentType: urlOpts.responseContentType,
           }),
         });
       }

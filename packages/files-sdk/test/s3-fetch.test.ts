@@ -76,6 +76,7 @@ describe("s3-fetch core — identity", () => {
         supported: true,
       },
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: 604_800,
@@ -432,6 +433,24 @@ describe("s3-fetch core — url and signedUploadUrl", () => {
     expect(custom.searchParams.get("response-content-disposition")).toBe(
       "attachment"
     );
+  });
+
+  test("url signs responseContentType as response-content-type, over publicBaseUrl", async () => {
+    const adapter = makeAdapter({ publicBaseUrl: "https://cdn.example.com" });
+    const signed = new URL(
+      await adapter.url("a.pdf", {
+        responseContentDisposition: "inline",
+        responseContentType: "application/pdf",
+      })
+    );
+    expect(signed.origin).toBe("https://acct.r2.cloudflarestorage.com");
+    expect(signed.searchParams.get("response-content-type")).toBe(
+      "application/pdf"
+    );
+    expect(signed.searchParams.get("response-content-disposition")).toBe(
+      "inline"
+    );
+    expect(signed.searchParams.get("X-Amz-Signature")).toBeTruthy();
   });
 
   test("publicBaseUrl short-circuits url() unless disposition forces signing", async () => {

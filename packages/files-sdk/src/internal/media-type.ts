@@ -2,6 +2,8 @@
 // Kept apart from `mime.ts` so the gateway and the plugins that import it don't
 // pull the `mime` lookup table into their module graph.
 
+import { isString } from "./is.js";
+
 // RFC 9110 `token` characters, the only ones a media type's type or subtype
 // may use.
 const MEDIA_TYPE_TOKEN = /^[\w!#$%&'*+.^`|~-]+$/u;
@@ -15,6 +17,15 @@ const hasControlCharacter = (value: string): boolean => {
     }
   }
   return false;
+};
+
+const isAscii = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    if ((value.codePointAt(index) ?? 0) > 0x7f) {
+      return false;
+    }
+  }
+  return true;
 };
 
 /**
@@ -42,3 +53,14 @@ export const mediaTypeEssence = (value: string): string | undefined => {
   }
   return essence.toLowerCase();
 };
+
+/**
+ * Whether `value` is a string holding exactly one media type (see
+ * {@link mediaTypeEssence}) written in ASCII — one that can be sent as a
+ * `Content-Type` header or signed into a URL as an override. Fetch's `Headers`
+ * throws on a character past U+00FF, and a provider's response override is
+ * only portable in ASCII, so anything else is refused up front.
+ */
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- validates a value a plain-JS caller or hook may have passed
+export const isSingleMediaType = (value: unknown): value is string =>
+  isString(value) && isAscii(value) && mediaTypeEssence(value) !== undefined;

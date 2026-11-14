@@ -1000,6 +1000,7 @@ describe("supabase adapter", () => {
         uploadProgress: false,
       });
       expect(capabilities.signedUrl).toEqual({
+        contentType: false,
         disposition: true,
         expiry: "exact",
         supported: true,

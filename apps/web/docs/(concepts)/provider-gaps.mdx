@@ -58,6 +58,10 @@ The `url()` option that forces a download (and prevents stored-XSS on user-uploa
 
 The [gateway](/docs/ui/server/gateway) works around the refusal where it safely can. With the default `downloadMode: "auto"` it proxies a `download` it can't redirect with `attachment`, and when `authorize` returns `{ disposition: "inline" }` it mints URLs without a disposition. The JSON `url` operation can't guarantee `attachment` on these adapters, so it fails unless `authorize` allows inline.
 
+## `responseContentType`
+
+The `url()` option that overrides the response `Content-Type` (to preview a PDF stored as `application/octet-stream`, say) also needs a signature to bind into, and is supported by fewer adapters: **S3** and the S3-compatible wrappers (on either client engine), **Bun S3**, **Azure** with a signer, **GCS**, **Firebase Storage**, and **R2** in HTTP / hybrid mode ([`capabilities.signedUrl.contentType`](/docs/capabilities#signedurl) is `true`). Everywhere else, including Supabase and Appwrite, `url()` throws `Unsupported` before the adapter is called. The [gateway](/docs/ui/server/authorization#the-constraint) proxies a `download` whose `authorize` sets a `responseContentType` the adapter can't bind, and sets the header itself.
+
 ## Uncommitted uploads
 
 - **Azure** — uncommitted blocks (from an interrupted multipart / staged-block upload) are garbage-collected by Azure after **~7 days**. A resume past that window starts fresh rather than continuing.

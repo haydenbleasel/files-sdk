@@ -643,11 +643,17 @@ describe("uploadthing adapter", () => {
     // returns the permanent CDN URL, so it isn't a signed URL.
     expect(
       new Files({ adapter: uploadthing() }).capabilities.signedUrl
-    ).toEqual({ disposition: false, expiry: "none", supported: false });
+    ).toEqual({
+      contentType: false,
+      disposition: false,
+      expiry: "none",
+      supported: false,
+    });
     expect(
       new Files({ adapter: uploadthing({ acl: "private" }) }).capabilities
         .signedUrl
     ).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "exact",
       maxExpiresIn: 604_800,

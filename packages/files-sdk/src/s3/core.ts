@@ -25,6 +25,7 @@ import type {
   UploadProgress,
   UploadOptions,
   UploadResult,
+  UrlOptions,
 } from "../index.js";
 import {
   DEFAULT_URL_EXPIRES_IN,
@@ -1016,15 +1017,18 @@ export const createS3Adapter = (
   const signGet = (
     key: string,
     expiresIn: number,
-    responseContentDisposition?: string
+    urlOpts: UrlOptions | undefined
   ): Promise<string> =>
     getSignedUrl(
       client,
       new GetObjectCommand({
         Bucket: bucket,
         Key: key,
-        ...(responseContentDisposition && {
-          ResponseContentDisposition: responseContentDisposition,
+        ...(urlOpts?.responseContentDisposition && {
+          ResponseContentDisposition: urlOpts.responseContentDisposition,
+        }),
+        ...(urlOpts?.responseContentType && {
+          ResponseContentType: urlOpts.responseContentType,
         }),
       }),
       { expiresIn }
@@ -1436,8 +1440,10 @@ export const createS3Adapter = (
       // `url()` SigV4-signs a GetObject request. SigV4 caps a presigned URL's
       // lifetime at 604800s (7 days) and the SDK's presigner enforces it in
       // code for every endpoint, AWS or S3-compatible, so it's a hard ceiling.
-      // `responseContentDisposition` is bound as `response-content-disposition`.
+      // `responseContentDisposition` is bound as `response-content-disposition`
+      // and `responseContentType` as `response-content-type`.
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,
@@ -1780,6 +1786,7 @@ export const createS3Adapter = (
         expiresIn: urlOpts?.expiresIn,
         publicBaseUrl,
         responseContentDisposition: urlOpts?.responseContentDisposition,
+        responseContentType: urlOpts?.responseContentType,
       });
       if (strategy === "public" && publicBaseUrl) {
         return joinPublicUrl(publicBaseUrl, key);
@@ -1787,11 +1794,7 @@ export const createS3Adapter = (
       const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
       assertSigV4ExpiresIn(providerLabel, expiresIn);
       try {
-        return await signGet(
-          key,
-          expiresIn,
-          urlOpts?.responseContentDisposition
-        );
+        return await signGet(key, expiresIn, urlOpts);
       } catch (error) {
         throw wrapErr(error);
       }

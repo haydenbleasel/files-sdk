@@ -538,6 +538,7 @@ describe("sftp adapter", () => {
       });
       // A `publicBaseUrl` front URL is permanent, not signed.
       expect(caps.signedUrl).toEqual({
+        contentType: false,
         disposition: false,
         expiry: "none",
         supported: false,

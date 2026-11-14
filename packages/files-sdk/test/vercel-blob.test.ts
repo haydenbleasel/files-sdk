@@ -780,12 +780,22 @@ describe("vercel-blob adapter", () => {
 
   test("public mode reports signedUrl unsupported; private mode supported", () => {
     expect(new Files({ adapter: vercelBlob() }).capabilities.signedUrl).toEqual(
-      { disposition: false, expiry: "none", supported: false }
+      {
+        contentType: false,
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      }
     );
     expect(
       new Files({ adapter: vercelBlob({ access: "private" }) }).capabilities
         .signedUrl
-    ).toEqual({ disposition: false, expiry: "exact", supported: true });
+    ).toEqual({
+      contentType: false,
+      disposition: false,
+      expiry: "exact",
+      supported: true,
+    });
   });
 
   test("publicUrl is true in public mode only", () => {

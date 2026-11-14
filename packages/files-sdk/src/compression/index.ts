@@ -252,7 +252,12 @@ export const compression = (options: CompressionOptions = {}): FilesPlugin => {
       rangeRead: false,
       resumable: false,
       signedUpload: { contentType: false, maxSize: false, supported: false },
-      signedUrl: { disposition: false, expiry: "none", supported: false },
+      signedUrl: {
+        contentType: false,
+        disposition: false,
+        expiry: "none",
+        supported: false,
+      },
     }),
     // A provider event reports the stored object's size, not the caller's
     // (the transformed body); the stored ETag and type still describe it. The

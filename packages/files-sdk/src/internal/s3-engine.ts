@@ -198,6 +198,7 @@ export const lazyS3Adapter = (
         supported: true,
       },
       signedUrl: {
+        contentType: true,
         disposition: true,
         expiry: "exact",
         maxExpiresIn: SIGV4_MAX_EXPIRES_IN,

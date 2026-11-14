@@ -372,6 +372,7 @@ describe("encryption plugin — capabilities + gateway", () => {
   test("advertises no presigned URLs and no range reads", async () => {
     const files = await encrypted(signing());
     expect(files.capabilities.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,

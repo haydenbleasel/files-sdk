@@ -260,6 +260,7 @@ describe("minio adapter — fetch engine", () => {
       supported: true,
     });
     expect(capabilities.signedUrl).toEqual({
+      contentType: true,
       disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,

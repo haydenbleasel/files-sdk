@@ -584,6 +584,7 @@ describe("failover — capabilities across backends", () => {
     expect(caps.metadata).toBe(false);
     expect(caps.cacheControl).toBe(true);
     expect(caps.signedUrl).toEqual({
+      contentType: false,
       disposition: true,
       expiry: "exact",
       supported: true,
@@ -666,23 +667,27 @@ describe("intersectCapabilities", () => {
     const signed = (signedUrl: AdapterCapabilities["signedUrl"]) =>
       noCaps({ signedUrl });
     const exact = signed({
+      contentType: true,
       disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,
       supported: true,
     });
     const provider = signed({
+      contentType: false,
       disposition: false,
       expiry: "provider",
       maxExpiresIn: 3600,
       supported: true,
     });
     const uncapped = signed({
+      contentType: true,
       disposition: true,
       expiry: "exact",
       supported: true,
     });
     expect(intersectCapabilities(exact, provider).signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "provider",
       maxExpiresIn: 3600,
@@ -698,6 +703,7 @@ describe("intersectCapabilities", () => {
       uncapped.signedUrl
     );
     expect(intersectCapabilities(exact, noCaps()).signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,

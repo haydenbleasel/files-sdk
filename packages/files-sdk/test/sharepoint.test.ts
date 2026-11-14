@@ -549,6 +549,7 @@ describe("sharepoint adapter", () => {
       supported: true,
     });
     expect(caps.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,

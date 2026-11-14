@@ -22,7 +22,7 @@ import type {
 import { FOLD_PROVIDER_EVENT } from "../src/internal/events.js";
 import { memory as memoryAdapter } from "../src/memory/index.js";
 import { signedUrlPolicy } from "../src/signed-url-policy/index.js";
-import { fakeAdapter } from "./fake-adapter.js";
+import { fakeAdapter, withCapabilities } from "./fake-adapter.js";
 
 // Wrap an adapter and record the keys each read/write verb is called with.
 const counting = (inner: Adapter = fakeAdapter()) => {
@@ -162,6 +162,25 @@ describe("cache plugin — url", () => {
     await files.url("a.txt", { expiresIn: 60 });
 
     expect(calls.url).toHaveLength(2);
+  });
+
+  test("caches url variants apart by responseContentType", async () => {
+    const { adapter, calls } = counting(
+      withCapabilities(fakeAdapter(), {
+        signedUrl: { contentType: true, disposition: true, supported: true },
+      })
+    );
+    const files = withCache({}, adapter);
+    await files.upload("a.pdf", "hello");
+
+    await files.url("a.pdf");
+    await files.url("a.pdf", { responseContentType: "application/pdf" });
+    await files.url("a.pdf", { responseContentType: "text/plain" });
+    // Repeats of each variant are served from cache.
+    await files.url("a.pdf", { responseContentType: "application/pdf" });
+    await files.url("a.pdf");
+
+    expect(calls.url).toHaveLength(3);
   });
 
   test("caps a cached url at its own expiresIn", async () => {

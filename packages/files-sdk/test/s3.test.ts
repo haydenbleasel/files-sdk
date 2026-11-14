@@ -1386,6 +1386,24 @@ describe("s3 adapter", () => {
     expect(signed).not.toContain("cdn.example.com");
   });
 
+  test("url binds responseContentType as response-content-type and forces signing over publicBaseUrl", async () => {
+    const adapter = s3({
+      bucket: "b",
+      credentials: { accessKeyId: "AKID", secretAccessKey: "SECRET" },
+      publicBaseUrl: "https://cdn.example.com",
+      region: "us-east-1",
+    });
+    const signed = new URL(
+      await adapter.url("a.pdf", { responseContentType: "application/pdf" })
+    );
+    expect(signed.searchParams.get("response-content-type")).toBe(
+      "application/pdf"
+    );
+    expect(signed.searchParams.has("response-content-disposition")).toBe(false);
+    expect(signed.searchParams.has("X-Amz-Signature")).toBe(true);
+    expect(signed.host).not.toBe("cdn.example.com");
+  });
+
   test("url with an explicit expiresIn forces signing even when publicBaseUrl is set", async () => {
     const files = new Files({
       adapter: s3({
@@ -1777,6 +1795,7 @@ describe("s3 adapter", () => {
       adapter: s3({ bucket: "b", region: "us-east-1" }),
     });
     expect(files.capabilities.signedUrl).toEqual({
+      contentType: true,
       disposition: true,
       expiry: "exact",
       maxExpiresIn: 604_800,

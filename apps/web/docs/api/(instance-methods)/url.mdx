@@ -34,7 +34,17 @@ const short = await files.url("avatars/abc.png", { expiresIn: 60 });
 const safe = await files.url("avatars/abc.png", {
   responseContentDisposition: "attachment",
 });
+
+// Preview a PDF that was stored as application/octet-stream: override the
+// Content-Type too, or the browser downloads it despite `inline`. Also
+// forces signing; `Unsupported` where the adapter can't bind it.
+const preview = await files.url("reports/q3.pdf", {
+  responseContentDisposition: 'inline; filename="q3.pdf"',
+  responseContentType: "application/pdf",
+});
 ```
+
+`responseContentType` must be exactly one media type, written in ASCII, or the call throws `Invalid`. It's bound into the signature on S3 and the S3-compatible catalog (either engine), Bun's S3, Google Cloud Storage, Firebase Storage, Azure with a signer, and the R2 binding with HTTP credentials ([`capabilities.signedUrl.contentType`](/docs/capabilities#signedurl)); every other adapter refuses it with `Unsupported` before it's called. Never pass a value a user chose: `text/html` turns any stored bytes into a page that runs at your bucket's origin.
 
 ## Options
 

@@ -305,6 +305,7 @@ describe("dedup plugin — capabilities", () => {
     );
     const caps = withDedup({}, adapter).capabilities;
     expect(caps.signedUrl).toEqual({
+      contentType: false,
       disposition: false,
       expiry: "none",
       supported: false,
