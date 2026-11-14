@@ -410,7 +410,10 @@ const readSidecar = async (bodyPath: string): Promise<Sidecar | undefined> => {
     }
     return undefined;
   } catch (error) {
-    if (errorCode(error) === "ENOENT") {
+    // `EISDIR` is a folder at the sidecar path: `report.meta.json/page.txt`
+    // is an ordinary key, and its folder is not `report`'s sidecar.
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "EISDIR") {
       return undefined;
     }
     throw mapFsError(error);
@@ -512,6 +515,15 @@ const commitStaged = async (
   sidecar: Sidecar
 ): Promise<void> => {
   const sidecarPath = sidecarPathOf(bodyPath);
+  // The sidecar is renamed into place after the body, so one that can never
+  // land (a folder is in its way) would fail the write with the new body
+  // already published. Refuse before anything is renamed.
+  if (await isFolder(sidecarPath)) {
+    throw new FilesError(
+      "Conflict",
+      "fs: a folder sits where this key's sidecar belongs"
+    );
+  }
   const stagedSidecarPath = tempPathFor(sidecarPath);
   try {
     await fsp.writeFile(stagedSidecarPath, JSON.stringify(sidecar));

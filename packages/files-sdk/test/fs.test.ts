@@ -1603,6 +1603,39 @@ describe("fs adapter", () => {
       await fsp.writeFile(path.join(root, "x.bin.meta.json"), "{not json");
       await expect(files.list()).rejects.toMatchObject({ code: "Provider" });
     });
+
+    test("a folder named like a key's sidecar is not that key's sidecar", async () => {
+      const root = await makeRoot();
+      const files = new Files({ adapter: fsAdapter({ root }), retries: 0 });
+      await files.upload("other.txt", "o");
+      // `report.meta.json/` is an ordinary folder here; it also happens to
+      // sit at the path where the key `report` keeps its sidecar.
+      await files.upload("report.meta.json/page.txt", "p");
+      await fsp.writeFile(path.join(root, "report"), "by hand");
+
+      const { items } = await files.list();
+      expect(items.map((item) => item.key)).toEqual([
+        "other.txt",
+        "report",
+        "report.meta.json/page.txt",
+      ]);
+      expect(await files.head("report")).toMatchObject({
+        contentType: "application/octet-stream",
+        size: 7,
+      });
+      const body = await files.download("report");
+      expect(await body.text()).toBe("by hand");
+
+      // The sidecar can't be written, so the upload is refused before the
+      // body is replaced rather than failing with the new body in place.
+      await expect(files.upload("report", "v2")).rejects.toMatchObject({
+        code: "Conflict",
+      });
+      const kept = await files.download("report");
+      expect(await kept.text()).toBe("by hand");
+      const entries = await fsp.readdir(root);
+      expect(entries.some((name) => name.endsWith(".fls-tmp"))).toBe(false);
+    });
   });
 
   describe("upload failure cleanup", () => {
