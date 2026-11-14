@@ -638,6 +638,19 @@ export const sftp = (opts: SftpAdapterOptions = {}): SftpAdapter => {
         return;
       }
       await run(opts2?.signal, async (client) => {
+        // `rename` moves a directory with everything under it. A directory
+        // is not an object (`head` reports it as NotFound), so neither is its
+        // move — and a missing source is settled here too, before a parent
+        // folder is created for a destination that will never arrive.
+        const source = await client.exists(fromRemote);
+        if (source === false || source === "d") {
+          throw new FilesError(
+            "NotFound",
+            source === "d"
+              ? `sftp: ${from} is a directory, not a file`
+              : `sftp: ${from} not found`
+          );
+        }
         // Native rename — no body round-trip. Ensure the destination's parent
         // exists first (rename won't create it). An existing destination is
         // overwritten, as on every other adapter: base SFTP `rename` refuses

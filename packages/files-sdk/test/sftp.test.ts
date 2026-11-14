@@ -398,6 +398,32 @@ describe("sftp adapter", () => {
     expect(deletes).toBe(0);
   });
 
+  test("move of a directory is NotFound, never a rename of its whole tree", async () => {
+    // SFTP `rename` moves a directory with everything under it; a directory
+    // is not an object (head/exists report it missing), so neither is its move.
+    const client = makeFakeClient();
+    const renames: string[][] = [];
+    client.rename = (from: string, to: string) => {
+      renames.push([from, to]);
+      return Promise.resolve("ok");
+    };
+    const files = new Files({ adapter: sftp({ client }) });
+    await files.upload("dir/a.txt", "A");
+    await expect(files.move("dir", "other")).rejects.toMatchObject({
+      code: "NotFound",
+    });
+    expect(renames).toEqual([]);
+    expect(store.get("dir/a.txt")?.bytes.toString()).toBe("A");
+  });
+
+  test("move of a missing source is NotFound without creating the destination folder", async () => {
+    const files = newFiles();
+    await expect(
+      files.move("missing.txt", "new-folder/dest.txt")
+    ).rejects.toMatchObject({ code: "NotFound" });
+    expect(dirs.has("new-folder")).toBe(false);
+  });
+
   test("copy of a directory is NotFound, not a retryable read failure", async () => {
     // Reading a directory fails with a generic FAILURE (4) on a real server.
     let reads = 0;
