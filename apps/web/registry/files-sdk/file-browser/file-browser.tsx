@@ -24,11 +24,12 @@ export interface FileBrowserProps {
   delimiter?: string;
   /**
    * Max entries fetched per page, sent as `list()`'s `limit`; the rest load
-   * via "Load more". Must be a positive integer: anything else fails the
-   * listing with an `Invalid` error. The gateway caps it at its
-   * `maxListLimit` and at `authorize`'s `maxResults`; unset, each page is
-   * that cap (1000 by default). Changing it re-lists the open folder from
-   * its first page.
+   * via "Load more". The gateway caps it at its `maxListLimit` and at
+   * `authorize`'s `maxResults`; unset, each page is that cap (1000 by
+   * default). Must be a positive integer: under the caps, anything else
+   * fails the listing with an `Invalid` error (a value over a cap is
+   * replaced by the cap before it's checked). Changing it re-lists the open
+   * folder from its first page.
    */
   pageSize?: number;
   /**
