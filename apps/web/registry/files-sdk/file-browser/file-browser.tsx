@@ -23,8 +23,12 @@ export interface FileBrowserProps {
   /** Delimiter that marks a folder boundary. Default `"/"`. */
   delimiter?: string;
   /**
-   * Max entries fetched per page; the rest load via "Load more". Defaults to
-   * the adapter's own page size (usually 1000).
+   * Max entries fetched per page, sent as `list()`'s `limit`; the rest load
+   * via "Load more". Must be a positive integer: anything else fails the
+   * listing with an `Invalid` error. The gateway caps it at its
+   * `maxListLimit` and at `authorize`'s `maxResults`; unset, each page is
+   * that cap (1000 by default). Changing it re-lists the open folder from
+   * its first page.
    */
   pageSize?: number;
   /**
@@ -201,8 +205,8 @@ export const FileBrowser = ({
     [canDelimit, prefix, delimiter, pageSize]
   );
 
-  // A new folder starts from a clean slate rather than showing the previous
-  // folder's rows under the new breadcrumb while it loads.
+  // A new folder (or page size) starts from a clean slate rather than showing
+  // the previous listing's rows under the new breadcrumb while it loads.
   useEffect(() => {
     setFolders([]);
     setItems([]);
