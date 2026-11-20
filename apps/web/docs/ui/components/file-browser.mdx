@@ -37,6 +37,8 @@ Folders come straight from `list()`'s `prefixes`, which the gateway returns when
 
 Each file row also carries a [File Actions](/docs/ui/components/file-actions) menu — download, copy, rename, move and delete — unless you pass `readOnly`. Mutations re-list the current folder automatically; pass `onChanged` to refresh anything else (a [Trash Bin](/docs/ui/components/trash-bin), a usage meter) alongside it.
 
+Each listing fetches one page of the adapter's default size (usually 1000). Pass `pageSize` to fetch fewer at a time, e.g. `pageSize={20}`; the rest load through "Load more". The gateway still caps it at its `maxListLimit`, and on some adapters (S3, for one) folders count toward the page along with files.
+
 ## Upload into the open folder
 
 Point a [Dropzone](/docs/ui/components/dropzone)'s `prefix` at the folder `onNavigate` reports, and give both components the same `useFiles()` instance:
