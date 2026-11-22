@@ -83,7 +83,7 @@ export const { GET, POST, PUT } = createRouteHandler(router);
 `getSession` stands in for your auth library (Auth.js, Clerk, Better Auth, or your own cookie check). This guide assumes it takes request headers and returns `{ user: { id: string } }` or `null`.
 
 - **`capabilities` is on the list on purpose.** File Browser asks for it once on mount to decide between a folder listing and a flat one, and File Preview asks before it shows an image. `authorize` runs for `capabilities` like any other verb. If it throws, File Browser falls back to a folder listing, but File Preview shows the error (`capabilities is not allowed`) where the image should be.
-- **`maxResults` sets the page size.** File Browser doesn't pass a `limit`, so without it each page holds up to the gateway's `maxListLimit`, 1,000 entries by default. With `50`, a folder of 60 files shows 50 rows and a **Load more** button that fetches the other 10.
+- **`maxResults` caps the page size.** Unless you give File Browser a `pageSize`, it doesn't pass a `limit`, so without `maxResults` each page holds up to the gateway's `maxListLimit`, 1,000 entries by default. With `50`, a folder of 60 files shows 50 rows and a **Load more** button that fetches the other 10. A `pageSize` smaller than `maxResults` makes the pages smaller still; a larger one is capped at `maxResults`.
 - **`keyPrefix` keeps users apart.** Every key the components send gets `users/<id>/` prepended on the server, and every key they receive has it stripped. [Isolate each tenant's files](/guides/multi-tenant-file-storage) shows what the gateway returns when a user tries to reach outside their prefix.
 
 ## Build the page

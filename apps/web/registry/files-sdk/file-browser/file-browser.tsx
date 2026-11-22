@@ -23,6 +23,16 @@ export interface FileBrowserProps {
   /** Delimiter that marks a folder boundary. Default `"/"`. */
   delimiter?: string;
   /**
+   * Max entries fetched per page, sent as `list()`'s `limit`; the rest load
+   * via "Load more". The gateway caps it at its `maxListLimit` and at
+   * `authorize`'s `maxResults`; unset, each page is that cap (1000 by
+   * default). Must be a positive integer: under the caps, anything else
+   * fails the listing with an `Invalid` error (a value over a cap is
+   * replaced by the cap before it's checked). Changing it re-lists the open
+   * folder from its first page.
+   */
+  pageSize?: number;
+  /**
    * Called with the open folder's prefix (`""` for the root) on mount and
    * whenever the user opens another folder, e.g. to point a `Dropzone`'s
    * `prefix` at it.
@@ -95,6 +105,7 @@ export const FileBrowser = ({
   files,
   initialPrefix = "",
   delimiter = "/",
+  pageSize,
   onNavigate,
   onSelect,
   onChanged,
@@ -167,6 +178,7 @@ export const FileBrowser = ({
         const result = await filesRef.current.list({
           cursor: next || undefined,
           delimiter: canDelimit ? delimiter : undefined,
+          limit: pageSize,
           prefix: prefix || undefined,
         });
         if (request !== requestRef.current) {
@@ -191,11 +203,11 @@ export const FileBrowser = ({
         }
       }
     },
-    [canDelimit, prefix, delimiter]
+    [canDelimit, prefix, delimiter, pageSize]
   );
 
-  // A new folder starts from a clean slate rather than showing the previous
-  // folder's rows under the new breadcrumb while it loads.
+  // A new folder (or page size) starts from a clean slate rather than showing
+  // the previous listing's rows under the new breadcrumb while it loads.
   useEffect(() => {
     setFolders([]);
     setItems([]);

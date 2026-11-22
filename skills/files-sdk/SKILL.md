@@ -172,6 +172,8 @@ See [references/bulk-and-transfer.md](references/bulk-and-transfer.md).
 
 `list({ delimiter: "/" })` collapses keys at the boundary into S3-style common prefixes — the building block for a file-browser UI. With `prefix: "photos/"`, `items` are the direct files and `ListResult.prefixes` holds the subfolders (`["photos/2023/", "photos/2024/"]`). Object stores and folder-based providers support it (folder-based ones only accept `"/"`); flat stores (UploadThing, Appwrite, PocketBase, Convex, Bunny Storage) **throw** — check `files.capabilities.delimiter`. A cursor is only valid for the exact `prefix` **and** `delimiter` it was produced with.
 
+The shadcn registry's File Browser component (`https://files-sdk.dev/r/file-browser.json`) is that UI over `useFiles()`. Pass it `pageSize` (sent as `list()`'s `limit`, e.g. `pageSize={20}`) to keep each page small; the rest load through "Load more". Without it, each page is as large as the gateway allows: `maxListLimit` (default 1000), or `authorize`'s `maxResults` when lower. Both caps also apply to `pageSize`.
+
 ## URL behavior
 
 `url(key, opts?)` returns the most direct URL the adapter can produce. Behavior is not uniform:
