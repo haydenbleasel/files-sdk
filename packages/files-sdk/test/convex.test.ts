@@ -31,8 +31,10 @@ const acceptsQueryCtx = (c: GenericQueryCtx<GenericDataModel>): ConvexCtx => c;
 //
 // Mirrors how Convex gates capabilities by function context: actions expose
 // store/get (and the writer + reader methods); mutations expose the writer +
-// reader methods plus ctx.db; queries expose only the reader methods plus
-// ctx.db. We build the three context shapes from one shared backend.
+// reader methods plus ctx.db, and from Convex 1.48 store/get as well; queries
+// expose only the reader methods plus ctx.db. We build each context shape
+// from one shared backend (`mutationCtx` is the pre-1.48 mutation,
+// `blobMutationCtx` the 1.48+ one).
 
 interface Entry {
   bytes: Uint8Array;
@@ -153,6 +155,10 @@ const makeBackend = () => {
 
   return {
     actionCtx: { storage: { ...reader, ...writer, ...action } },
+    blobMutationCtx: {
+      db: { system },
+      storage: { ...reader, ...writer, ...action },
+    },
     mutationCtx: { db: { system }, storage: { ...reader, ...writer } },
     put,
     queryCtx: { db: { system }, storage: { ...reader } },
@@ -280,15 +286,46 @@ describe("convex adapter", () => {
   });
 
   describe("context gating", () => {
-    test("upload/download require an action context", async () => {
-      const { mutationCtx } = makeBackend();
-      const adapter = convex({ ctx: mutationCtx });
-      await expect(adapter.upload("k", "x")).rejects.toMatchObject({
-        code: "Unsupported",
+    test.each([
+      ["a mutation before Convex 1.48", "mutationCtx"],
+      ["a query", "queryCtx"],
+    ] as const)(
+      "upload/download need ctx.storage.store/get, missing in %s",
+      async (_label, kind) => {
+        const adapter = convex({ ctx: makeBackend()[kind] });
+        await expect(adapter.upload("k", "x")).rejects.toMatchObject({
+          code: "Unsupported",
+          message: expect.stringMatching(
+            /upload\(\) needs ctx\.storage\.store .* mutation on Convex 1\.48 or later/u
+          ),
+        });
+        await expect(adapter.download("kg000000")).rejects.toMatchObject({
+          code: "Unsupported",
+          message: expect.stringMatching(/download\(\) needs ctx\.storage/u),
+        });
+      }
+    );
+
+    test("upload/download work in a mutation on Convex 1.48+, alongside list", async () => {
+      // Convex 1.48 added `store` / `get` to the mutation's `ctx.storage`.
+      // The adapter feature-detects them, so one mutation context can now
+      // write, read back, and list.
+      const { blobMutationCtx } = makeBackend();
+      const files = new Files({ adapter: convex({ ctx: blobMutationCtx }) });
+      const uploaded = await files.upload("ignored", "hello");
+      // `ctx.db` is there too, so the result carries the system-table fields
+      // (`sha256` as the etag, `_creationTime` as `lastModified`).
+      expect(uploaded).toMatchObject({
+        etag: sha256Hex(new TextEncoder().encode("hello")),
+        lastModified: 1_700_000_000_000,
+        size: 5,
       });
-      await expect(adapter.download("kg000000")).rejects.toThrow(
-        /requires an action context/u
-      );
+      const file = await files.download(uploaded.key);
+      expect(await file.text()).toBe("hello");
+      const { items } = await files.list();
+      expect(items.map((item) => item.key)).toEqual([uploaded.key]);
+      await files.delete(uploaded.key);
+      expect(await files.exists(uploaded.key)).toBe(false);
     });
 
     test("list requires a query/mutation context (ctx.db)", async () => {

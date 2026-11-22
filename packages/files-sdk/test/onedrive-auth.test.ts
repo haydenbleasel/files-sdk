@@ -9,7 +9,11 @@ import {
   test,
 } from "bun:test";
 
-import { AuthenticationError, ClientSecretCredential } from "@azure/identity";
+import {
+  AuthenticationError,
+  AuthenticationRequiredError,
+  ClientSecretCredential,
+} from "@azure/identity";
 import type { AuthenticationProvider } from "@microsoft/microsoft-graph-client";
 import { Client } from "@microsoft/microsoft-graph-client";
 
@@ -396,6 +400,76 @@ describe("onedrive auth construction", () => {
       proto.getToken = stub;
     }
   });
+
+  // @azure/identity 4.14+ rejects with an `AuthenticationRequiredError` whose
+  // `cause` is the MSAL error. These are the shapes a failing, throttled, or
+  // unreachable token endpoint produces (`ServerError` with the HTTP status,
+  // `ClientAuthError` with `network_error`), next to a rejected secret.
+  const clientCredentialsError = async (cause: unknown) => {
+    const proto = ClientSecretCredential.prototype as unknown as {
+      getToken: () => unknown;
+    };
+    const stub = proto.getToken;
+    proto.getToken = () =>
+      Promise.reject(
+        new AuthenticationRequiredError({
+          cause,
+          message: "token request failed upstream",
+          scopes: ["https://graph.microsoft.com/.default"],
+        })
+      );
+    try {
+      onedrive({
+        clientCredentials: { clientId: "c", clientSecret: "s", tenantId: "t" },
+        driveId: "d1",
+      });
+      return await graphCallError();
+    } finally {
+      proto.getToken = stub;
+    }
+  };
+
+  test.each([
+    [
+      "a failing token endpoint",
+      { errorCode: "server_error", name: "ServerError", status: 503 },
+    ],
+    [
+      "a throttled token endpoint",
+      { errorCode: "throttled", name: "ServerError", status: 429 },
+    ],
+    [
+      "an unreachable token endpoint",
+      { errorCode: "network_error", name: "ClientAuthError" },
+    ],
+  ])(
+    "clientCredentials: %s stays a retryable Provider error",
+    async (_label, cause) => {
+      const err = await clientCredentialsError(cause);
+      expect(err.code).toBe("Provider");
+      expect(err.message).toBe(
+        "onedrive: token request failed: token request failed upstream"
+      );
+    }
+  );
+
+  test.each([
+    [
+      "a rejected client secret",
+      { errorCode: "invalid_client", name: "ServerError", status: 401 },
+    ],
+    ["a cause without a status or error code", { name: "ServerError" }],
+    ["a non-object cause", "invalid_client"],
+    // What @azure/identity before 4.14 throws: no cause to tell them apart.
+    ["no cause at all", undefined],
+  ])(
+    "clientCredentials: %s surfaces as Unauthorized",
+    async (_label, cause) => {
+      const err = await clientCredentialsError(cause);
+      expect(err.code).toBe("Unauthorized");
+      expect(err.message).toBe("token request failed upstream");
+    }
+  );
 
   test("env-var fallback uses ONEDRIVE_ACCESS_TOKEN when no opts are passed", async () => {
     const prev = process.env.ONEDRIVE_ACCESS_TOKEN;

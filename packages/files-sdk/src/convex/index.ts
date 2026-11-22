@@ -35,8 +35,9 @@ interface ConvexStorageDoc {
 // because these parameters (`ConvexStorageId` = `string`) are wider than
 // Convex's `Id<"_storage"> | string`. `getUrl` is the only member present in
 // every function context; the rest are optional because Convex gates them by
-// context (`store`/`get` are action-only; `delete` / `generateUploadUrl` are
-// writer-only) and the adapter feature-detects them.
+// context (`store`/`get` are in actions, and in mutations from Convex 1.48;
+// `delete` / `generateUploadUrl` are writer-only) and the adapter
+// feature-detects them.
 interface ConvexStorageLike {
   getUrl: (storageId: ConvexStorageId) => Promise<string | null>;
   store?: (
@@ -103,8 +104,10 @@ export interface ConvexAdapterOptions {
    * Which operations work depends on the context Convex gives you:
    * - **action / httpAction** — `upload`, `download`, `delete`, `url`, `head`,
    *   `exists`. `list` throws (no `ctx.db`).
-   * - **mutation** — `delete`, `url`, `head`, `exists`, `list`. `upload` /
-   *   `download` throw (no `ctx.storage.store` / `get` outside actions).
+   * - **mutation** — `delete`, `url`, `head`, `exists`, `list`. On Convex 1.48
+   *   and later also `upload` and `download` (`ctx.storage.store` / `get`
+   *   reached mutations then, and their bytes count toward the mutation's
+   *   transaction limits); on older versions those two throw.
    * - **query** — `url`, `head`, `exists`, `list` (all read-only).
    *
    * The adapter feature-detects the underlying primitive and throws a
@@ -131,8 +134,8 @@ const mapConvexError = (cause: unknown): FilesError => {
   return new FilesError("Provider", message, cause);
 };
 
-const REQUIRES_ACTION =
-  "requires an action context (ctx.storage.store / ctx.storage.get), which is unavailable in queries and mutations. Call it from a Convex action.";
+const NEEDS_BLOB_ACCESS =
+  "needs ctx.storage.store / ctx.storage.get, which this context doesn't have: queries never do, and mutations only from Convex 1.48. Call it from a Convex action, or from a mutation on Convex 1.48 or later.";
 
 export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
   const ctx = opts?.ctx;
@@ -229,7 +232,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       if (!isFunction(storage.get)) {
         throw new FilesError(
           "Unsupported",
-          `convex: download() ${REQUIRES_ACTION}`
+          `convex: download() ${NEEDS_BLOB_ACCESS}`
         );
       }
       let blob: Blob | null;
@@ -355,7 +358,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       return Promise.reject(
         new FilesError(
           "Unsupported",
-          "convex: signedUploadUrl() is not supported. Convex generateUploadUrl() cannot bind the caller's key, expiresIn, maxSize, minSize, or contentType into the issued upload capability; upload through a Convex action with files.upload() instead."
+          "convex: signedUploadUrl() is not supported. Convex generateUploadUrl() cannot bind the caller's key, expiresIn, maxSize, minSize, or contentType into the issued upload capability; upload through a Convex action (or a mutation on Convex 1.48+) with files.upload() instead."
         )
       );
     },
@@ -366,7 +369,7 @@ export const convex = (opts: ConvexAdapterOptions): ConvexAdapter => {
       if (!isFunction(storage.store)) {
         throw new FilesError(
           "Unsupported",
-          `convex: upload() ${REQUIRES_ACTION}`
+          `convex: upload() ${NEEDS_BLOB_ACCESS}`
         );
       }
       // The caller-supplied `key` is ignored: Convex assigns the id. It is

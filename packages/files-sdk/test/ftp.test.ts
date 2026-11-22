@@ -600,6 +600,35 @@ describe("ftp adapter", () => {
     });
   });
 
+  // FTP is a line protocol, so a CR or LF in a path would end the command.
+  // basic-ftp refuses to send one, but before 6.2.3 that refusal could throw
+  // from inside a socket handler; the adapter refuses the key itself so every
+  // supported version fails the same deterministic way.
+  test.each([
+    ["a CRLF and a second command", "a.txt\r\nDELE a.txt"],
+    ["an LF", "dir/b\n.txt"],
+    ["a CR", "c\r.txt"],
+  ])(
+    "a key with %s is rejected before any command is sent",
+    async (_label, key) => {
+      const files = newFiles();
+      await files.upload("a.txt", "x");
+      const refused = {
+        code: "Invalid",
+        message: expect.stringMatching(/line breaks/u),
+      };
+      await expect(files.upload(key, "x")).rejects.toMatchObject(refused);
+      await expect(files.download(key)).rejects.toMatchObject(refused);
+      await expect(
+        files.download(key, { range: { start: 1 } })
+      ).rejects.toMatchObject(refused);
+      await expect(files.head(key)).rejects.toMatchObject(refused);
+      await expect(files.delete(key)).rejects.toMatchObject(refused);
+      await expect(files.copy("a.txt", key)).rejects.toMatchObject(refused);
+      expect([...store.keys()]).toEqual(["a.txt"]);
+    }
+  );
+
   test("metadata and cacheControl on upload throw", async () => {
     const files = newFiles();
     await expect(

@@ -409,6 +409,11 @@ export const appwrite = (opts: AppwriteAdapterOptions): AppwriteAdapter => {
               "X-Appwrite-Project": cfg.projectId,
             },
             method: "POST",
+            // Never follow a redirect: `fetch` re-sends custom headers, so the
+            // API key would go to whatever host the redirect names.
+            // node-appwrite refuses redirects on every SDK call the same way
+            // (31.1+). The 3xx then fails below like any other refusal.
+            redirect: "manual",
             ...(signal && { signal }),
           }
         );

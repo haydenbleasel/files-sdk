@@ -581,9 +581,24 @@ const fromRawInfo = (body: JsonValue | undefined): SupabaseInfoLike => {
  * dropping leading slashes as storage-js does). The Storage server decodes
  * each segment back, so `?`, `#`, `%`, spaces and non-ASCII reach it as part
  * of the key instead of ending the path or being decoded twice.
+ *
+ * A `.` or `..` segment is refused. `encodeURIComponent` leaves dots alone and
+ * URL parsing then resolves them, so `a/../b.txt` would address `b.txt`,
+ * `../other-bucket/x` another bucket, and `../../../../auth/v1/…` another
+ * Supabase API altogether, each with the client's credentials attached.
+ * storage-js refuses a path that leaves the bucket on its own requests
+ * (2.119.2+); the requests built here never pass through that check.
  */
-const encodeObjectPath = (key: string): string =>
-  key.replace(/^\/+/u, "").split("/").map(encodeURIComponent).join("/");
+const encodeObjectPath = (key: string): string => {
+  const segments = key.replace(/^\/+/u, "").split("/");
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new FilesError(
+      "Invalid",
+      `supabase: key ${JSON.stringify(key)} has a "." or ".." path segment. A Storage URL resolves those, so the request would address a different object or leave the bucket. Rename the key.`
+    );
+  }
+  return segments.map(encodeURIComponent).join("/");
+};
 
 /**
  * storage-js's upload-path normalisation (`_removeEmptyFolders`): one leading
@@ -939,6 +954,8 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     download: true | string | undefined,
     signal: AbortSignal | undefined
   ): Promise<string> => {
+    // Encoded first: a key the URL can't address is refused before signing.
+    const path = objectPath(key);
     const res = await send(ctx, `/object/sign/${bucketPath}`, {
       body: JSON.stringify({ expiresIn, paths: [key] }),
       headers: { "content-type": "application/json" },
@@ -973,7 +990,7 @@ export const supabase = (opts: SupabaseAdapterOptions): SupabaseAdapter => {
     if (download !== undefined) {
       query.set("download", download === true ? "" : download);
     }
-    return `${ctx.url}/object/sign/${objectPath(key)}?${query.toString()}`;
+    return `${ctx.url}/object/sign/${path}?${query.toString()}`;
   };
 
   /**

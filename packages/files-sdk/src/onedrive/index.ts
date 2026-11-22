@@ -673,6 +673,60 @@ class RefreshTokenCredential implements TokenCredential {
   }
 }
 
+// @azure/identity reports every failed token request as an
+// `AuthenticationRequiredError`, which reads as a rejected credential once the
+// Graph client has flattened it (see `UNAUTH_CODES`). From 4.14 that error
+// carries the underlying MSAL error as `cause`: a `ServerError` with the token
+// endpoint's HTTP status, or a `ClientAuthError` with `network_error` when the
+// endpoint couldn't be reached. Older versions carry no `cause`, so nothing
+// here matches and they keep reporting `Unauthorized`.
+const isTransientTokenFailure = (cause: unknown): boolean => {
+  const msalError =
+    isObject(cause) && "cause" in cause ? cause.cause : undefined;
+  if (!isObject(msalError)) {
+    return false;
+  }
+  if ("errorCode" in msalError && msalError.errorCode === "network_error") {
+    return true;
+  }
+  return (
+    "status" in msalError &&
+    isNumber(msalError.status) &&
+    (msalError.status === 429 || msalError.status >= 500)
+  );
+};
+
+// `ClientSecretCredential`, with a throttled, failing, or unreachable token
+// endpoint kept as a retryable `Provider` error rather than a definitive
+// credential rejection, matching `RefreshTokenCredential` above.
+const clientSecretCredential = (creds: {
+  clientId: string;
+  clientSecret: string;
+  tenantId: string;
+}): TokenCredential => {
+  const inner = new ClientSecretCredential(
+    creds.tenantId,
+    creds.clientId,
+    creds.clientSecret
+  );
+  return {
+    async getToken(scopes, options) {
+      try {
+        return await inner.getToken(scopes, options);
+      } catch (error) {
+        if (isTransientTokenFailure(error)) {
+          throw new FilesError(
+            "Provider",
+            `onedrive: token request failed: ${error instanceof Error ? error.message : String(error)}`,
+            error
+          );
+        }
+        throw error;
+      }
+    },
+  };
+};
+
 const createStaticAccessTokenAuthProvider = (
   source: string | (() => string | Promise<string>)
 ): AuthenticationProvider => ({
@@ -726,11 +780,7 @@ export const buildAuthProvider = (
     return createStaticAccessTokenAuthProvider(opts.accessToken);
   }
   if (opts.clientCredentials) {
-    const credential = new ClientSecretCredential(
-      opts.clientCredentials.tenantId,
-      opts.clientCredentials.clientId,
-      opts.clientCredentials.clientSecret
-    );
+    const credential = clientSecretCredential(opts.clientCredentials);
     return new TokenCredentialAuthenticationProvider(credential, {
       scopes: [GRAPH_DEFAULT_SCOPE],
     });
@@ -752,11 +802,7 @@ export const buildAuthProvider = (
   }
   const envCreds = envClientCredentials();
   if (envCreds) {
-    const credential = new ClientSecretCredential(
-      envCreds.tenantId,
-      envCreds.clientId,
-      envCreds.clientSecret
-    );
+    const credential = clientSecretCredential(envCreds);
     return new TokenCredentialAuthenticationProvider(credential, {
       scopes: [GRAPH_DEFAULT_SCOPE],
     });

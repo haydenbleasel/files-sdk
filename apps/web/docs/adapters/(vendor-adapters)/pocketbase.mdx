@@ -33,6 +33,8 @@ const files = new Files({
 });
 ```
 
+From `pocketbase` 0.29 the SDK signs a client out when any request answers `401`. With credentials the adapter manages, the next call simply logs in again. With your own `client`, a `401` on an adapter request clears that shared client's auth store too; call `client.autoClearAuthStore(false)` before passing it in to keep the session.
+
 ## Options
 
 <AutoTypeTable

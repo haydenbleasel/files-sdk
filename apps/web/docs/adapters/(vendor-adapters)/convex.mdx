@@ -23,9 +23,10 @@ import { convex } from "files-sdk/convex";
 import { action, query } from "./_generated/server";
 import { v } from "convex/values";
 
-// Upload + download need an *action* (Convex exposes ctx.storage.store /
-// ctx.storage.get only there). The returned key is the Convex storage id —
-// persist it in your own table to reference the file later.
+// Upload + download work in an *action*, and from Convex 1.48 in a
+// *mutation* too (that's where ctx.storage.store / ctx.storage.get live).
+// The returned key is the Convex storage id — persist it in your own table
+// to reference the file later.
 export const saveFile = action({
   args: { bytes: v.bytes() },
   handler: async (ctx, { bytes }) => {
@@ -65,13 +66,13 @@ Files live in Convex storage, tracked by the built-in `_storage` system table. E
 
 | Method | Status | Notes |
 | --- | :-: | --- |
-| `upload` | ⚠️ | Requires an action context — `ctx.storage.store` exists only in actions, so calling `upload` from a mutation or query throws. The caller-supplied key is ignored: Convex assigns the storage id, which is returned as the key. Stream bodies are buffered up-front since `store` takes a Blob. User `metadata` and `cacheControl` throw — the `_storage` table is fixed to contentType/sha256/size. Resumable uploads (`control`) are not supported — `ctx.storage.store` is a single call with no resumable session. |
-| `download` | ⚠️ | Requires an action context — `ctx.storage.get` exists only in actions, so calling `download` from a mutation or query throws. The body is buffered into memory: Convex returns a Blob, not a stream. |
+| `upload` | ⚠️ | Requires an action, or a mutation on Convex 1.48 or later — `ctx.storage.store` exists only there, so calling `upload` from a query (or a mutation on older Convex) throws. In a mutation the stored bytes count toward its transaction limits. The caller-supplied key is ignored: Convex assigns the storage id, which is returned as the key. Stream bodies are buffered up-front since `store` takes a Blob. User `metadata` and `cacheControl` throw — the `_storage` table is fixed to contentType/sha256/size. Resumable uploads (`control`) are not supported — `ctx.storage.store` is a single call with no resumable session. |
+| `download` | ⚠️ | Requires an action, or a mutation on Convex 1.48 or later — `ctx.storage.get` exists only there, so calling `download` from a query (or a mutation on older Convex) throws. In a mutation the bytes read count toward its transaction limits. The body is buffered into memory: Convex returns a Blob, not a stream. |
 | `delete` | ⚠️ | Requires a writer context (mutation or action); throws in queries. Idempotent — deleting a missing id is a no-op. |
-| `list` | ⚠️ | Requires a query or mutation context — it reads the `_storage` system table via `ctx.db`, which actions don't have. `prefix` filters by literal storage-id prefix and is rarely meaningful for opaque ids. Pagination uses Convex's `paginate` cursor. List items carry no body; `download()` a key (from an action) for its bytes. |
+| `list` | ⚠️ | Requires a query or mutation context — it reads the `_storage` system table via `ctx.db`, which actions don't have. `prefix` filters by literal storage-id prefix and is rarely meaningful for opaque ids. Pagination uses Convex's `paginate` cursor. List items carry no body; `download()` a key (from an action, or a mutation on Convex 1.48+) for its bytes. |
 | `search` | ⚠️ | Built on `listAll` — inherits this adapter's `list` behavior above. Client-side key match (glob, regex, substring, exact). |
 | `head` | ⚠️ | Reads metadata from the `_storage` system table (`ctx.db.system`) in queries/mutations, or the deprecated `ctx.storage.getMetadata` in actions. |
 | `exists` | ✅ |  |
 | `copy` | ❌ | Throws — Convex assigns immutable storage ids and can't copy to a caller-chosen key. Download the source and `upload()` a new file, then track the new id. |
 | `url` | ⚠️ | Returns Convex's permanent serving URL (`getUrl`), valid while the file exists. `url(key)` returns the permanent link; an explicit `expiresIn` throws `Unsupported`. `responseContentDisposition` throws: Convex serving URLs have no Content-Disposition override; serve untrusted content through your own HTTP action. |
-| `signedUploadUrl` | ❌ | Throws — Convex `generateUploadUrl()` cannot bind the caller's SDK key, expiry, size bounds, or content type into the issued upload capability. Upload through a Convex action with `files.upload()` instead, then track the returned storage id. |
+| `signedUploadUrl` | ❌ | Throws — Convex `generateUploadUrl()` cannot bind the caller's SDK key, expiry, size bounds, or content type into the issued upload capability. Upload through a Convex action (or a mutation on Convex 1.48+) with `files.upload()` instead, then track the returned storage id. |

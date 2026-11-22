@@ -90,6 +90,8 @@ export type FtpAdapter = Adapter<FtpRaw> & { readonly root: string };
 
 const DEFAULT_PORT = 21;
 
+const LINE_BREAK = /[\r\n]/u;
+
 export const mapFtpError = makeErrorMapper({
   codes: {
     conflict: new Set(["552", "553"]),
@@ -425,7 +427,21 @@ export const ftp = (opts: FtpAdapterOptions = {}): FtpAdapter => {
     return root.startsWith("/") ? `/${inner}` : inner;
   })();
 
-  const keyToRemote = (key: string): string => joinRemotePath(root, key);
+  // FTP is a line protocol: a CR or LF in a path would end the command, and
+  // basic-ftp refuses to send one. Before 6.2.3 that refusal could throw from
+  // inside a socket handler (an uncaught exception on a ranged download), and
+  // since then it rejects as a retryable error that still closes the
+  // connection. Refuse the key here instead, so every supported basic-ftp
+  // version fails the same deterministic way, before any command is sent.
+  const keyToRemote = (key: string): string => {
+    if (LINE_BREAK.test(key)) {
+      throw new FilesError(
+        "Invalid",
+        `ftp: key must not contain line breaks: ${JSON.stringify(key)}`
+      );
+    }
+    return joinRemotePath(root, key);
+  };
 
   // An FTP control connection runs one command at a time: basic-ftp closes the
   // whole connection when a second task starts while one is running. Owned

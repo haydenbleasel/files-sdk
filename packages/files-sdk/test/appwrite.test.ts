@@ -1208,6 +1208,49 @@ describe("appwrite resumable uploads (chunked)", () => {
     ).rejects.toThrow(/chunk upload failed/u);
   });
 
+  test("a redirected chunk is refused, not followed with the API key", async () => {
+    // Real `fetch` against two loopback servers: following the 307 would
+    // re-send `X-Appwrite-Key` to whatever host it names. node-appwrite
+    // refuses redirects on every SDK call (31.1+); the raw chunk request
+    // must do the same.
+    const leakedKeys: (string | null)[] = [];
+    const target = Bun.serve({
+      fetch: (req) => {
+        leakedKeys.push(req.headers.get("x-appwrite-key"));
+        return appwriteFileJson(4);
+      },
+      port: 0,
+    });
+    const origin = Bun.serve({
+      fetch: () =>
+        new Response("moved", {
+          headers: { location: `${target.url}v1/storage/buckets/b/files` },
+          status: 307,
+        }),
+      port: 0,
+    });
+    try {
+      const files = new Files({
+        adapter: appwrite({
+          bucket: BUCKET,
+          endpoint: `${origin.url}v1`,
+          key: "api-key",
+          projectId: PROJECT_ID,
+        }),
+      });
+      await expect(
+        files.upload("x", "data", { control: new UploadControl(), retries: 0 })
+      ).rejects.toMatchObject({
+        code: "Provider",
+        message: expect.stringContaining("chunk upload failed (HTTP 307)"),
+      });
+      expect(leakedKeys).toEqual([]);
+    } finally {
+      await origin.stop(true);
+      await target.stop(true);
+    }
+  });
+
   test("a refused chunk is classified by status and not retried", async () => {
     let calls = 0;
     installFetch(() => {

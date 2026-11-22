@@ -13,7 +13,7 @@ files-sdk basic-ftp
 
 ## Usage
 
-FTP and FTPS via the [`basic-ftp`](https://www.npmjs.com/package/basic-ftp) library. Virtual keys map to paths under a configurable `root` on the server, with a traversal guard that refuses `..` segments, backslashes, and a leading drive letter (`C:`), since servers on Windows hosts treat those as path syntax too. **Node-only** — FTP uses raw sockets, so this adapter does not run on edge/browser/Workers runtimes.
+FTP and FTPS via the [`basic-ftp`](https://www.npmjs.com/package/basic-ftp) library. Virtual keys map to paths under a configurable `root` on the server, with a traversal guard that refuses `..` segments, backslashes, and a leading drive letter (`C:`), since servers on Windows hosts treat those as path syntax too. A key containing a line break (CR or LF) throws `Invalid` as well: FTP commands are single lines, so such a path can't be sent. **Node-only** — FTP uses raw sockets, so this adapter does not run on edge/browser/Workers runtimes.
 
 By default the adapter opens a fresh connection per operation and closes it afterwards. For batch work, connect once and pass the `client` so every call reuses the same connection — you own its lifecycle. An FTP connection runs one command at a time, so calls on an injected client queue and run one after another, bulk calls and `Promise.all` included. A streamed download (`as: "stream"`) holds the client until the stream is read to the end or cancelled, so consume or cancel it before you expect later calls to run.
 

@@ -40,7 +40,7 @@ const files = new Files({
 
 ## Limitations
 
-File IDs (keys) must start with an alphanumeric and use only `[a-zA-Z0-9._-]`, max 36 characters (no slashes) - every method that takes a key rejects an invalid one before the API call. `list({ prefix })` queries `startsWith("$id", ...)` against the canonical file ID, so files created outside the adapter where the display `name` differs from `$id` won't be matched by prefix. Resumable uploads (`control`) send chunks over Appwrite's REST API with the API key, so they need `key` (or `APPWRITE_API_KEY`); an adapter built from a pre-built `client` throws on them.
+File IDs (keys) must start with an alphanumeric and use only `[a-zA-Z0-9._-]`, max 36 characters (no slashes) - every method that takes a key rejects an invalid one before the API call. `list({ prefix })` queries `startsWith("$id", ...)` against the canonical file ID, so files created outside the adapter where the display `name` differs from `$id` won't be matched by prefix. Resumable uploads (`control`) send chunks over Appwrite's REST API with the API key, so they need `key` (or `APPWRITE_API_KEY`); an adapter built from a pre-built `client` throws on them. Those chunk requests never follow a redirect (the API key would travel with it), matching `node-appwrite` 31.1 and later, which refuses redirects on every call: point `endpoint` at the final URL, including `https://`.
 
 ## Compatibility
 

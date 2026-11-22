@@ -14,6 +14,10 @@ related:
 files-sdk @google-cloud/storage
 ```
 
+:::note
+Stay on `@google-cloud/storage` 8 for now (the adapter accepts 7 and 8). 9.0.0 retries a failing request without limit ([#9871](https://github.com/googleapis/google-cloud-node/issues/9871)), reads a non-resumable stream upload into memory before sending it ([#9872](https://github.com/googleapis/google-cloud-node/issues/9872)), and needs credentials for an emulator endpoint ([#9873](https://github.com/googleapis/google-cloud-node/issues/9873)). The adapter will accept 9 once those are fixed upstream.
+:::
+
 ## Usage
 
 ```ts lineNumbers

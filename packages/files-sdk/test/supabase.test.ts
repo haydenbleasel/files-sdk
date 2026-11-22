@@ -2491,6 +2491,46 @@ describe("supabase keys with URL delimiters (real storage-js client)", () => {
     expect(await adapter.exists("q")).toBe(false);
   });
 
+  test.each([
+    "../other-bucket/x",
+    "../../../../auth/v1/admin/users",
+    "a/../b.txt",
+    "a/./b.txt",
+    "dir/..",
+    ".",
+  ])(
+    "%s is refused before any request (a dot segment would leave the key, the bucket, or Storage)",
+    async (key) => {
+      // URL parsing resolves `.` / `..`, so these would be sent to another
+      // object, another bucket, or another Supabase API with the client's
+      // credentials. storage-js 2.119.2 refuses bucket-escaping paths on its
+      // own requests; the adapter builds these URLs itself.
+      const { adapter, publicAdapter, requests } = fakeServer();
+      const files = new Files({ adapter });
+      const refused = {
+        code: "Invalid",
+        message: expect.stringContaining('"." or ".." path segment'),
+      };
+      await expect(files.upload(key, "x")).rejects.toMatchObject(refused);
+      await expect(files.head(key)).rejects.toMatchObject(refused);
+      await expect(files.exists(key)).rejects.toMatchObject(refused);
+      await expect(files.download(key)).rejects.toMatchObject(refused);
+      await expect(files.download(key, { as: "stream" })).rejects.toMatchObject(
+        refused
+      );
+      await expect(files.url(key, { expiresIn: 60 })).rejects.toMatchObject(
+        refused
+      );
+      await expect(
+        files.signedUploadUrl(key, { expiresIn: 60 })
+      ).rejects.toMatchObject(refused);
+      await expect(
+        new Files({ adapter: publicAdapter }).url(key)
+      ).rejects.toMatchObject(refused);
+      expect(requests).toEqual([]);
+    }
+  );
+
   test("the key is percent-encoded per segment in the request path", async () => {
     const { adapter, requests } = fakeServer();
     await adapter.upload("dir/a #?%.txt", "x");
