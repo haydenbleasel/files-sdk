@@ -33,6 +33,28 @@ import { abortError } from "./retry.js";
  */
 export const DEFAULT_URL_EXPIRES_IN = 3600;
 
+const RAW_KEY_PROBE_PREFIX = "/key/";
+const RAW_KEY_PROBE_BASE = "https://raw-key.invalid";
+
+/**
+ * Whether a key still names itself once it is put, unencoded, at the end of a
+ * URL path and the URL is parsed. Some provider SDKs build request or signed
+ * URLs that way, and parsing then rewrites the key: a `#` starts a fragment
+ * and a `?` a query, `\` becomes `/`, tabs and newlines are dropped, trailing
+ * spaces and control characters are trimmed, and `.` / `..` segments are
+ * resolved (`../x` even leaves the path the key was put under). A `%` never
+ * survives either: a server that decodes the path reads `%41` as `A`, and a
+ * lone `%` is a malformed escape. An adapter stuck with such an SDK refuses
+ * the keys this returns `false` for instead of addressing a different object.
+ */
+export const survivesRawUrlPath = (key: string): boolean =>
+  // Without a `%` in the key, every escape in the parsed path came from URL
+  // encoding, so decoding it gives back exactly what the URL still names.
+  !key.includes("%") &&
+  decodeURIComponent(
+    new URL(`${RAW_KEY_PROBE_PREFIX}${key}`, RAW_KEY_PROBE_BASE).pathname
+  ) === `${RAW_KEY_PROBE_PREFIX}${key}`;
+
 /**
  * Concatenate a public base URL with a key. Tolerates a single trailing
  * slash on the base. The key is URL-encoded so it's safe to embed in a URL path.

@@ -19,6 +19,9 @@ import { expectDispositionRefusal } from "./disposition-refusal.js";
 // class; hand-rolled `{ name: "BlobNotFoundError" }` errors would hide that.
 // The real `head` and `issueSignedToken` are captured too: the OIDC lookup
 // tests delegate to them so `@vercel/blob`'s own credential resolution runs.
+// So is the real `get`, for the private-download tests that assert the URL
+// it actually requests, and the real `presignUrl`, which signs locally and
+// shows which keys its presigned GET URL can't name.
 const {
   BlobAccessError,
   BlobClientTokenExpiredError,
@@ -32,8 +35,10 @@ const {
   BlobServiceNotAvailable,
   BlobStoreNotFoundError,
   BlobStoreSuspendedError,
+  get: realGet,
   head: realHead,
   issueSignedToken: realIssueSignedToken,
+  presignUrl: realPresignUrl,
 } = await import("@vercel/blob");
 
 // Mock @vercel/blob before the adapter imports it.
@@ -193,6 +198,35 @@ mock.module("@vercel/blob", () => ({
 }));
 
 const { vercelBlob } = await import("../src/vercel-blob/index.js");
+
+// Keys for a private `url()`, and whether the presigned GET URL `@vercel/blob`
+// builds still names that key. It puts the pathname after the store's host
+// unencoded (and takes one starting with `http(s)://` for a whole URL), so
+// URL parsing rewrites the `false` rows into a link to something else. The
+// adapter refuses those; the "through @vercel/blob" suite below checks each
+// row against the real `presignUrl()`.
+const PRESIGNED_GET_KEYS: [key: string, named: boolean][] = [
+  ["a.txt", true],
+  ["docs/my file.txt", true],
+  ["日本語/ファイル.txt", true],
+  ["a+b&c=d,e;f:g@h$.txt", true],
+  ["reports/Invoice #42.pdf", false],
+  ["q?x=1.txt", false],
+  ["a%41.txt", false],
+  ["100%.txt", false],
+  ["a\\b.txt", false],
+  ["a/../b.txt", false],
+  ["../other.txt", false],
+  ["a.txt ", false],
+  ["https://elsewhere.example/a.txt", false],
+  ["http://elsewhere.example/a.txt", false],
+];
+const PRESIGNABLE_KEYS = PRESIGNED_GET_KEYS.filter(([, named]) => named).map(
+  ([key]) => key
+);
+const UNPRESIGNABLE_KEYS = PRESIGNED_GET_KEYS.filter(([, named]) => !named).map(
+  ([key]) => key
+);
 
 interface AuthOpts {
   token?: string;
@@ -1436,8 +1470,10 @@ describe("vercel-blob adapter", () => {
       if (!firstGet) {
         throw new Error("expected get to have been called");
       }
-      const [pathArg, getOpts] = firstGet;
-      expect(pathArg).toBe("a.txt");
+      const [urlArg, getOpts] = firstGet;
+      // The blob's own URL from head(), never the raw key: given a pathname,
+      // `blob.get` builds the URL by concatenation and mangles `#` and `?`.
+      expect(urlArg).toBe("https://blob.test/a.txt");
       const o = getOpts as { access: string; token: string; useCache: boolean };
       expect(o.access).toBe("private");
       // Origin read, so the body matches the fresh head() metadata.
@@ -1549,6 +1585,40 @@ describe("vercel-blob adapter", () => {
         expect((error as FilesError).code).toBe("Unsupported");
       }
       expect(issueSignedTokenMock).not.toHaveBeenCalled();
+    });
+
+    test.each(UNPRESIGNABLE_KEYS)(
+      "url refuses %j before issuing a token: the presigned URL would name something else",
+      async (key) => {
+        const files = new Files({ adapter: vercelBlob({ access: "private" }) });
+        const refused = {
+          code: "Unsupported",
+          message: expect.stringContaining(
+            `vercel-blob: a signed URL can't address key ${JSON.stringify(key)}`
+          ),
+        };
+        await expect(files.url(key)).rejects.toMatchObject(refused);
+        await expect(files.url(key, { expiresIn: 60 })).rejects.toMatchObject(
+          refused
+        );
+        expect(issueSignedTokenMock).not.toHaveBeenCalled();
+        expect(presignUrlMock).not.toHaveBeenCalled();
+      }
+    );
+
+    test.each(PRESIGNABLE_KEYS)("url still signs %j", async (key) => {
+      const files = new Files({ adapter: vercelBlob({ access: "private" }) });
+      expect(await files.url(key)).toBe(
+        `https://presigned.example.com/private/get/${key}?sig=abc`
+      );
+    });
+
+    test("a public store's url() is unaffected: it encodes the key itself", async () => {
+      process.env.BLOB_READ_WRITE_TOKEN = "vercel_blob_rw_abc123store_random";
+      const files = new Files({ adapter: vercelBlob() });
+      expect(await files.url("reports/Invoice #42.pdf")).toBe(
+        "https://abc123store.public.blob.vercel-storage.com/reports/Invoice%20%2342.pdf"
+      );
     });
 
     test("download maps blob.get rejection with status 404 to NotFound", async () => {
@@ -1960,6 +2030,174 @@ describe("vercel-blob adapter", () => {
       );
       expect(headMock).not.toHaveBeenCalled();
     });
+  });
+});
+
+// The real `presignUrl()` signs locally (an HMAC, no request), so it can show
+// what the private `url()` guard is for: which keys its GET URL still names.
+// If a later `@vercel/blob` starts encoding the pathname, the `false` rows
+// here fail, and the guard (with its rows above) can go.
+describe("vercel-blob presigned GET URLs through @vercel/blob", () => {
+  test.each(PRESIGNED_GET_KEYS)(
+    "the SDK's URL for %j names that key: %p",
+    async (key, named) => {
+      const validUntil = Date.now() + 60_000;
+      const scope = {
+        operations: ["get"],
+        pathname: key,
+        storeId: "abc123store",
+        validUntil,
+      };
+      // ASCII-only JSON (`\uXXXX` escapes): the SDK decodes this payload with
+      // `atob`, which doesn't read UTF-8.
+      const payload = JSON.stringify(scope).replaceAll(
+        /[\u0080-\uFFFF]/gu,
+        (char) => `\\u${char.codePointAt(0)?.toString(16).padStart(4, "0")}`
+      );
+      const { presignedUrl } = await realPresignUrl(
+        {
+          clientSigningToken: "client-signing-token",
+          delegationToken: `${Buffer.from(payload).toString("base64url")}.signature`,
+        },
+        { access: "private", operation: "get", pathname: key, validUntil }
+      );
+      const url = new URL(presignedUrl);
+      // What a server reading this URL would take the pathname to be; a
+      // malformed escape has no reading at all.
+      const requested = ((): string | undefined => {
+        try {
+          return decodeURIComponent(url.pathname);
+        } catch {
+          return undefined;
+        }
+      })();
+      expect(
+        url.host === "abc123store.private.blob.vercel-storage.com" &&
+          requested === `/${key}`
+      ).toBe(named);
+    }
+  );
+});
+
+// A key as it appears in a blob URL: each path segment percent-encoded.
+const encodedPath = (key: string): string =>
+  key.split("/").map(encodeURIComponent).join("/");
+
+// These cases run the real `@vercel/blob` `get()` against a loopback stand-in
+// for a private store, so what's asserted is the URL the SDK really requests.
+// Given a pathname, `get()` builds `https://<store>.private…/<pathname>` by
+// plain concatenation: a `#` starts a fragment and a `?` a query, so the read
+// went to whatever blob sits at the truncated path (the decoys below). The
+// adapter hands it the blob's own URL from `head()` instead. The stand-in's
+// origin counts as a blob URL because `VERCEL_BLOB_API_URL` points at it.
+describe("vercel-blob private download through @vercel/blob", () => {
+  const objects = new Map<string, string>();
+  const requests: { authorization: string | null; url: string }[] = [];
+  const serveStore = () =>
+    Bun.serve({
+      fetch(request) {
+        const url = new URL(request.url);
+        requests.push({
+          authorization: request.headers.get("authorization"),
+          url: `${url.pathname}${url.search}`,
+        });
+        const body = objects.get(
+          url.pathname.slice(1).split("/").map(decodeURIComponent).join("/")
+        );
+        return body === undefined
+          ? new Response(null, { status: 404 })
+          : new Response(body, { headers: { "content-type": "text/plain" } });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+    });
+
+  let store: ReturnType<typeof serveStore> | undefined;
+
+  // One private download with head() answering as the store does (the blob's
+  // percent-encoded URL) and `blob.get` delegating to the real SDK.
+  const downloadThroughSdk = (key: string, downloadOpts?: { as: "stream" }) => {
+    headMock.mockImplementationOnce((pathname) =>
+      Promise.resolve({
+        cacheControl: "",
+        contentDisposition: "",
+        contentType: "text/plain",
+        downloadUrl: "",
+        etag: '"etag"',
+        pathname,
+        size: 5,
+        uploadedAt: new Date(),
+        url: `http://127.0.0.1:${store?.port}/${encodedPath(pathname)}`,
+      })
+    );
+    getMock.mockImplementationOnce(
+      (urlOrPathname, opts) =>
+        realGet(
+          urlOrPathname,
+          opts as Parameters<typeof realGet>[1]
+        ) as Promise<GetMockResult>
+    );
+    const files = new Files({ adapter: vercelBlob({ access: "private" }) });
+    return files.download(key, downloadOpts);
+  };
+
+  beforeAll(() => {
+    store = serveStore();
+    process.env.VERCEL_BLOB_API_URL = `http://127.0.0.1:${store.port}/api/blob`;
+  });
+
+  afterAll(async () => {
+    delete process.env.VERCEL_BLOB_API_URL;
+    await store?.stop(true);
+  });
+
+  beforeEach(() => {
+    requests.length = 0;
+    objects.clear();
+    // Where an unencoded `#` or `?` would cut each key below short.
+    objects.set("reports/Invoice ", "decoy");
+    objects.set("q", "decoy");
+  });
+
+  test.each([
+    "reports/Invoice #42.pdf",
+    "q?x=1.txt",
+    "100%.txt",
+    "my file.txt",
+    "日本語/ファイル.txt",
+    "plain/a.txt",
+  ])("%s is read from its own URL", async (key) => {
+    objects.set(key, `body of ${key}`);
+    const file = await downloadThroughSdk(key);
+    expect(await file.text()).toBe(`body of ${key}`);
+    expect(file.key).toBe(key);
+    expect(requests).toEqual([
+      {
+        authorization: "Bearer test-token",
+        // `cache=0`: read from origin, so the body matches head()'s metadata.
+        url: `/${encodedPath(key)}?cache=0`,
+      },
+    ]);
+  });
+
+  test("a streamed download reads the same URL", async () => {
+    const key = "reports/Invoice #42.pdf";
+    objects.set(key, "streamed body");
+    const file = await downloadThroughSdk(key, { as: "stream" });
+    expect(await new Response(file.stream()).text()).toBe("streamed body");
+    expect(requests.map((request) => request.url)).toEqual([
+      "/reports/Invoice%20%2342.pdf?cache=0",
+    ]);
+  });
+
+  test("a blob that is gone by the time it is read is NotFound, named by its key", async () => {
+    await expect(downloadThroughSdk("gone #1.txt")).rejects.toMatchObject({
+      code: "NotFound",
+      message: "vercel-blob: private blob not found: gone #1.txt",
+    });
+    expect(requests.map((request) => request.url)).toEqual([
+      "/gone%20%231.txt?cache=0",
+    ]);
   });
 });
 

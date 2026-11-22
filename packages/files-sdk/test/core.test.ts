@@ -11,6 +11,7 @@ import {
   rangeRequestHeaders,
   rangedResponseSize,
   rangedSize,
+  survivesRawUrlPath,
 } from "../src/internal/core.js";
 import { FilesError } from "../src/internal/errors.js";
 
@@ -101,6 +102,38 @@ describe("joinPublicUrl", () => {
     expect(joinPublicUrl("https://cdn.example.com/base/", "a b/c+d")).toBe(
       "https://cdn.example.com/base/a%20b/c%2Bd"
     );
+  });
+});
+
+describe("survivesRawUrlPath", () => {
+  test.each([
+    "a.txt",
+    "dir/a.txt",
+    "my file.txt",
+    " leading-space.txt",
+    "日本語/ファイル.txt",
+    "a+b&c=d,e;f:g@h$.txt",
+    "/leading-slash.txt",
+    "a//b.txt",
+    "folder/",
+  ])("%j still names itself at the end of a URL path", (key) => {
+    expect(survivesRawUrlPath(key)).toBe(true);
+  });
+
+  test.each([
+    ["a # starts a fragment", "Invoice #42.pdf"],
+    ["a ? starts a query", "q?x=1.txt"],
+    ["a %xx sequence is decoded by the server", "a%41.txt"],
+    ["a lone % is a malformed escape", "100%.txt"],
+    ["a backslash becomes a slash", "a\\b.txt"],
+    ["a tab is dropped", "a\tb.txt"],
+    ["a newline is dropped", "a\nb.txt"],
+    ["a trailing space is trimmed", "a.txt "],
+    ["a . segment is resolved", "a/./b.txt"],
+    ["a .. segment is resolved", "a/../b.txt"],
+    ["a leading .. leaves the path it was put under", "../x.txt"],
+  ])("%s, so the key is refused", (_label, key) => {
+    expect(survivesRawUrlPath(key)).toBe(false);
   });
 });
 

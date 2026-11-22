@@ -165,5 +165,5 @@ With `allowOverwrite: false`, uploading to an existing key throws a `Conflict`.
 | `head` | ✅ |  |
 | `exists` | ✅ |  |
 | `copy` | ✅ | Server-side `blob.copy`. The source's content type and cache max-age are read with `head()` and passed on, since `blob.copy` would otherwise give the copy a type guessed from its extension and the default one-month cache. |
-| `url` | ⚠️ | Presigned `GET` via Vercel Signed URLs, honoring `expiresIn` (1 hour default, 7-day server-side cap). `responseContentDisposition` throws (no Content-Disposition override available). |
+| `url` | ⚠️ | Presigned `GET` via Vercel Signed URLs, honoring `expiresIn` (1 hour default, 7-day server-side cap). `responseContentDisposition` throws (no Content-Disposition override available). A key the presigned URL can't carry throws `Unsupported`: `@vercel/blob` puts the key into that URL unencoded, so a `#`, `?`, `%`, `\`, a `.` or `..` path segment, a trailing space, or a leading `http://` / `https://` would make the link name something else. `download()` still reads such a blob, and the [gateway](/docs/ui/server/gateway) proxies it rather than redirecting. |
 | `signedUploadUrl` | ✅ | Presigned `PUT` via Vercel Signed URLs. `contentType` and `maxSize` are enforced at the CDN; a positive `minSize` throws. |

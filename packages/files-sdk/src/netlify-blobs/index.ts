@@ -15,7 +15,7 @@ import type {
   UploadResult,
   UrlOptions,
 } from "../index.js";
-import { assertSlashDelimiter } from "../internal/core.js";
+import { assertSlashDelimiter, survivesRawUrlPath } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError } from "../internal/errors.js";
 import type { FilesErrorCode } from "../internal/errors.js";
@@ -255,9 +255,6 @@ const mapNetlifyError = (cause: unknown): FilesError => {
   return new FilesError(code, message, cause);
 };
 
-const KEY_PROBE_PREFIX = "/key/";
-const KEY_PROBE_BASE = "https://netlify-blobs.invalid";
-
 /**
  * `@netlify/blobs` builds each request URL as `new URL(`/${site}/${store}/${key}`)`
  * from the raw key, so URL parsing rewrites some keys before they're sent: a
@@ -270,13 +267,7 @@ const KEY_PROBE_BASE = "https://netlify-blobs.invalid";
  * silently addressing a different blob.
  */
 const assertAddressableKey = (key: string): void => {
-  // Without a `%` in the key, every escape in the parsed path came from URL
-  // encoding, so decoding it gives back exactly what the URL still names.
-  const path = new URL(`${KEY_PROBE_PREFIX}${key}`, KEY_PROBE_BASE).pathname;
-  if (
-    !key.includes("%") &&
-    decodeURIComponent(path) === `${KEY_PROBE_PREFIX}${key}`
-  ) {
+  if (survivesRawUrlPath(key)) {
     return;
   }
   throw new FilesError(

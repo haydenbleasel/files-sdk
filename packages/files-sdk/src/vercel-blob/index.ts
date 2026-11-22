@@ -20,6 +20,7 @@ import {
   joinPublicUrl,
   rangeRequestHeaders,
   rangedResponseSize,
+  survivesRawUrlPath,
 } from "../internal/core.js";
 import { readEnv } from "../internal/env.js";
 import { FilesError, dispositionUnsupported } from "../internal/errors.js";
@@ -80,8 +81,8 @@ export interface VercelBlobAdapterOptions {
    *   permanent public URL; `url(key, { expiresIn })` throws `Unsupported`.
    * - `"private"`: blobs are uploaded with `access: "private"`. They cannot
    *   be fetched by their plain URL — `download()` instead routes through
-   *   `blob.get(key, { access: "private" })`, which uses whichever
-   *   credentials the adapter resolved (read-write token or OIDC). `url()` mints a presigned GET URL
+   *   `blob.get(url, { access: "private" })` on the blob's own URL, which uses
+   *   whichever credentials the adapter resolved (read-write token or OIDC). `url()` mints a presigned GET URL
    *   (Vercel Signed URLs) that expires after `expiresIn` seconds.
    *
    * `signedUploadUrl()` mints a presigned PUT URL in either mode.
@@ -324,6 +325,30 @@ const missingCredentials = (cause?: unknown): FilesError =>
 // lookup finds no credential at call time (unchanged from 2.4 through 2.8).
 const NO_BLOB_CREDENTIALS_RE = /No blob credentials found/u;
 
+/**
+ * `presignUrl()` builds a presigned GET URL by putting the raw pathname after
+ * the store's host, so URL parsing rewrites some keys into a link to another
+ * path (see `survivesRawUrlPath`), and it takes a pathname starting with
+ * `http://` or `https://` for a whole URL, signing a link to that host. The
+ * signature still covers the real key, so such a link is dead at best.
+ * Refused as `Unsupported`, not `Invalid`: the key is fine everywhere else
+ * (`download()` reads it through the blob's own URL), and that is the code
+ * the gateway takes as "can't redirect, proxy the download instead".
+ */
+const assertPresignableKey = (key: string): void => {
+  if (
+    !key.startsWith("http://") &&
+    !key.startsWith("https://") &&
+    survivesRawUrlPath(key)
+  ) {
+    return;
+  }
+  throw new FilesError(
+    "Unsupported",
+    `vercel-blob: a signed URL can't address key ${JSON.stringify(key)}. @vercel/blob puts the key into the presigned URL unencoded, so "#", "?", "%", "\\", tabs and newlines, trailing spaces or control characters, "." / ".." path segments, and a leading "http://" or "https://" would make the link name something else. Read the blob with download() instead, or rename the key.`
+  );
+};
+
 const mapBlobError = (cause: unknown): FilesError => {
   if (cause instanceof FilesError) {
     return cause;
@@ -517,8 +542,15 @@ export const vercelBlob = (
   // through `blob.get(...)` instead, which uses whichever credentials the
   // adapter resolved. Returns a stream and a content type; callers can buffer
   // or pipe it.
+  //
+  // `blob.get` is handed that URL (`url`, from the caller's head()), never the
+  // key. Given a pathname it builds `https://<store>.private…/<pathname>` by
+  // plain concatenation, so a `#` in the key starts a fragment and a `?` a
+  // query: the read went to whatever blob sits at the truncated path. A key
+  // starting with `https://` was taken for a URL outright.
   const getPrivateBody = async (
     key: string,
+    url: string,
     signal?: AbortSignal
   ): Promise<{
     contentType: string | undefined;
@@ -526,7 +558,7 @@ export const vercelBlob = (
     stream: ReadableStream<Uint8Array>;
   }> => {
     const abortSignal = withTimeoutSignal(signal, downloadTimeoutMs);
-    const got = await blob.get(key, {
+    const got = await blob.get(url, {
       access: "private",
       // Read from origin, not the CDN cache: the metadata comes from a fresh
       // head(), and a cached body can lag an overwrite by up to a minute,
@@ -660,7 +692,11 @@ export const vercelBlob = (
           lastModified: result.uploadedAt?.getTime(),
         };
         if (access === "private") {
-          const got = await getPrivateBody(key, downloadOpts?.signal);
+          const got = await getPrivateBody(
+            key,
+            result.url,
+            downloadOpts?.signal
+          );
           if (downloadOpts?.as === "stream") {
             return createStoredFile(
               { ...meta, size: result.size },
@@ -1029,6 +1065,7 @@ export const vercelBlob = (
       // returned by head()/list() 401s without credentials. Mint a presigned
       // GET instead: scoped to this pathname, expiring after `expiresIn`.
       if (access === "private") {
+        assertPresignableKey(key);
         const expiresIn = urlOpts?.expiresIn ?? defaultUrlExpiresIn;
         try {
           const { token, validUntil } = await issueScopedToken(
