@@ -1,7 +1,7 @@
 "use client";
 
 import { cn } from "cn";
-import type { FileInfo } from "files-sdk";
+import type { AdapterCapabilities, FileInfo } from "files-sdk";
 import type { UseFilesResult } from "files-sdk/react";
 import { FileIcon, Loader2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -24,8 +24,10 @@ export interface FilePreviewProps {
    * `Content-Disposition` carries. Use `"url"` only when `authorize` returns
    * an inline disposition for `url` and `download` on these keys; otherwise
    * the PDF downloads instead of previewing. A PDF stored with a generic type
-   * (`application/octet-stream`) still previews from a `blob:` URL: its URL
-   * would serve it under that type, which browsers don't render as a PDF.
+   * (`application/octet-stream`) loads by URL too, so `authorize` also has to
+   * return `responseContentType: "application/pdf"` for it: its URL would
+   * otherwise serve that generic type, which browsers don't render as a PDF.
+   * When it can't, keep `"blob"`.
    */
   pdfSource?: "blob" | "url";
   /**
@@ -35,8 +37,7 @@ export interface FilePreviewProps {
    * when this is set, a `src` is resolved for **every** non-text type, not
    * just images and PDFs, so viewers for formats the built-in preview can't
    * render still get a URL. PDFs arrive as a `blob:` URL, or as a signed or
-   * proxy URL under `pdfSource="url"` when stored as `application/pdf`; other
-   * types as a signed or proxy URL.
+   * proxy URL under `pdfSource="url"`; other types as a signed or proxy URL.
    * `type` is the stored type without parameters, or the inferred one when
    * the stored type is generic (`application/octet-stream`).
    */
@@ -115,6 +116,22 @@ const previewTypeOf = (file: FileInfo): string => {
 };
 
 /**
+ * The adapter's capabilities, or `undefined` when the gateway doesn't report
+ * them (an `authorize` that throws for `capabilities`, say). Callers then take
+ * the path that works on every adapter instead of failing the preview;
+ * `useFiles` still records the failure in its `error`.
+ */
+const capabilitiesOf = async (
+  files: UseFilesResult
+): Promise<AdapterCapabilities | undefined> => {
+  try {
+    return await files.capabilities();
+  } catch {
+    return undefined;
+  }
+};
+
+/**
  * Whether a file starts with the PDF signature. Reads only those bytes, so an
  * extension-less key stored with a generic type can still preview as a PDF
  * without downloading the whole object first. A failed read is treated as no
@@ -137,42 +154,67 @@ const hasPdfSignature = async (
 /**
  * {@link previewTypeOf}, plus one more check for a generic type with no
  * telling extension: the PDF signature, on adapters that can serve the range.
+ * When the capabilities are unknown, it skips the check.
  */
 const resolvePreviewType = async (
   files: UseFilesResult,
-  file: FileInfo
+  file: FileInfo,
+  capabilities: () => Promise<AdapterCapabilities | undefined>
 ): Promise<string> => {
   const type = previewTypeOf(file);
   if (!GENERIC_TYPES.has(type) || file.size < PDF_SIGNATURE.length) {
     return type;
   }
-  const caps = await files.capabilities();
-  return caps.rangeRead && (await hasPdfSignature(files, file.key))
+  const caps = await capabilities();
+  return caps?.rangeRead && (await hasPdfSignature(files, file.key))
     ? "application/pdf"
     : type;
 };
 
 /**
+ * Whether a signed URL can serve a file previewed as `type`, and stored as
+ * `storedType`, the way the preview needs it. A PDF only keeps the filename in
+ * `authorize`'s disposition when its URL carries that header, so it signs only
+ * on adapters that bind one. A PDF stored with another type (recognized by its
+ * extension or signature) also needs `authorize`'s `responseContentType` in
+ * its URL to render, so it signs only on adapters that bind that too. The
+ * proxy sends both headers itself.
+ */
+const canSign = (
+  caps: AdapterCapabilities,
+  type: string,
+  storedType: string
+): boolean => {
+  if (!caps.signedUrl.supported) {
+    return false;
+  }
+  if (type !== "application/pdf") {
+    return true;
+  }
+  return (
+    caps.signedUrl.disposition &&
+    (storedType === type || caps.signedUrl.contentType === true)
+  );
+};
+
+/**
  * A URL the browser can load `key` from. Prefers a signed/direct URL, but only
- * when the adapter can actually sign — otherwise `url()` returns a
- * non-loadable placeholder — and falls back to the gateway download proxy,
- * which works on every adapter. A PDF only keeps the filename in
- * `authorize`'s disposition when its URL carries that header, so it signs
- * only on adapters that bind one; the proxy sends the header itself.
+ * when the adapter can actually sign it ({@link canSign}) — otherwise `url()`
+ * returns a non-loadable placeholder or refuses — and falls back to the
+ * gateway download proxy, which works on every adapter. With the capabilities
+ * unknown, it can't tell whether the adapter signs, so it uses the proxy.
  */
 const resolveSrc = async (
   files: UseFilesResult,
   endpoint: string,
   key: string,
-  type: string,
+  types: { preview: string; stored: string },
+  capabilities: () => Promise<AdapterCapabilities | undefined>,
   signal: AbortSignal
 ): Promise<string> => {
   const proxy = `${endpoint}${endpoint.includes("?") ? "&" : "?"}op=download&key=${encodeURIComponent(key)}`;
-  const caps = await files.capabilities();
-  const canSign =
-    caps.signedUrl.supported &&
-    (type !== "application/pdf" || caps.signedUrl.disposition);
-  if (!canSign || signal.aborted) {
+  const caps = await capabilities();
+  if (!(caps && canSign(caps, types.preview, types.stored)) || signal.aborted) {
     return proxy;
   }
   try {
@@ -265,11 +307,11 @@ const Body = ({
 /**
  * Lazy preview of a single stored file. Images prefer a direct `url()`,
  * falling back to the gateway download proxy; PDFs are downloaded and shown
- * from a `blob:` URL (or, with `pdfSource="url"`, loaded like images when
- * stored as `application/pdf`); text is fetched and shown inline. A file
- * stored with a generic type (`application/octet-stream`) is previewed by its
- * extension, or as a PDF when its first bytes are the PDF signature. Bytes
- * are only loaded when the component mounts.
+ * from a `blob:` URL (or, with `pdfSource="url"`, loaded like images); text
+ * is fetched and shown inline. A file stored with a generic type
+ * (`application/octet-stream`) is previewed by its extension, or as a PDF
+ * when its first bytes are the PDF signature. Bytes are only loaded when the
+ * component mounts.
  */
 export const FilePreview = ({
   files,
@@ -312,11 +354,19 @@ export const FilePreview = ({
       setSrc(undefined);
       setText(undefined);
       setIsLoading(true);
+      // One `capabilities` lookup per load, shared by the signature check and
+      // the URL choice, and only made when one of them needs it.
+      let caps: Promise<AdapterCapabilities | undefined> | undefined;
+      const capabilities = () => {
+        caps ??= capabilitiesOf(filesRef.current);
+        return caps;
+      };
       try {
         const resolved = isKey(file) ? await filesRef.current.head(key) : file;
         const resolvedType = await resolvePreviewType(
           filesRef.current,
-          resolved
+          resolved,
+          capabilities
         );
         if (controller.signal.aborted) {
           return;
@@ -333,20 +383,15 @@ export const FilePreview = ({
           if (!controller.signal.aborted) {
             setText(body);
           }
-        } else if (
-          resolvedType === "application/pdf" &&
-          (pdfSource === "blob" || storedTypeOf(resolved) !== "application/pdf")
-        ) {
+        } else if (resolvedType === "application/pdf" && pdfSource === "blob") {
           // The gateway forces `Content-Disposition: attachment` on both
           // `url()` and the download proxy (its stored-XSS guard), and
           // browsers download an <object>'s document instead of rendering it
           // when that header is present. A `blob:` URL carries no headers, so
           // fetch the bytes and preview those. (`pdfSource="url"` is for
-          // gateways that serve these PDFs inline: it loads them by URL
-          // below, keeping the response's filename for the viewer. A PDF
-          // only inferred from its extension or signature still comes here,
-          // since its URL serves the generic stored type, which browsers
-          // download rather than render.)
+          // gateways that serve these PDFs inline, as `application/pdf` even
+          // when stored with a generic type: it loads them by URL below,
+          // keeping the response's filename for the viewer.)
           const downloaded = await filesRef.current.download(key);
           const blob = await downloaded.blob();
           if (!controller.signal.aborted) {
@@ -366,7 +411,8 @@ export const FilePreview = ({
             filesRef.current,
             endpoint,
             key,
-            resolvedType,
+            { preview: resolvedType, stored: storedTypeOf(resolved) },
+            capabilities,
             controller.signal
           );
           if (!controller.signal.aborted) {
